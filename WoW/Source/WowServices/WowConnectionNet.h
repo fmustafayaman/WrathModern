@@ -11,7 +11,11 @@
 
 class WowConnectionNet {
     public:
+// The 1-byte packing reproduces the 32-bit client's layout. ARM64 faults on the misaligned
+// mutex inside SCritSect that it produces, so macOS keeps natural alignment.
+#if !defined(WOWDECOMP_PLATFORM_MAC)
 #pragma pack(push, 1)
+#endif
     struct WORKER {
         /* 0000 */ WowConnectionNet* m_owner;
         /* 0004 */ SThread m_thread;
@@ -25,7 +29,9 @@ class WowConnectionNet {
 
         WORKER();
     };
+#if !defined(WOWDECOMP_PLATFORM_MAC)
 #pragma pack(pop)
+#endif
 
     /* 0000 */ SThread m_thread;
     /* 0004 */ SEvent m_stopEvent;

@@ -406,6 +406,8 @@ public:
 private:
 
     uint64_t m_serial = 1;
+    // A Metal device is never lost; a failed Reset leaves it needing another, as a lost one does
+    bool m_needsReset = false;
     std::atomic<uint64_t> m_completed { 0 };
     uint64_t m_nextId = 0;
 

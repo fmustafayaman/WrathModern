@@ -10,6 +10,16 @@ target_include_directories(Gx
         ${CMAKE_SOURCE_DIR}
 )
 
+if (WOWDECOMP_PLATFORM_MAC)
+    target_link_libraries(Gx
+        PRIVATE
+            "-framework Metal"
+            "-framework QuartzCore"
+            "-framework AppKit"
+            "-framework CoreGraphics"
+    )
+endif ()
+
 if (WIN32)
     target_link_libraries(Gx
         PRIVATE

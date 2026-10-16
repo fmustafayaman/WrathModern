@@ -39,7 +39,7 @@ static BlitFormat s_blitFormats[GxTexFormats_Last] = {
 };
 
 // STATIC: 0x00AD87E4
-const char* g_gxApiNames[GxApis_Last] = { "OpenGL", "D3D9", "D3D9Ex", "D3D10", "D3D11", "GLL" };
+const char* g_gxApiNames[GxApis_Last] = { "OpenGL", "D3D9", "D3D9Ex", "D3D10", "D3D11", "GLL", "Metal" };
 
 // STATIC: 0x00AD8AC0
 static uint32_t s_vertexSize[GxVertexBufferFormats_Last] = { 12, 24, 28, 32, 36, 40, 44, 16, 24, 32, 20, 28, 48, 48 };
@@ -115,17 +115,26 @@ static int (*s_drawListSorters[GxuSorts_Last])(const void*, const void*) = { Dra
 // VERIFY: 0b88acbc auto
 // OFFSET: 0x008C8DE0
 EGxApi GxDefaultApi() {
+#if defined(WOWDECOMP_PLATFORM_MAC)
+    return GxApi_Metal;
+#else
     return GxApi_D3d9;
+#endif
 }
 
 // VERIFY: cef2b995 auto
 // OFFSET: 0x006811D0
 int32_t GxApiSupported(EGxApi api) {
     switch (api) {
+#if defined(WOWDECOMP_PLATFORM_MAC)
+        case GxApi_Metal:
+            return 1;
+#else
         case GxApi_OpenGl:
         case GxApi_D3d9:
         case GxApi_D3d9Ex:
             return 1;
+#endif
 
         default:
             return 0;
@@ -180,6 +189,12 @@ CGxDevice* CreateGxDevice(EGxApi api, GxWindowProc windowProc, const CGxFormat& 
     CGxDevice* device;
 
     switch (api) {
+#if defined(WOWDECOMP_PLATFORM_MAC)
+        case GxApi_Metal:
+            device = CreateCGxDeviceMetal();
+            g_theGxDevicePtr = device;
+            break;
+#else
         case GxApi_OpenGl:
             device = CreateCGxDeviceOpenGl();
             g_theGxDevicePtr = device;
@@ -194,6 +209,7 @@ CGxDevice* CreateGxDevice(EGxApi api, GxWindowProc windowProc, const CGxFormat& 
             device = CreateCGxDeviceD3d9Ex();
             g_theGxDevicePtr = device;
             break;
+#endif
 
         default:
             device = g_theGxDevicePtr;

@@ -16,16 +16,35 @@ static MacSync::Waitable* ToWaitable(HANDLE handle) {
     return static_cast<MacSync::Waitable*>(handle);
 }
 
+// Null and pseudo handles name no kernel object: the call fails with ERROR_INVALID_HANDLE, as on
+// Windows, instead of touching memory.
+static bool IsObject(HANDLE handle) {
+    if (!handle || handle == INVALID_HANDLE_VALUE || handle == kCurrentProcess || handle == kCurrentThread) {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return false;
+    }
+
+    return true;
+}
+
 HANDLE CreateEventA(void* attributes, BOOL manualReset, BOOL initialState, LPCSTR name) {
     return MacSync::EventCreate(manualReset != FALSE, initialState != FALSE);
 }
 
 BOOL SetEvent(HANDLE event) {
+    if (!IsObject(event)) {
+        return FALSE;
+    }
+
     MacSync::EventSet(ToWaitable(event));
     return TRUE;
 }
 
 BOOL ResetEvent(HANDLE event) {
+    if (!IsObject(event)) {
+        return FALSE;
+    }
+
     MacSync::EventReset(ToWaitable(event));
     return TRUE;
 }
@@ -35,6 +54,10 @@ HANDLE CreateMutexA(void* attributes, BOOL initialOwner, LPCSTR name) {
 }
 
 BOOL ReleaseMutex(HANDLE mutex) {
+    if (!IsObject(mutex)) {
+        return FALSE;
+    }
+
     return MacSync::MutexRelease(ToWaitable(mutex)) ? TRUE : FALSE;
 }
 
@@ -50,6 +73,10 @@ BOOL ReleaseSemaphore(HANDLE semaphore, LONG releaseCount, LONG* previousCount) 
     // The previous count is not tracked by any caller in the client; report it as unknown (0).
     if (previousCount) {
         *previousCount = 0;
+    }
+
+    if (!IsObject(semaphore)) {
+        return FALSE;
     }
 
     return MacSync::SemaphoreRelease(ToWaitable(semaphore), releaseCount) ? TRUE : FALSE;
@@ -111,6 +138,10 @@ DWORD WaitForMultipleObjects(DWORD count, const HANDLE* objects, BOOL waitAll, D
     MacSync::Waitable* waitables[MAXIMUM_WAIT_OBJECTS];
 
     for (DWORD i = 0; i < count; i++) {
+        if (!IsObject(objects[i])) {
+            return WAIT_FAILED;
+        }
+
         waitables[i] = ToWaitable(objects[i]);
     }
 

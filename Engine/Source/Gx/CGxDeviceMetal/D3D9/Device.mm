@@ -1890,7 +1890,7 @@ HRESULT DeviceImpl::ClearImpl(uint32_t count, const D3DRECT* rects, uint32_t fla
 // Swap chain
 
 HRESULT DeviceImpl::TestCooperativeLevelImpl() {
-    return D3D_OK;
+    return this->m_needsReset ? D3DERR_DEVICENOTRESET : D3D_OK;
 }
 
 HRESULT DeviceImpl::ResetImpl(const PresentParameters& parameters) {
@@ -1917,9 +1917,11 @@ HRESULT DeviceImpl::ResetImpl(const PresentParameters& parameters) {
     this->SetDepthStencilSurfaceImpl(nullptr);
 
     if (!this->CreateSwapChainResources()) {
+        this->m_needsReset = true;
         return D3DERR_INVALIDCALL;
     }
 
+    this->m_needsReset = false;
     this->ResetState();
     return D3D_OK;
 }

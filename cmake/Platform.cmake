@@ -42,9 +42,10 @@ function(wowdecomp_platform_sources var)
         list(FILTER sources EXCLUDE REGEX "/Win(32|64)/")
         list(APPEND sources ${shared})
 
-        # Objective-C++ sources of the Mac/ directories; modules glob only *.cpp.
+        # Objective-C++ sources of the Mac/ directories and the Metal graphics device; modules glob
+        # only *.cpp.
         file(GLOB_RECURSE objcxx CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.mm")
-        list(FILTER objcxx INCLUDE REGEX "/Mac/")
+        list(FILTER objcxx INCLUDE REGEX "/(Mac|CGxDeviceMetal)/")
         list(APPEND sources ${objcxx})
 
         # Shared Win64 files get <windows.h> the way the Windows build gives it to them, through

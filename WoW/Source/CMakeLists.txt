@@ -27,6 +27,28 @@ set_target_properties(Wow PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${WOWDECOMP_BIN_DIR}
 )
 
+if (WOWDECOMP_PLATFORM_MAC)
+    set_target_properties(Wow PROPERTIES
+        MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/Mac/Info.plist.in
+        MACOSX_BUNDLE_BUNDLE_NAME WrathModern
+        MACOSX_BUNDLE_GUI_IDENTIFIER org.wrathmodern.client
+        MACOSX_BUNDLE_SHORT_VERSION_STRING 3.3.5
+        MACOSX_BUNDLE_BUNDLE_VERSION 12340
+    )
+
+    # The client reads its data from the directory holding the application, so development builds
+    # can be copied into a game directory: -DWRATHMODERN_GAME_DIR=/path/to/World of Warcraft
+    set(WRATHMODERN_GAME_DIR "" CACHE PATH "Game directory to copy the application into after each build")
+
+    if (WRATHMODERN_GAME_DIR)
+        add_custom_command(TARGET Wow POST_BUILD
+            COMMAND rsync -a --delete "$<TARGET_BUNDLE_DIR:Wow>/" "${WRATHMODERN_GAME_DIR}/$<TARGET_BUNDLE_DIR_NAME:Wow>/"
+            COMMENT "Copying the application into ${WRATHMODERN_GAME_DIR}"
+            VERBATIM
+        )
+    endif ()
+endif ()
+
 foreach (config ${CMAKE_CONFIGURATION_TYPES} ${CMAKE_BUILD_TYPE})
     string(TOUPPER ${config} config)
     set_target_properties(Wow PROPERTIES RUNTIME_OUTPUT_DIRECTORY_${config} ${WOWDECOMP_BIN_DIR})
