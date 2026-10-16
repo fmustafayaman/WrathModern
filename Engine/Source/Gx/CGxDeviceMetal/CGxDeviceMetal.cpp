@@ -3394,6 +3394,9 @@ void CGxDeviceMetal::IPollWindow() {
         this->DeviceWM(GxWM_Size, reinterpret_cast<uintptr_t>(&rect), 0);
     }
 
+    // The pointer over the game view, as WM_SETCURSOR keeps it on Windows
+    this->IUpdateCursor();
+
     // Focus: WM_SETFOCUS and WM_KILLFOCUS
     int32_t focus = OsGuiGetWindow(1) == this->m_hwnd ? 1 : 0;
     if (focus != this->m_windowFocus) {
@@ -3406,8 +3409,11 @@ void CGxDeviceMetal::IUpdateCursor() {
         return;
     }
 
-    // The client's cursor becomes the pointer over the game view; a software cursor hides it
-    bool visible = this->m_hwCursor ? this->m_d3dDevice->IsCursorShown() : false;
+    // The client's cursor becomes the pointer over the game view; a software cursor hides it.
+    // Like WM_SETCURSOR on Windows, this follows the client's cursor state rather than the
+    // device's, which starts out hidden whenever the device is created again (resolution changes)
+    bool visible = this->m_hwCursor && this->m_cursorVisible;
+    this->m_d3dDevice->ShowCursor(visible);
     OsMacSetGameCursor(this->m_d3dDevice->GetCursorImage(), visible);
 }
 
