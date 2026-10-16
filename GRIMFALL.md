@@ -12,7 +12,7 @@ Son güncelleme: 2026-10-17.
 | Giriş sunucusu (GRUNT) | ✅ `LOGIN_STATE_AUTHENTICATED` |
 | Oyun sunucusu kimlik doğrulama | ✅ `AUTH_OK` (istemci platformu `Win` bildirince) |
 | Karakter listesi (`CMSG_CHAR_ENUM`) | ⛔ Sunucu cevap vermiyor — **takıldığımız yer** |
-| Karakter ekranında "realm split" döngüsü | 🔧 Bizim hata, inceleniyor |
+| Karakter ekranında "realm split" döngüsü | ➖ Orijinalde de var, bırakıldı |
 
 ## Dosyalar ve konumlar
 
@@ -25,7 +25,6 @@ Son güncelleme: 2026-10-17.
 - **Eklentinin kullandığı özel DBC'ler** (`Logs/Extensions.log` ve DLL içi metinlerden): `MysticEnchantments`, `StoreItemEntryRealmDisable`, `CharacterGeosetMapping`.
 - **Loglar:**
   - `Logs/connection.log` — giriş akışı ve "Login ignored" teşhisi.
-  - `Logs/realmsplit.log` — geçici Lua yığını teşhisi, aşağıya bak.
 
 ## Branch ve derleme
 
@@ -48,7 +47,6 @@ Son güncelleme: 2026-10-17.
 ### Yalnızca `grimfall`'da olan
 
 - **`27ae3ee`:** İstemci platformu `OSX` yerine `Win` olarak bildirilir (`Engine/Source/Os/Mac/System.mm` → `OsGetOsId`). `OSX` ile oyun sunucusu doğrulamadan hemen sonra bağlantıyı kesiyordu.
-- **Commit edilmemiş geçici teşhis:** `WoW/Source/Glue/GlueScriptEvents_Scripts.cpp` → `Script_RequestRealmSplitInfo`. İlk 4 çağrının Lua yığınını `Logs/realmsplit.log`'a yazar. İş bitince geri al: `git checkout -- WoW/Source/Glue/GlueScriptEvents_Scripts.cpp`.
 
 ## Takıldığımız yer: karakter listesi
 
@@ -78,20 +76,9 @@ RECV 0x0209 SMSG_ACCOUNT_DATA_TIMES
 
 ## Açık işler
 
-### 1. "Realm split" döngüsü (bizim hata, tüm sunucuları ilgilendirir)
+### 1. "Realm split" döngüsü (bırakıldı)
 
-**Belirti:** Karakter listesi gelmezken istemci her karede (~16 ms) `CMSG_REALM_SPLIT` (0x38C) gönderiyor. Grimfall'da 30 saniyede 500+ istek gitti.
-
-**Bulunanlar:**
-- lldb yığını: çağrı, karakter seçim ekranının ModelFFX frame'inin `OnUpdate` script'inden geliyor (`CSimpleFrame::OnLayerUpdate` → `FrameScript_Execute` → `Script_RequestRealmSplitInfo`).
-- Lua'da `RequestRealmSplitInfo()` yalnızca `CharacterSelect_OnShow` içinde geçiyor (`Interface\GlueXML\CharacterSelect.lua:160`). Grimfall'ın GlueXML dosyaları ChromieCraft'takilerle aynı.
-- Şüphe 1: `GlueParent.lua` → `GlueFrameFadeUpdate`'teki geçiş efekti (`GoToPendingGlueScreen` → `SetGlueScreen("charselect")`) her karede yeniden tetikleniyor.
-- Şüphe 2: frame'in `OnUpdate`'i yanlış script'e bağlanmış.
-
-**Sonraki adım:**
-- Grimfall'da giriş yap, karakter ekranında bekle.
-- `Logs/realmsplit.log`'daki Lua yığınından hangi fonksiyonun çağırdığını bul.
-- Düzeltmeyi `macos`'a yap; `grimfall`'ı `macos`'un üstüne rebase et.
+Karakter listesi hiç gelmezken karakter ekranı her karede `CMSG_REALM_SPLIT` gönderiyor. ChromieCraft'ta tek çağrı görüldü; orijinal istemcide de aynı davranış var. Yalnızca listenin hiç gelmediği durumda ortaya çıkıyor, düzeltilmedi.
 
 ### 2. Karakter listesi (Warden)
 
@@ -110,5 +97,4 @@ Karakter listesi geldiğinde (madde 2) hangi verinin eksik kaldığı oradan gö
 
 ### 4. Temizlik
 
-- Grimfall işi bittiğinde geçici teşhis kodunu geri al.
 - `XRL1` çözümünü istersen `macos`'tan `grimfall`'a taşı; şu an `macos`'ta duruyor ve başka adresleri etkilemiyor.
