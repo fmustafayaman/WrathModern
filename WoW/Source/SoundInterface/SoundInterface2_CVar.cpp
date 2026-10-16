@@ -267,7 +267,11 @@ void SI2::RegisterCVars() {
         CVar::Lookup("Sound_ChaosMode")->Set("0", true, false, false, true);
     }
 
+#if defined(WOWDECOMP_PLATFORM_MAC)
+    CVar::Register("Sound_MaxCacheSizeInBytes", "Max cache size in bytes", 0, "268435456", nullptr, 7, false, nullptr, false);
+#else
     CVar::Register("Sound_MaxCacheSizeInBytes", "Max cache size in bytes", 0, "16777216", nullptr, 7, false, nullptr, false);
+#endif
     CVar::Register("Sound_MaxCacheableSizeInBytes", "Max sound size that will be cached, larger files will be streamed instead", 0, "1048576", nullptr, 7, false, nullptr, false);
 
     static CVar* s_enableAllSound = CVar::Lookup("Sound_EnableAllSound");

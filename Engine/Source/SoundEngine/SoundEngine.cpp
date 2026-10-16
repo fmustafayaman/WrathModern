@@ -2495,7 +2495,10 @@ static void ProcessFadeList() {
         changed = false;
 
         for (uint32_t i = 0; i < s_channelGroups.Count(); i++) {
-            if (!dirty[i] && dirty[s_channelGroups[i].m_parent]) {
+            // The root group has no parent (-1); the Windows version reads past the array there
+            uint32_t parent = static_cast<uint32_t>(s_channelGroups[i].m_parent);
+
+            if (!dirty[i] && parent < groupCount && dirty[parent]) {
                 dirty[i] = 1;
                 changed = true;
             }
@@ -2632,9 +2635,13 @@ static void ProcessWaveDataDeleteList(int32_t force) {
 
         if (maxCacheSize < 0x400000) {
             maxCacheSize = 0x400000;
-        } else if (maxCacheSize > 100 * 1024 * 1024) {
+        }
+#if !defined(WOWDECOMP_PLATFORM_MAC)
+        // The 64-bit macOS client takes the setting as given
+        else if (maxCacheSize > 100 * 1024 * 1024) {
             maxCacheSize = 0x8000000;
         }
+#endif
     }
 
     if (s_cacheBytes <= maxCacheSize && !force) {

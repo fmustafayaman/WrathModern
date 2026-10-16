@@ -7,11 +7,14 @@
 
 if (APPLE)
     set(WOWDECOMP_PLATFORM_MAC 1)
-    set(WOWDECOMP_BIN_DIR ${CMAKE_SOURCE_DIR}/bin/Mac)
+    set(WOWDECOMP_DEFAULT_BIN_DIR ${CMAKE_SOURCE_DIR}/bin/Mac)
 elseif (WIN32)
     set(WOWDECOMP_PLATFORM_WIN 1)
-    set(WOWDECOMP_BIN_DIR ${CMAKE_SOURCE_DIR}/bin/Win)
+    set(WOWDECOMP_DEFAULT_BIN_DIR ${CMAKE_SOURCE_DIR}/bin/Win)
 endif ()
+
+# Separate build trees (sanitizers, other configurations) can keep their output apart
+set(WOWDECOMP_BIN_DIR ${WOWDECOMP_DEFAULT_BIN_DIR} CACHE PATH "Directory the executables are built into")
 
 # Win64/ files that are portable logic over Win32 kernel objects and Winsock. The macOS build compiles them
 # unchanged against the curated <windows.h> and <winsock2.h> in Platform/Mac/Include instead of keeping a second copy;

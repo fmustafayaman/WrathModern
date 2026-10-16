@@ -97,6 +97,15 @@ static int32_t s_gxTexCacheMaxSize;
 // STATIC: 0x00B49CA0
 static uint32_t s_asyncLoadBufferUsed;
 
+// Texture file bytes being read at once, and the largest texture cache. The 32-bit client kept
+// these small for its address space; the 64-bit macOS client lifts them.
+#if defined(WOWDECOMP_PLATFORM_MAC)
+static const uint32_t kAsyncLoadBufferSize = 64 * 1024 * 1024;
+static const uint32_t kTextureCacheMaxSize = 2047u * 1024 * 1024;
+#else
+static const uint32_t kAsyncLoadBufferSize = 0x400000;
+#endif
+
 // STATIC: 0x00B49CA4
 static TSHashTableReuse<CTexture, HASHKEY_TEXTUREFILE> s_textureCache;
 
@@ -894,6 +903,12 @@ void TextureGetTextureFormats(PIXEL_FORMAT& pixelFormat, EGxTexFormat& gxTexForm
 // VERIFY: 7e1eb12e manual
 // OFFSET: 0x004B6180
 uint32_t TextureCacheGetMaxSize() {
+#if defined(WOWDECOMP_PLATFORM_MAC)
+    // The 64-bit client has no address space to save: allow as much as the cache size CVar can
+    // express (megabytes in a 32-bit byte count)
+    return kTextureCacheMaxSize;
+#endif
+
     uint32_t size = 0x4000000;
 
     if (OsGetPhysicalMemory() <= 0x40000000) {
@@ -1054,6 +1069,10 @@ void TextureSetCacheSize(int32_t size) {
         maxSize = 0x2000000;
     }
 
+#if defined(WOWDECOMP_PLATFORM_MAC)
+    maxSize = kTextureCacheMaxSize;
+#endif
+
     if (g_theGxDevicePtr->DeviceApi() == GxApi_D3d9Ex) {
         maxSize = 0;
     }
@@ -1207,7 +1226,7 @@ void FillInSolidTexture(const CImVector& color, CTexture* texture) {
 // VERIFY: f77dd4dd manual
 // OFFSET: 0x004B69E0
 void AsyncTextureHandler() {
-    uint32_t available = 0x400000 - s_asyncLoadBufferUsed;
+    uint32_t available = kAsyncLoadBufferSize - s_asyncLoadBufferUsed;
 
     for (CAsyncObject* object = s_asyncLoadList.Head(); !s_asyncLoadList.IsEnd(object); ) {
         CAsyncObject* next = s_asyncLoadList.RawNext(object);
@@ -2242,7 +2261,7 @@ CTexture* CreateBlpAsync(char* extension, const char* fileName, uint32_t flags, 
 
     CAsyncObject* object = texture->m_asyncObject;
 
-    if (0x400000 - s_asyncLoadBufferUsed < object->m_size) {
+    if (kAsyncLoadBufferSize - s_asyncLoadBufferUsed < object->m_size) {
         s_asyncTextureList.LinkNode(object, 2, nullptr);
     } else {
         AsyncTextureProcess(object, 0);

@@ -518,9 +518,11 @@ void OsMacDestroyGameWindow(void* window) {
     }
 
     @autoreleasepool {
+        // Detach the delegate first: ordering the window out resigns key status, and the focus
+        // notification must not reach an input layer that is shutting down
+        s_window.delegate = nil;
         NSApp.presentationOptions = NSApplicationPresentationDefault;
         [s_window orderOut:nil];
-        s_window.delegate = nil;
         s_window = nil;
         s_windowDelegate = nil;
     }
