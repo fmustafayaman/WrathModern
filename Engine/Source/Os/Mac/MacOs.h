@@ -37,6 +37,10 @@ void OsMacGetClientSize(void* window, int32_t* width, int32_t* height);
 // which is the default.
 void OsMacSetDrawableSize(void* window, int32_t width, int32_t height);
 
+// Sets the pointer shown over the game view: an NSCursor (unretained, the caller keeps it), or the
+// arrow when null. A hidden pointer shows nothing over the view; elsewhere the system pointer shows.
+void OsMacSetGameCursor(void* cursor, bool visible);
+
 // Hands queued Cocoa events to the application without blocking. Returns false when the application
 // was asked to quit.
 bool OsMacPumpEvents();

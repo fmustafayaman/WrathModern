@@ -13,6 +13,24 @@
 
 static bool s_quitRequested;
 static CGSize s_fixedDrawableSize;
+static NSCursor* s_gameCursor;
+static bool s_gameCursorVisible = true;
+
+// The pointer for the game view: the client's cursor, or an empty one while it is hidden. An empty
+// cursor rather than [NSCursor hide] keeps hide/unhide balanced for relative mouse mode.
+static NSCursor* CurrentCursor() {
+    static NSCursor* s_emptyCursor;
+
+    if (!s_gameCursorVisible) {
+        if (!s_emptyCursor) {
+            NSImage* image = [[NSImage alloc] initWithSize:NSMakeSize(1, 1)];
+            s_emptyCursor = [[NSCursor alloc] initWithImage:image hotSpot:NSZeroPoint];
+        }
+        return s_emptyCursor;
+    }
+
+    return s_gameCursor ? s_gameCursor : [NSCursor arrowCursor];
+}
 
 // Keeps the layer's drawable size in step with the view unless a fixed size is set.
 static void UpdateDrawableSize(NSView* view) {
@@ -113,12 +131,20 @@ static void UpdateDrawableSize(NSView* view) {
     return YES;
 }
 
+- (void)resetCursorRects {
+    [self addCursorRect:self.bounds cursor:CurrentCursor()];
+}
+
+- (void)cursorUpdate:(NSEvent*)event {
+    [CurrentCursor() set];
+}
+
 - (void)updateTrackingAreas {
     if (m_trackingArea) {
         [self removeTrackingArea:m_trackingArea];
     }
 
-    m_trackingArea = [[NSTrackingArea alloc] initWithRect:self.bounds options:NSTrackingMouseMoved | NSTrackingActiveAlways | NSTrackingInVisibleRect owner:self userInfo:nil];
+    m_trackingArea = [[NSTrackingArea alloc] initWithRect:self.bounds options:NSTrackingMouseMoved | NSTrackingCursorUpdate | NSTrackingActiveAlways | NSTrackingInVisibleRect owner:self userInfo:nil];
     [self addTrackingArea:m_trackingArea];
     [super updateTrackingAreas];
 }
@@ -528,6 +554,30 @@ void OsMacSetDrawableSize(void* window, int32_t width, int32_t height) {
     if (nsWindow) {
         UpdateDrawableSize(nsWindow.contentView);
         OsMacInputResized();
+    }
+}
+
+void OsMacSetGameCursor(void* cursor, bool visible) {
+    NSCursor* nsCursor = (__bridge NSCursor*)cursor;
+
+    if (nsCursor == s_gameCursor && visible == s_gameCursorVisible) {
+        return;
+    }
+
+    s_gameCursor = nsCursor;
+    s_gameCursorVisible = visible;
+
+    if (!s_window) {
+        return;
+    }
+
+    NSView* view = s_window.contentView;
+    [s_window invalidateCursorRectsForView:view];
+
+    // Cursor rects apply on the next mouse movement; switch now if the pointer is over the view
+    NSPoint point = [view convertPoint:[s_window mouseLocationOutsideOfEventStream] fromView:nil];
+    if (s_window.isKeyWindow && NSPointInRect(point, view.bounds)) {
+        [CurrentCursor() set];
     }
 }
 
