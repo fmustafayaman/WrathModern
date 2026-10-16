@@ -13,8 +13,8 @@ elseif (WIN32)
     set(WOWDECOMP_BIN_DIR ${CMAKE_SOURCE_DIR}/bin/Win)
 endif ()
 
-# Win64/ files that are portable logic over Win32 kernel objects. The macOS build compiles them
-# unchanged against the curated <windows.h> in Platform/Mac/Include instead of keeping a second copy;
+# Win64/ files that are portable logic over Win32 kernel objects and Winsock. The macOS build compiles them
+# unchanged against the curated <windows.h> and <winsock2.h> in Platform/Mac/Include instead of keeping a second copy;
 # everything else in Win32/ and Win64/ has a macOS counterpart in a Mac/ directory.
 set(WOWDECOMP_MAC_SHARED_WIN64
     "/Packages/Streaming/Win64/[^/]+\\.cpp$"
@@ -22,6 +22,9 @@ set(WOWDECOMP_MAC_SHARED_WIN64
     "/Storm/Source/Win64/SCritSect\\.cpp$"
     "/Storm/Source/Win64/SLock\\.cpp$"
     "/Os/Win64/OsFile\\.cpp$"
+    "/WowServices/Win64/WowConnection\\.cpp$"
+    "/WowServices/Win64/BattlenetLogin\\.cpp$"
+    "/GameClient/Win64/WardenClient\\.cpp$"
 )
 
 function(wowdecomp_platform_sources var)

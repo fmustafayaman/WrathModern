@@ -146,7 +146,7 @@ add_subdirectory(WoW/Source)
 if (WIN32)
     add_subdirectory(Tools/WowClient)
 endif ()
-if (WOWDECOMP_ARCH_64 AND WIN32)
+if (WOWDECOMP_ARCH_64)
     add_subdirectory(Tools/XvidDecoder)
 endif ()
 

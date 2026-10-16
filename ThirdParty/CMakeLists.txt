@@ -181,7 +181,7 @@ if (WOWDECOMP_ARCH_32)
     else ()
         message(WARNING "DivxDecoder: ${DIVXDECODER_DLL} is missing. Copy DivxDecoder.dll from a 3.3.5a (12340) client there; Win32 builds need it next to the executables.")
     endif ()
-elseif (WIN32)
+else ()
     target_link_libraries(DivxDecoder
         INTERFACE
             XvidDecoder

@@ -21,6 +21,13 @@ if (WOWDECOMP_PLATFORM_MAC)
     file(GLOB FMODEX_PLATFORM_SOURCES CONFIGURE_DEPENDS
         "${FMODEX_PLATFORM_DIR}/*.cpp"
     )
+
+    # The portable C++ DSP units that FMOD Ex keeps with the Win32 platform code; without SIMD they
+    # build from their C paths.
+    list(APPEND FMODEX_PLATFORM_SOURCES
+        ${FMODEX_DIR}/win32/src/fmod_dsp_distortion.cpp
+        ${FMODEX_DIR}/win32/src/fmod_dsp_resampler_linear.cpp
+    )
 else ()
     set(FMODEX_PLATFORM_DIR ${FMODEX_DIR}/win32/src)
     file(GLOB FMODEX_PLATFORM_SOURCES CONFIGURE_DEPENDS
@@ -61,6 +68,13 @@ if (WIN32)
             winmm
             ws2_32
             msacm32
+    )
+elseif (WOWDECOMP_PLATFORM_MAC)
+    target_link_libraries(fmodex
+        INTERFACE
+            "-framework AudioToolbox"
+            "-framework AudioUnit"
+            "-framework CoreAudio"
     )
 endif ()
 
