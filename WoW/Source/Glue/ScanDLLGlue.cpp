@@ -71,7 +71,17 @@ static uint32_t STORMAPI ScanThreadProc(void* param) {
     const char* result;
 
     if (!ScanFileForHack(params->m_dllName, &hackFound, &shouldBlockPlaying, &result, params->m_hackName, params->m_hackNameSize)) {
+#if defined(WRATHMODERN_CLIENT_PATCHES) && defined(WOWDECOMP_PLATFORM_MAC)
+        // Scan.dll is a Windows program and never runs on macOS. The failed scan left logging in to the interface's
+        // "continue anyway" step, which some setups never reach, so a login did nothing; it counts as a clean scan.
+        params->m_hackName[0] = '\0';
+        *params->m_result = "OK";
+        *params->m_okayToLogIn = 1;
+        *params->m_shouldBlockPlaying = 0;
+        InterlockedExchange(params->m_status, 3);
+#else
         InterlockedExchange(params->m_status, 2);
+#endif
         return 0;
     }
 

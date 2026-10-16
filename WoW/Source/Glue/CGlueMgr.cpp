@@ -335,6 +335,10 @@ static int32_t CheckTrialAccountConversion() {
 // OFFSET: 0x004D8A30
 void CGlueMgr::LoginServerLogin(const char* username, char* password) {
     if (!CGlueMgr::m_scandllOkayToLogIn || !CGlueMgr::m_acceptedTOS || !CGlueMgr::m_acceptedEULA || CGlueMgr::m_idleState != IDLE_NONE) {
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+        // The original ignores the login silently; say why, so a login that does nothing can be explained
+        CGlueMgr::LogConnectionStatus("Login ignored: scan %d (status %d), TOS %d, EULA %d, idle state %d", CGlueMgr::m_scandllOkayToLogIn, CGlueMgr::m_scandllStatus, CGlueMgr::m_acceptedTOS, CGlueMgr::m_acceptedEULA, CGlueMgr::m_idleState);
+#endif
         return;
     }
 
