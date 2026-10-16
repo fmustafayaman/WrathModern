@@ -119,14 +119,15 @@ void OsGetVersionString(char* buffer, int32_t size) {
 }
 
 // The platform and operating system the client reports to the server, as four-character codes:
-// "x86" and "OSX", what the 3.3.5a client for Intel Macs reported. Servers treat the client as a
-// Mac client accordingly.
+// "x86" and "Win". Grimfall's world server drops clients that report "OSX", so this branch reports
+// what the Windows client does. The server then sends Windows Warden modules, which this client
+// cannot run and leaves unanswered.
 uint32_t OsGetProcessorId() {
     return 0x783836;
 }
 
 uint32_t OsGetOsId() {
-    return 0x4F5358;
+    return 0x57696E;
 }
 
 int32_t OsGetComputerName(char* buffer, uint32_t* size) {
