@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -278,7 +279,11 @@ bool SetProjection() {
 
 // VERIFY: 9a3a1eda manual
 // OFFSET: 0x006C0E80
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+static bool ParseEmbeddedTextureUnsnapped(const char* text, GXUEMBEDDEDTEXTUREINFO* info, float fontPixelHeight, float scale, float fontHeight) {
+#else
 bool ParseEmbeddedTexture(const char* text, GXUEMBEDDEDTEXTUREINFO* info, float fontPixelHeight, float scale, float fontHeight) {
+#endif
     CRect window;
     window.minY = 0.0f;
     window.minX = 0.0f;
@@ -500,6 +505,25 @@ bool ParseEmbeddedTexture(const char* text, GXUEMBEDDEDTEXTUREINFO* info, float 
 
     return true;
 }
+
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+// Textures embedded in text (|T...|t) get whole-pixel sizes and offsets, so icons in scaled text are drawn sharp
+// instead of straddling pixels
+bool ParseEmbeddedTexture(const char* text, GXUEMBEDDEDTEXTUREINFO* info, float fontPixelHeight, float scale, float fontHeight) {
+    if (!ParseEmbeddedTextureUnsnapped(text, info, fontPixelHeight, scale, fontHeight)) {
+        return false;
+    }
+
+    if (fontPixelHeight != fontHeight) {
+        info->m_height = std::max(floorf(info->m_height + 0.5f), 1.0f);
+        info->m_width = std::max(floorf(info->m_width + 0.5f), 1.0f);
+        info->m_offsetX = floorf(info->m_offsetX + 0.5f);
+        info->m_offsetY = floorf(info->m_offsetY + 0.5f);
+    }
+
+    return true;
+}
+#endif
 
 // VERIFY: c325b096 manual
 // OFFSET: 0x006C1430

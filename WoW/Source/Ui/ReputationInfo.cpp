@@ -1165,6 +1165,13 @@ TSGrowableArray<const FactionRec*>* CGReputationInfo::GetFactionChildren(int32_t
 // VERIFY: 8b2534a1 auto
 // OFFSET: 0x005D24C0
 void CGReputationInfo::LeaveWorld() {
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // The server sends forced reactions only when the character enters the world, so a UI reload keeps them
+    if (!CGGameUI::m_currentlyReloadingUI) {
+        CGReputationInfo::m_forcedReactions.m_count = 0;
+    }
+#else
     CGReputationInfo::m_forcedReactions.m_count = 0;
+#endif
     CGReputationInfo::m_factions.InternalClear(0);
 }

@@ -202,6 +202,12 @@ void CGxString::ClearInstanceData() {
             this->m_textLines[i] = nullptr;
         }
     }
+
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // The pages the old geometry used no longer matter once it is gone
+    this->m_texturePagesUsed = 0;
+    this->m_textureEvicted = 0;
+#endif
 }
 
 // VERIFY: 50ba3e99 manual
@@ -571,9 +577,15 @@ void CGxString::AddShadow(const C2Vector& offset, const CImVector& color) {
 // OFFSET: 0x006C7480
 int32_t CGxString::CheckGeometry() {
     if (this->m_textureEvicted) {
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+        // The geometry points into a page whose glyphs were replaced; the glyphs being cached again does not make
+        // the old texture coordinates right, so the string is always rebuilt
+        this->ClearInstanceData();
+#else
         if (!this->m_currentFace->CheckStringGlyphs(this->m_text)) {
             this->ClearInstanceData();
         }
+#endif
 
         this->m_textureEvicted = 0;
     }

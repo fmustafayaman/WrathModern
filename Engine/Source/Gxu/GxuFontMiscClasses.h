@@ -98,6 +98,9 @@ struct TEXTURECACHEROW {
     TEXTURECACHEROW();
     CHARCODEDESC* CreateNewDesc(GLYPHBITMAPDATA* data, uint32_t rowNumber, uint32_t cellHeight);
     void EvictGlyph(CHARCODEDESC* desc);
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    uint32_t WidestFreeSlot();
+#endif
 };
 
 struct TEXTURECACHE {

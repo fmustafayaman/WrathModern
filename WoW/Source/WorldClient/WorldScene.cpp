@@ -22,11 +22,26 @@
 float CWorldScene::s_fadeSizeDefault[5] = { 1.0f, 4.0f, 15.0f, 100.0f, 100000.0f };
 
 // STATIC: 0x00ADF364
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+// Small game objects (fade category 0) stay visible to 50 yards instead of 30
+float CWorldScene::s_fadeDistDefault[5] = { 50.0f, 100.0f, 200.0f, 750.0f, 1250.0f };
+#else
 float CWorldScene::s_fadeDistDefault[5] = { 30.0f, 100.0f, 200.0f, 750.0f, 1250.0f };
+#endif
 
 // STATIC: 0x00ADF38C
 float CWorldScene::s_fadeRangeDefault[5] = { 5.0f, 10.0f, 15.0f, 20.0f, 50.0f };
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+// STATIC: 0x00ADF3A0
+float CWorldScene::s_fadeDist[5] = { 50.0f, 100.0f, 200.0f, 750.0f, 1250.0f };
+
+// STATIC: 0x00ADF3C8
+float CWorldScene::s_fadeDistMin[5] = { 45.0f, 90.0f, 185.0f, 730.0f, 1200.0f };
+
+// STATIC: 0x00ADF3DC
+float CWorldScene::s_fadeDistMinSqr[5] = { 2025.0f, 8100.0f, 34225.0f, 532900.0f, 1440000.0f };
+#else
 // STATIC: 0x00ADF3A0
 float CWorldScene::s_fadeDist[5] = { 30.0f, 100.0f, 200.0f, 750.0f, 1250.0f };
 
@@ -35,6 +50,7 @@ float CWorldScene::s_fadeDistMin[5] = { 25.0f, 90.0f, 185.0f, 730.0f, 1200.0f };
 
 // STATIC: 0x00ADF3DC
 float CWorldScene::s_fadeDistMinSqr[5] = { 625.0f, 8100.0f, 34225.0f, 532900.0f, 1440000.0f };
+#endif
 
 // STATIC: 0x00ADF6A8
 TSExplicitList<CWFrustum, offsetof(CWFrustum, m_link)> CWorldScene::frustumFreeList;
@@ -136,8 +152,17 @@ void CWorldScene::Initialize() {
 // VERIFY: 45953486 auto
 // OFFSET: 0x0078F570
 void CWorldScene::ScaleFadeDist(float scale) {
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // The smallest and the largest objects follow environmentDetail like the other categories
+    float scale0 = scale;
+    float scale4 = scale;
+#else
+    float scale0 = 1.0f;
+    float scale4 = 1.0f;
+#endif
+
     CWorldView::s_fadeSize[0] = CWorldScene::s_fadeSizeDefault[0];
-    CWorldScene::s_fadeDist[0] = CWorldScene::s_fadeDistDefault[0];
+    CWorldScene::s_fadeDist[0] = CWorldScene::s_fadeDistDefault[0] * scale0;
     CWorldScene::s_fadeDistMin[0] = CWorldScene::s_fadeDist[0] - CWorldScene::s_fadeRangeDefault[0];
     CWorldView::s_fadeDistSqr[0] = CWorldScene::s_fadeDist[0] * CWorldScene::s_fadeDist[0];
     CWorldScene::s_fadeDistMinSqr[0] = CWorldScene::s_fadeDistMin[0] * CWorldScene::s_fadeDistMin[0];
@@ -161,7 +186,7 @@ void CWorldScene::ScaleFadeDist(float scale) {
     CWorldScene::s_fadeDistMinSqr[3] = CWorldScene::s_fadeDistMin[3] * CWorldScene::s_fadeDistMin[3];
 
     CWorldView::s_fadeSize[4] = CWorldScene::s_fadeSizeDefault[4];
-    CWorldScene::s_fadeDist[4] = CWorldScene::s_fadeDistDefault[4];
+    CWorldScene::s_fadeDist[4] = CWorldScene::s_fadeDistDefault[4] * scale4;
     CWorldScene::s_fadeDistMin[4] = CWorldScene::s_fadeDist[4] - CWorldScene::s_fadeRangeDefault[4];
     CWorldView::s_fadeDistSqr[4] = CWorldScene::s_fadeDist[4] * CWorldScene::s_fadeDist[4];
     CWorldScene::s_fadeDistMinSqr[4] = CWorldScene::s_fadeDistMin[4] * CWorldScene::s_fadeDistMin[4];

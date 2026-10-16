@@ -690,8 +690,21 @@ void DBCache<T, TKey, THashKey>::Idle() {
         return;
     }
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // The query budget refills a thirtieth every second instead of all at once every 30 seconds, so queued item and
+    // name queries go out within a second or two. The server never sees more than the original client sends: at most
+    // the same burst, and a little less over time.
+    uint32_t refill = this->m_maxQueriesPerPump / 30 ? this->m_maxQueriesPerPump / 30 : 1;
+    this->m_queriesSent = this->m_queriesSent > refill ? this->m_queriesSent - refill : 0;
+    this->m_nextQueryTime = OsGetAsyncTimeMs() + 1000;
+
+    if (this->QueryLimitReached()) {
+        return;
+    }
+#else
     this->m_queriesSent = 0;
     this->m_nextQueryTime = OsGetAsyncTimeMs() + 30000;
+#endif
 
     DBCACHEHASH* next;
 

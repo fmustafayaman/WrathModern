@@ -2444,14 +2444,17 @@ void CMap::PrepareUpdate(bool addToScene) {
 
 // VERIFY: 6cf7464a auto
 // OFFSET: 0x007BD480
-int32_t CMap::SafeOpen(const char* fileName, SFileImpl** file) {
+int32_t CMap::SafeOpen(const char* fileName, SFileImpl** file, int32_t fatal) {
     int32_t tries = 10;
 
     while (!SFileOpenFile(fileName, file)) {
         DebugLog("CMap::SafeOpen() failed %s\n", fileName);
 
         if (!--tries) {
-            SErrDisplayAppFatal("CMap::SafeOpen() failed %s", fileName);
+            if (fatal) {
+                SErrDisplayAppFatal("CMap::SafeOpen() failed %s", fileName);
+            }
+
             return 0;
         }
     }

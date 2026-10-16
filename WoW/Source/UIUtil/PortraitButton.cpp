@@ -28,6 +28,8 @@
 #include "WoW/Source/DB/Rec/ChrRacesRec.h"
 #include "WoW/Source/DB/Rec/VehicleSeatRec.h"
 #include "WoW/Source/Ui/PartyFrame.h"
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include "Engine/Source/Base/Coordinate.h"
 
@@ -67,6 +69,16 @@ static TSList<PORTRAITREQUEST, TSGetLink<PORTRAITREQUEST>> s_pendingPortraits;
 // STATIC: 0x00AD28F0
 static TSList<PORTRAITREQUEST, TSGetLink<PORTRAITREQUEST>> s_freePortraits;
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+// Unit frame portraits render at 256x256 instead of 64x64; the frames draw them at the same size, only sharper
+static const uint32_t kPortraitSize = 256;
+#else
+static const uint32_t kPortraitSize = 64;
+#endif
+
+static TSFixedArray<uint8_t>* GetAlphaMask(uint32_t size);
+static void TextureUpdate(EGxTexCommand command, uint32_t width, uint32_t height, uint32_t depth, uint32_t mipLevel, void* userArg, uint32_t& texelStrideInBytes, const void*& texels);
+
 static void PortraitDepthTextureCallback(EGxTexCommand command, uint32_t width, uint32_t height, uint32_t depth, uint32_t mipLevel, void* userArg, uint32_t& texelStrideInBytes, const void*& texels) {
 }
 
@@ -83,8 +95,8 @@ int32_t RTAlphaSupported() {
     CiRect rect;
     rect.minY = 0;
     rect.minX = 0;
-    rect.maxY = 64;
-    rect.maxX = 64;
+    rect.maxY = kPortraitSize;
+    rect.maxX = kPortraitSize;
 
     TSGrowableArray<CImVector> pixels;
     g_theGxDevicePtr->DeviceReadPixels(rect, pixels);
@@ -120,7 +132,23 @@ void __fastcall UpdateAllPortraits() {
 void PortraitInitialize() {
     CStatus status;
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // The mask written into the alpha of rendered portraits, at the portrait resolution
+    static TSGrowableArray<CImVector> s_maskTexels;
+    TSFixedArray<uint8_t>* mask = GetAlphaMask(kPortraitSize);
+    s_maskTexels.SetCount(mask->m_count);
+
+    for (uint32_t i = 0; i < mask->m_count; i++) {
+        s_maskTexels.m_data[i].b = 0xFF;
+        s_maskTexels.m_data[i].g = 0xFF;
+        s_maskTexels.m_data[i].r = 0xFF;
+        s_maskTexels.m_data[i].a = mask->m_data[i];
+    }
+
+    s_portraitMaskTexture = TextureCreate(kPortraitSize, kPortraitSize, GxTex_Argb8888, GxTex_Argb8888, CGxTexFlags(GxTex_Linear, 0, 0, 0, 0, 0, 1), &s_maskTexels, TextureUpdate, "PortraitMask", 0);
+#else
     s_portraitMaskTexture = TextureCreate("Interface\\CharacterFrame\\TempPortraitAlphaMaskSmall.blp", CGxTexFlags(GxTex_Linear, 0, 0, 0, 0, 0, 1), &status, 0);
+#endif
 
     if (s_portraitMaskTexture) {
         s_portraitMaskGxTex = TextureGetGxTex(s_portraitMaskTexture, 1, nullptr);
@@ -133,7 +161,7 @@ void PortraitInitialize() {
     if (s_rtAlphaSupported && (g_theGxDevicePtr->DeviceApi() == GxApi_OpenGl || g_theGxDevicePtr->DeviceApi() == GxApi_GLL)) {
         CGxTexFlags flags(GxTex_Linear, 0, 0, 0, 0, 0, 1);
         flags.m_renderTarget = 1;
-        s_portraitDepthTexture = TextureCreate(GxTex_2d, 64, 64, 24, GxTex_D24X8, GxTex_D24X8, flags, nullptr, PortraitDepthTextureCallback, "PortraitDepth", 1);
+        s_portraitDepthTexture = TextureCreate(GxTex_2d, kPortraitSize, kPortraitSize, 24, GxTex_D24X8, GxTex_D24X8, flags, nullptr, PortraitDepthTextureCallback, "PortraitDepth", 1);
     }
 
     s_playerPortraitCache = nullptr;
@@ -332,6 +360,33 @@ static int32_t QueuePortraitUpdate(CGUnit_C* unit, uint32_t flags) {
 // VERIFY: 0ce6a9ac manual
 // OFFSET: 0x006176A0
 static TSFixedArray<uint8_t>* GetAlphaMask(uint32_t size) {
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // The game data has masks for 64 and 128 pixels only; other sizes get the same round mask, generated at full
+    // resolution with an antialiased edge one pixel wide
+    if (size != 64 && size != 128) {
+        static TSFixedArray<uint8_t> s_generatedMask;
+        TSFixedArray<uint8_t>* generated = &s_generatedMask;
+
+        if (generated->m_count != size * size) {
+            generated->SetCount(size * size);
+
+            float radius = static_cast<float>(size) * 0.5f - 1.0f;
+            float center = static_cast<float>(size - 1) * 0.5f;
+
+            for (uint32_t y = 0; y < size; y++) {
+                for (uint32_t x = 0; x < size; x++) {
+                    float dx = static_cast<float>(x) - center;
+                    float dy = static_cast<float>(y) - center;
+                    float alpha = (radius - sqrtf(dx * dx + dy * dy) + 0.5f) * 255.0f;
+                    generated->m_data[y * size + x] = static_cast<uint8_t>(std::clamp(rintf(alpha), 0.0f, 255.0f));
+                }
+            }
+        }
+
+        return generated;
+    }
+#endif
+
     static TSFixedArray<uint8_t> s_alphaMasks[2];
     TSFixedArray<uint8_t>* mask = &s_alphaMasks[size == 64];
 
@@ -624,9 +679,9 @@ void RenderPortraitTexture(CSimpleTexture* texture, CGUnit_C* unit) {
     float width = window.maxX - window.minX;
     float height = window.maxY - window.minY;
     float ddcHeight = NDCToDDCHeight(1.0f);
-    float top = ddcHeight - NDCToDDCHeight(1.0f) / height * 64.0f;
+    float top = ddcHeight - NDCToDDCHeight(1.0f) / height * static_cast<float>(kPortraitSize);
     ddcHeight = NDCToDDCHeight(1.0f);
-    float right = NDCToDDCWidth(1.0f) / width * 64.0f;
+    float right = NDCToDDCWidth(1.0f) / width * static_cast<float>(kPortraitSize);
 
     CRect viewport;
     viewport.minY = top;
@@ -680,7 +735,7 @@ void RenderPortraitTexture(CSimpleTexture* texture, CGUnit_C* unit) {
                 flags.m_renderTarget = 1;
             }
 
-            cache->m_texture = TextureCreate(64, 64, GxTex_Argb8888, GxTex_Argb8888, flags, s_rtAlphaSupported ? nullptr : &cache->m_texels, TextureUpdate, "Portrait1", 0);
+            cache->m_texture = TextureCreate(kPortraitSize, kPortraitSize, GxTex_Argb8888, GxTex_Argb8888, flags, s_rtAlphaSupported ? nullptr : &cache->m_texels, TextureUpdate, "Portrait1", 0);
         }
     }
 
@@ -783,10 +838,10 @@ void RenderPortraitTexture(CSimpleTexture* texture, CGUnit_C* unit) {
         CiRect rect;
         rect.minY = 0;
         rect.minX = 0;
-        rect.maxY = 64;
-        rect.maxX = 64;
+        rect.maxY = kPortraitSize;
+        rect.maxX = kPortraitSize;
         GxReadPixels(rect, cache->m_texels);
-        TSFixedArray<uint8_t>* mask = GetAlphaMask(64);
+        TSFixedArray<uint8_t>* mask = GetAlphaMask(kPortraitSize);
 
         for (uint32_t i = 0; i < cache->m_texels.Count(); i++) {
             cache->m_texels.m_data[i].a = mask->m_data[i];

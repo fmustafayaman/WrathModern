@@ -2719,6 +2719,14 @@ void DayNight::SetColors() {
     DayNight::g_planets.m_moon.m_color = sunColor;
     DayNight::g_moonGlare.m_color = sunColor;
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // The second (blue) moon keeps its own texture colours; the client never gives it one, which leaves it black
+    DayNight::g_planets.m_moon2.m_color.b = 0xFF;
+    DayNight::g_planets.m_moon2.m_color.g = 0xFF;
+    DayNight::g_planets.m_moon2.m_color.r = 0xFF;
+    DayNight::g_planets.m_moon2.m_color.a = 0xFF;
+#endif
+
     if (info.m_flashBlend != 0.0f) {
         CImVector flash = info.m_flashColor;
 

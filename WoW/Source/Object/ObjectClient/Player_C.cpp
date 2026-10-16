@@ -4833,6 +4833,11 @@ int32_t GetModalNextSpell() {
 // VERIFY: 3f2316b1 manual
 // OFFSET: 0x006DE840
 int32_t CGPlayer_C::IsXRayVisionActive() {
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // With the X-ray aura the client draws other characters without their equipment, the "naked" bug
+    return 0;
+#endif
+
     CGUnit_C* player = static_cast<CGUnit_C*>(ClntObjMgrObjectPtr(ClntObjMgrGetActivePlayer(), TYPEMASK_PLAYER, __FILE__, __LINE__));
 
     if (!player) {
@@ -10918,10 +10923,18 @@ void AreaTriggersInitialize(uint32_t mapId) {
     s_areaTriggerTimer = ClientSetTimer(100, AreaTriggerCheck, nullptr);
 }
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+// Area triggers (instance portals, quest areas) are checked every 50 ms instead of 100, so fast movement no longer
+// skips small ones
+static const uint32_t kAreaTriggerInterval = 50;
+#else
+static const uint32_t kAreaTriggerInterval = 100;
+#endif
+
 // VERIFY: f1281917 manual
 // OFFSET: 0x006DBE30
 int32_t AreaTriggerCheck(const void* data, void* param) {
-    s_areaTriggerTimer = ClientSetTimer(100, AreaTriggerCheck, nullptr);
+    s_areaTriggerTimer = ClientSetTimer(kAreaTriggerInterval, AreaTriggerCheck, nullptr);
     CGPlayer_C* player = static_cast<CGPlayer_C*>(ClntObjMgrObjectPtr(ClntObjMgrGetActivePlayer(), TYPEMASK_PLAYER, __FILE__, __LINE__));
 
     if (!player || player->m_unit->m_unitFieldHealth <= 0) {

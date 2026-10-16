@@ -456,6 +456,9 @@ class CGUnit_C : public CGObject_C, public CGUnit {
     void PostReenable() override;
     void CleanUpVehicleBoneAnimsBeforeObjectModelChange() override;
     void OnReceiveMirrorImageDataFromServer(CDataStore* msg);
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    void ReleaseMirrorImageComponent();
+#endif
     void RenderTargetSelection() const override;
     void RenderPetTargetSelection() const override;
     void OnSpecialMountAnim() override;

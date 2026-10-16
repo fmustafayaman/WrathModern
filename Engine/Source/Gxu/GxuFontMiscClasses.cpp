@@ -295,6 +295,25 @@ void BATCHEDRENDERFONTDESC::RenderBatch() {
         string->CheckGeometry();
     }
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // Building one string can evict a texture page that a string built before it in this batch uses; those are
+    // rebuilt before anything is drawn, so no string draws glyphs from a page that now holds other characters
+    for (uint32_t pass = 0; pass < 3; pass++) {
+        bool evicted = false;
+
+        for (CGxString* string = this->m_strings.Head(); string; string = this->m_strings.Next(string)) {
+            if (string->m_textureEvicted) {
+                string->CheckGeometry();
+                evicted = true;
+            }
+        }
+
+        if (!evicted) {
+            break;
+        }
+    }
+#endif
+
     for (uint32_t i = 0; i < 8; i++) {
         this->m_face->m_textureCache[i].UpdateDirty();
     }
@@ -417,10 +436,40 @@ void TEXTURECACHEROW::EvictGlyph(CHARCODEDESC* desc) {
     }
 }
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+// The widest run of free pixels in the 256 pixel row, from the glyphs it holds
+uint32_t TEXTURECACHEROW::WidestFreeSlot() {
+    CHARCODEDESC* head = this->m_glyphlist.Head();
+
+    if (!head) {
+        return 256;
+    }
+
+    uint32_t widest = head->GapToPrevious();
+
+    for (CHARCODEDESC* glyph = head; glyph; glyph = this->m_glyphlist.Next(glyph)) {
+        CHARCODEDESC* next = this->m_glyphlist.Next(glyph);
+        uint32_t gap = next ? next->m_glyphStartPixel - glyph->m_glyphEndPixel - 1 : 255 - glyph->m_glyphEndPixel;
+
+        if (gap > widest) {
+            widest = gap;
+        }
+    }
+
+    return widest;
+}
+#endif
+
 // VERIFY: 2ccd62da manual
 // OFFSET: 0x006C5120
 CHARCODEDESC* TEXTURECACHEROW::CreateNewDesc(GLYPHBITMAPDATA* data, uint32_t rowNumber, uint32_t cellHeight) {
     uint32_t width = data->m_glyphCellWidth;
+
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // The original keeps this up to date only partly (an insertion after the first glyph resets it to the gap in
+    // front of the row), so rows were taken for full while they had room, or searched with a stale width
+    this->m_widestFreeSlot = this->WidestFreeSlot();
+#endif
 
     if (this->m_widestFreeSlot < width) {
         return nullptr;

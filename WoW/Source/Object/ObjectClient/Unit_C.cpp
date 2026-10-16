@@ -144,6 +144,13 @@
 #include "WoW/Source/WorldClient/Map.h"
 #include "WoW/Source/WowSvcs/WowSvcsClient/ClientServices.h"
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+// The loot window stays open while the character moves; the server still ends looting out of range
+static const bool kMovementClosesLoot = false;
+#else
+static const bool kMovementClosesLoot = true;
+#endif
+
 // STATIC: 0x00ADAC04
 static INVENTORY_SLOTS s_virtualItemInvSlots[2] = { INVSLOT_MAINHAND, INVSLOT_OFFHAND };
 
@@ -1593,9 +1600,16 @@ void CGUnit_C::PreAnimate(CGWorldFrame* frame) {
         }
 
         // WoWFix335 npc-turn-attack-anim: original calls UpdateBaseAnimation(0, -1) when CanPlayTurnAnim() is nonzero
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+        // Only NPCs came out of it with their attack animation; players keep their turning steps
+        if (sequence != wanted && this->CanPlayTurnAnim() && (this->m_obj->m_type & TYPEMASK_PLAYER)) {
+            this->UpdateBaseAnimation(0, -1);
+        }
+#else
         if (sequence != wanted) {
             this->CanPlayTurnAnim();
         }
+#endif
     }
 
     CM2Model* worldModel = this->m_worldModel;
@@ -10681,7 +10695,7 @@ void CGUnit_C::OnSetPitchLocal(uint32_t eventTime, float pitch) {
     if (this->m_obj->m_guid == CGUnit_C::s_activeMover) {
         CGPlayer_C* player = static_cast<CGPlayer_C*>(ClntObjMgrObjectPtr(ClntObjMgrGetActivePlayer(), TYPEMASK_PLAYER, __FILE__, __LINE__));
 
-        if (player && player->IsLooting()) {
+        if (player && player->IsLooting() && kMovementClosesLoot) {
             CGGameUI::CloseLoot(true, true, false);
         }
     }
@@ -10791,7 +10805,7 @@ void CGUnit_C::OnMoveStartLocal(uint32_t eventTime, int32_t forward) {
     if (this->m_obj->m_guid == CGUnit_C::s_activeMover) {
         CGPlayer_C* player = static_cast<CGPlayer_C*>(ClntObjMgrObjectPtr(ClntObjMgrGetActivePlayer(), TYPEMASK_PLAYER, __FILE__, __LINE__));
 
-        if (player && player->IsLooting()) {
+        if (player && player->IsLooting() && kMovementClosesLoot) {
             CGGameUI::CloseLoot(true, true, false);
         }
     }
@@ -10809,7 +10823,7 @@ void CGUnit_C::OnStrafeStartLocal(uint32_t eventTime, int32_t left) {
     if (this->m_obj->m_guid == CGUnit_C::s_activeMover) {
         CGPlayer_C* player = static_cast<CGPlayer_C*>(ClntObjMgrObjectPtr(ClntObjMgrGetActivePlayer(), TYPEMASK_PLAYER, __FILE__, __LINE__));
 
-        if (player && player->IsLooting()) {
+        if (player && player->IsLooting() && kMovementClosesLoot) {
             CGGameUI::CloseLoot(true, true, false);
         }
     }
@@ -10827,7 +10841,7 @@ void CGUnit_C::OnAscendDescendStartLocal(uint32_t eventTime, int32_t ascend) {
     if (this->m_obj->m_guid == CGUnit_C::s_activeMover) {
         CGPlayer_C* player = static_cast<CGPlayer_C*>(ClntObjMgrObjectPtr(ClntObjMgrGetActivePlayer(), TYPEMASK_PLAYER, __FILE__, __LINE__));
 
-        if (player && player->IsLooting()) {
+        if (player && player->IsLooting() && kMovementClosesLoot) {
             CGGameUI::CloseLoot(true, true, false);
         }
     }
@@ -10851,7 +10865,7 @@ void CGUnit_C::OnTurnStartLocal(uint32_t eventTime, int32_t left) {
     if (this->m_obj->m_guid == CGUnit_C::s_activeMover) {
         CGPlayer_C* player = static_cast<CGPlayer_C*>(ClntObjMgrObjectPtr(ClntObjMgrGetActivePlayer(), TYPEMASK_PLAYER, __FILE__, __LINE__));
 
-        if (player && player->IsLooting()) {
+        if (player && player->IsLooting() && kMovementClosesLoot) {
             CGGameUI::CloseLoot(true, true, false);
         }
     }
@@ -10869,7 +10883,7 @@ void CGUnit_C::OnPitchStartLocal(uint32_t eventTime, int32_t up) {
     if (this->m_obj->m_guid == CGUnit_C::s_activeMover) {
         CGPlayer_C* player = static_cast<CGPlayer_C*>(ClntObjMgrObjectPtr(ClntObjMgrGetActivePlayer(), TYPEMASK_PLAYER, __FILE__, __LINE__));
 
-        if (player && player->IsLooting()) {
+        if (player && player->IsLooting() && kMovementClosesLoot) {
             CGGameUI::CloseLoot(true, true, false);
         }
     }
@@ -10887,7 +10901,7 @@ void CGUnit_C::OnPitchStopLocal(uint32_t eventTime) {
     if (this->m_obj->m_guid == CGUnit_C::s_activeMover) {
         CGPlayer_C* player = static_cast<CGPlayer_C*>(ClntObjMgrObjectPtr(ClntObjMgrGetActivePlayer(), TYPEMASK_PLAYER, __FILE__, __LINE__));
 
-        if (player && player->IsLooting()) {
+        if (player && player->IsLooting() && kMovementClosesLoot) {
             CGGameUI::CloseLoot(true, true, false);
         }
     }
@@ -10901,7 +10915,7 @@ void CGUnit_C::TryJumpOrAscend(uint32_t eventTime) {
     if (this->m_obj->m_guid == CGUnit_C::s_activeMover) {
         CGPlayer_C* player = static_cast<CGPlayer_C*>(ClntObjMgrObjectPtr(ClntObjMgrGetActivePlayer(), TYPEMASK_PLAYER, __FILE__, __LINE__));
 
-        if (player && player->IsLooting()) {
+        if (player && player->IsLooting() && kMovementClosesLoot) {
             CGGameUI::CloseLoot(true, true, false);
         }
     }
@@ -13274,7 +13288,7 @@ void CGUnit_C::OnMovementInitiated(bool clearTracking, bool keepLoot) {
     if (!keepLoot && this->m_obj->m_guid == CGUnit_C::s_activeMover) {
         CGUnit_C* player = static_cast<CGUnit_C*>(ClntObjMgrObjectPtr(ClntObjMgrGetActivePlayer(), TYPEMASK_PLAYER, __FILE__, __LINE__));
 
-        if (player && player->IsLooting()) {
+        if (player && player->IsLooting() && kMovementClosesLoot) {
             CGGameUI::CloseLoot(true, true, false);
         }
     }
@@ -19547,7 +19561,13 @@ void CGUnit_C::ChatBubbleShow(int32_t type, const char* text) {
 
             C3Vector delta = this->GetPosition() - player->GetPosition();
 
-            if (delta.y * delta.y + delta.z * delta.z + delta.x * delta.x <= 625.0f) {
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+            float rangeSquared = ChatBubbleRangeSquared();
+#else
+            float rangeSquared = 625.0f;
+#endif
+
+            if (delta.y * delta.y + delta.z * delta.z + delta.x * delta.x <= rangeSquared) {
                 CImVector color = CGChat::GetChatColor(type);
                 this->ChatBubbleRemove();
                 this->m_chatBubble = CGChatBubbleFrame::GetNewChatBubble(CGWorldFrame::s_currentWorldFrame);
@@ -23644,6 +23664,18 @@ void CGUnit_C::FillPartyMemberPetState(CGPartyPetState* state) {
     memset(&state->m_auras[count], 0, sizeof(state->m_auras[0]) * (64 - count));
 }
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+// The appearance of a mirror image can arrive more than once; each time the handler made a new component and leaked
+// the previous one, whose texture stayed with the device until shutdown touched it after it was freed
+void CGUnit_C::ReleaseMirrorImageComponent() {
+    if (this->m_characterComponent && this->m_characterComponent != CCharacterComponent::m_activePlayerComponent) {
+        CCharacterComponent::FreeComponent(this->m_characterComponent);
+    }
+
+    this->m_characterComponent = nullptr;
+}
+#endif
+
 // VERIFY: 80a37933 manual
 // OFFSET: 0x00730290
 void CGUnit_C::OnReceiveMirrorImageDataFromServer(CDataStore* msg) {
@@ -23685,6 +23717,9 @@ void CGUnit_C::OnReceiveMirrorImageDataFromServer(CDataStore* msg) {
         uint32_t guildId;
         msg->Get(guildId);
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+        this->ReleaseMirrorImageComponent();
+#endif
         this->m_characterComponent = CCharacterComponent::AllocComponent();
         data.m_model = this->m_worldModel;
         data.m_flags ^= (data.m_flags ^ (static_cast<uint32_t>(this->m_obj->m_guid == ClntObjMgrGetActivePlayer()) << 1)) & 0x2;
@@ -23770,6 +23805,9 @@ void CGUnit_C::OnReceiveMirrorImageDataFromServer(CDataStore* msg) {
             }
         }
     } else if (this->m_displayInfoExtra) {
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+        this->ReleaseMirrorImageComponent();
+#endif
         this->m_characterComponent = CCharacterComponent::AllocComponent();
         const char* bakeName = this->GetDisplayBakeName();
 

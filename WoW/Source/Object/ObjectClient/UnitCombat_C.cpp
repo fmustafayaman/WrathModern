@@ -539,11 +539,15 @@ void CGUnit_C::ClearAttackRound() {
         return;
     }
 
+#if !defined(WRATHMODERN_CLIENT_PATCHES)
+    // A round whose swing never played is stale by now (an evading NPC, a new round); playing it here showed a hit
+    // that did not happen
     CGUnit_C* target = static_cast<CGUnit_C*>(ClntObjMgrObjectPtr(this->m_lastAttackRound.m_target, TYPEMASK_UNIT, __FILE__, __LINE__));
 
     if (target) {
         target->PlayVictimWorldFeedback(this->m_lastAttackRound);
     }
+#endif
 
     memset(&this->m_lastAttackRound, 0, sizeof(ATTACKROUNDINFO));
 }

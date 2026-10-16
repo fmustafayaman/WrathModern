@@ -220,10 +220,16 @@ bool CWorldParam::NearClipCallback(CVar* var, const char* oldValue, const char* 
 bool CWorldParam::HorizonFarClipScaleCallback(CVar* var, const char* oldValue, const char* value, void* arg) {
     float scale = SStrToFloat(value);
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    static const float kMaxScale = 12.0f;
+#else
+    static const float kMaxScale = 6.0f;
+#endif
+
     if (scale < 3.0f) {
         scale = 3.0f;
-    } else if (scale > 6.0f) {
-        scale = 6.0f;
+    } else if (scale > kMaxScale) {
+        scale = kMaxScale;
     }
 
     World::SetHorizonFarClipScale(scale);
@@ -377,9 +383,15 @@ bool CWorldParam::GroundEffectDensityCallback(CVar* var, const char* oldValue, c
 bool CWorldParam::GroundEffectDistCallback(CVar* var, const char* oldValue, const char* value, void* arg) {
     float dist = SStrToFloat(value);
 
-    if (dist < 0.0f || dist > 140.0f) {
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    static const float kMaxDist = 9500.0f / 3.0f;
+#else
+    static const float kMaxDist = 140.0f;
+#endif
+
+    if (dist < 0.0f || dist > kMaxDist) {
         char buffer[256];
-        sprintf(buffer, "Ground effect distance must be in range %0f to %0f.", 0.0, 140.0);
+        sprintf(buffer, "Ground effect distance must be in range %0f to %0f.", 0.0, static_cast<double>(kMaxDist));
         ConsoleWriteA(buffer, DEFAULT_COLOR);
 
         return false;
@@ -437,9 +449,12 @@ bool CWorldParam::EnvironmentDetailCallback(CVar* var, const char* oldValue, con
 
     if (detail < 0.5f) {
         detail = 0.5f;
-    } else if (detail > 1.5f) {
+    }
+#if !defined(WRATHMODERN_CLIENT_PATCHES)
+    else if (detail > 1.5f) {
         detail = 1.5f;
     }
+#endif
 
     CWorldScene::ScaleFadeDist(detail);
 

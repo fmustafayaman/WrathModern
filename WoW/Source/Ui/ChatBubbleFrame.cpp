@@ -176,7 +176,13 @@ bool CGChatBubbleFrame::Update(CGUnit_C* player, CGUnit_C* unit) {
     C3Vector position = unit->IsInVehicle() ? unit->m_vehiclePassenger->ComputeInterpolatedUnitPosition() : unit->GetPosition();
     C3Vector delta = player->GetPosition() - position;
 
-    if (World::QueryObjectVisible(entity) && delta.y * delta.y + delta.x * delta.x + delta.z * delta.z < 625.0f) {
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    float rangeSquared = ChatBubbleRangeSquared();
+#else
+    float rangeSquared = 625.0f;
+#endif
+
+    if (World::QueryObjectVisible(entity) && delta.y * delta.y + delta.x * delta.x + delta.z * delta.z < rangeSquared) {
         if (this->GetEffectiveAlpha() != 255) {
             this->FadeIn();
         }

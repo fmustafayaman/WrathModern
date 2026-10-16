@@ -1,4 +1,5 @@
 #include "GameUI.h"
+#include <cfloat>
 #include "Engine/Source/ConsoleBase/ConsoleVar.h"
 #include "Engine/Source/ConsoleBase/Types.h"
 #include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
@@ -125,6 +126,22 @@ CVar* g_chatBubblesCVar;
 
 // STATIC: 0x00BD0968
 CVar* g_chatBubblesPartyCVar;
+
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+// How far away chat bubbles show, in yards; the original fixes it at 25
+CVar* g_chatBubbleRangeCVar;
+
+// The square of the bubble range, which the distance checks compare against; 0 means unlimited
+float ChatBubbleRangeSquared() {
+    float range = g_chatBubbleRangeCVar ? g_chatBubbleRangeCVar->m_floatValue : 25.0f;
+
+    if (range <= 0.0f) {
+        return FLT_MAX;
+    }
+
+    return range * range;
+}
+#endif
 
 // STATIC: 0x00BD096C
 CVar* g_removeChatDelayCVar;
@@ -500,14 +517,23 @@ void CGGameUI::RegisterGameCVars() {
     CVar::Register("trackedQuests", "Internal cvar for saving tracked quests in order", 0x120, "", nullptr, CATEGORY_GAME, false, nullptr, false);
     CVar::Register("trackedAchievements", "Internal cvar for saving tracked achievements in order", 0x120, "", nullptr, CATEGORY_GAME, false, nullptr, false);
     CVar::Register("flaggedTutorials", "Internal cvar for saving compleated tutorials in order", 0x110, "", nullptr, CATEGORY_GAME, false, nullptr, false);
-    CVar::Register("advancedWorldMap", "Enables advanced World Map features", 0x20, "0", nullptr, CATEGORY_GAME, false, nullptr, false);
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // The advanced world map and the sorted objectives tracker are on unless the player turns them off
+    static const char* kInterfaceDefault = "1";
+#else
+    static const char* kInterfaceDefault = "0";
+#endif
+    CVar::Register("advancedWorldMap", "Enables advanced World Map features", 0x20, kInterfaceDefault, nullptr, CATEGORY_GAME, false, nullptr, false);
     CVar::Register("worldMapOpacity", "Opacity for the world map when sized down", 0x20, "0", nullptr, CATEGORY_GAME, false, nullptr, false);
     CVar::Register("watchFrameWidth", "Controls objectives frame width", 0x0, "0", nullptr, CATEGORY_GAME, false, nullptr, false);
-    g_trackerSortingCVar = CVar::Register("trackerSorting", "sorting option for the objectives tracker", 0x20, "0", nullptr, CATEGORY_GAME, false, nullptr, false);
+    g_trackerSortingCVar = CVar::Register("trackerSorting", "sorting option for the objectives tracker", 0x20, kInterfaceDefault, nullptr, CATEGORY_GAME, false, nullptr, false);
     CVar::Register("trackerFilter", "filter option for the objectives tracker", 0x20, "7", nullptr, CATEGORY_GAME, false, nullptr, false);
     g_profanityFilterCVar = CVar::Register("profanityFilter", "Whether to enable mature language filtering", 0x10, "1", nullptr, CATEGORY_GAME, false, nullptr, false);
     g_spamFilterCVar = CVar::Register("spamFilter", "Whether to enable spam filtering", 0x10, "1", nullptr, CATEGORY_GAME, false, nullptr, false);
     g_chatBubblesCVar = CVar::Register("chatBubbles", "Whether to show in-game chat bubbles", 0x10, "1", nullptr, CATEGORY_GAME, false, nullptr, false);
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    g_chatBubbleRangeCVar = CVar::Register("chatBubbleRange", "Distance in yards within which chat bubbles show (0 for unlimited)", 0x10, "50", nullptr, CATEGORY_GAME, false, nullptr, false);
+#endif
     g_chatBubblesPartyCVar = CVar::Register("chatBubblesParty", "Whether to show in-game chat bubbles for party chat", 0x10, "1", nullptr, CATEGORY_GAME, false, nullptr, false);
     g_removeChatDelayCVar = CVar::Register("removeChatDelay", "Remove Chat Hover Delay", 0x10, "0", nullptr, CATEGORY_GAME, false, nullptr, false);
     g_guildShowOfflineCVar = CVar::Register("guildShowOffline", "Show offline guild members in the guild UI", 0x10, "1", GuildShowOfflineCallback, CATEGORY_GAME, false, nullptr, false);

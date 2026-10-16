@@ -182,10 +182,14 @@ static int32_t Script_SendChatMessage(lua_State* L) {
         }
     }
 
+    // The client patches let dead characters send every kind of message, server commands typed into /say among them;
+    // the server still decides what it accepts
+#if !defined(WRATHMODERN_CLIENT_PATCHES)
     if (player->IsDeadOrGhost() && type != CHAT_MSG_WHISPER && type != CHAT_MSG_PARTY && type != CHAT_MSG_PARTY_LEADER && type != CHAT_MSG_RAID && type != CHAT_MSG_RAID_LEADER && type != CHAT_MSG_RAID_WARNING && type != CHAT_MSG_GUILD && type != CHAT_MSG_OFFICER && type != CHAT_MSG_CHANNEL && type != CHAT_MSG_DND && type != CHAT_MSG_BATTLEGROUND && type != CHAT_MSG_BATTLEGROUND_LEADER) {
         CGGameUI::DisplayError(ERR_CHAT_WHILE_DEAD);
         return 0;
     }
+#endif
 
     CGTutorial::FlagTutorial(22);
 

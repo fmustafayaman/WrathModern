@@ -556,6 +556,10 @@ extern CVar* g_minimapPortalMaxCVar;
 extern CVar* g_enablePVPNotifyAFKCVar;
 extern CVar* g_chatBubblesCVar;
 extern CVar* g_chatBubblesPartyCVar;
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+extern CVar* g_chatBubbleRangeCVar;
+float ChatBubbleRangeSquared();
+#endif
 
 void UpdateInstanceOwnershipPacket(int32_t owns);
 

@@ -2684,7 +2684,10 @@ void CGGameUI::ClearTarget(WOWGUID guid, int32_t a2) {
                 CGUnit_C* unit = static_cast<CGUnit_C*>(object);
                 PlayerNameTriggerColorUpdate(unit->m_nameDesc);
                 unit->UnregisterScript(0x1000);
+#if !defined(WRATHMODERN_CLIENT_PATCHES)
+                // With the client patches the nameplate keeps showing the cast of a unit that is no longer targeted
                 unit->StopNamePlateSpellbar();
+#endif
             }
         }
     }

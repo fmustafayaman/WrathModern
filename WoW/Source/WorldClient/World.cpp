@@ -1317,6 +1317,10 @@ void World::SetDetailDoodadDist(float dist) {
 // VERIFY: 5f5281b3 auto
 // OFFSET: 0x00780770
 float World::ValidateFarClip(float farClip, int32_t mapID) {
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // The view distance is limited only by the farclip CVar, on every map
+    float maxFarClip = 10000.0f;
+#else
     float maxFarClip = 4750.0f / 3.0f;
 
     if (mapID < 530 || mapID == 575 || mapID == 543) {
@@ -1326,6 +1330,7 @@ float World::ValidateFarClip(float farClip, int32_t mapID) {
     } else if (OsGetPhysicalMemory() <= 0x40000000) {
         maxFarClip = 2375.0f / 3.0f;
     }
+#endif
 
     if (farClip < 550.0f / 3.0f) {
         return 550.0f / 3.0f;

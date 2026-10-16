@@ -86,6 +86,13 @@ if (WOWDECOMP_DISABLE_SIGNATURE_CHECKS)
     add_compile_definitions(DISABLE_SIGNATURE_CHECKS=1)
 endif ()
 
+# Client-side improvements in the style of the common 3.3.5a executable patches: raised graphics limits, client bug
+# fixes, interface conveniences and privacy defaults. Nothing that changes what the server sees or checks.
+option(WRATHMODERN_CLIENT_PATCHES "Build with the WrathModern client improvements" ON)
+if (WRATHMODERN_CLIENT_PATCHES)
+    add_compile_definitions(WRATHMODERN_CLIENT_PATCHES=1)
+endif ()
+
 # macOS platform support, linked into every module so Mac/ implementations can use it.
 if (WOWDECOMP_PLATFORM_MAC)
     add_subdirectory(Platform/Mac)

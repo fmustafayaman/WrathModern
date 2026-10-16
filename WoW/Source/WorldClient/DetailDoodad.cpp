@@ -560,14 +560,21 @@ void CDetailDoodad::UpdatePools() {
     CDetailDoodad::s_vtxBufItems = vertexItems;
     CDetailDoodad::s_idxBufItems = indexItems;
 
-    if (vertexItems > 4096) {
-        vertexItems = 4096;
-        CDetailDoodad::s_vtxBufItems = 4096;
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // Room for the full groundEffectDensity range (256 * 64); batches stay within 16-bit indices
+    static const uint32_t kMaxBufItems = 16384;
+#else
+    static const uint32_t kMaxBufItems = 4096;
+#endif
+
+    if (vertexItems > kMaxBufItems) {
+        vertexItems = kMaxBufItems;
+        CDetailDoodad::s_vtxBufItems = kMaxBufItems;
     }
 
-    if (indexItems > 4096) {
-        indexItems = 4096;
-        CDetailDoodad::s_idxBufItems = 4096;
+    if (indexItems > kMaxBufItems) {
+        indexItems = kMaxBufItems;
+        CDetailDoodad::s_idxBufItems = kMaxBufItems;
     }
 
     s_vertexBufferSize = sizeof(CGxVertexPNCT) * vertexItems;

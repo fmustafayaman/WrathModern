@@ -369,6 +369,12 @@ void TEXTURECACHE::TextureCallback(EGxTexCommand command, uint32_t width, uint32
 
     TEXTURECACHE* cache = static_cast<TEXTURECACHE*>(userArg);
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // The upload buffer is shared by all pages; without clearing it, pixels of glyphs pasted for another page show
+    // through the gaps of this one
+    memset(s_textureData, 0, sizeof(s_textureData));
+#endif
+
     for (uint32_t row = cache->m_textureRows.m_count; row > 0; row--) {
         TEXTURECACHEROW& cacheRow = cache->m_textureRows.m_data[row - 1];
 

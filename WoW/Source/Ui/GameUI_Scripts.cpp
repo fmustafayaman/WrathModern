@@ -1804,6 +1804,30 @@ static int32_t Script_GetCVarMin(lua_State* L) {
     return 1;
 }
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+// The option sliders take their maximum from GetCVarMax when it has one; these follow the raised CVar limits
+static int32_t WrathModernCVarMax(const char* name, double& max) {
+    static const struct {
+        const char* name;
+        double max;
+    } s_limits[] = {
+        { "farclip", 2477.0 },
+        { "environmentDetail", 2.5 },
+        { "groundEffectDist", 250.0 },
+        { "groundEffectDensity", 256.0 },
+    };
+
+    for (const auto& limit : s_limits) {
+        if (!SStrCmpI(name, limit.name, STORM_MAX_STR)) {
+            max = limit.max;
+            return 1;
+        }
+    }
+
+    return 0;
+}
+#endif
+
 // VERIFY: 2b500bc1 manual
 // OFFSET: 0x00514E30
 static int32_t Script_GetCVarMax(lua_State* L) {
@@ -1834,9 +1858,17 @@ static int32_t Script_GetCVarMax(lua_State* L) {
         } while (mode <= maxMode);
 
         lua_pushnumber(L, mode - 1);
-    } else if (!SStrCmpI(name, "farclip", STORM_MAX_STR)) {
+    }
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    else if (double max; WrathModernCVarMax(name, max)) {
+        lua_pushnumber(L, max);
+    }
+#else
+    else if (!SStrCmpI(name, "farclip", STORM_MAX_STR)) {
         lua_pushnumber(L, 1277.0);
-    } else {
+    }
+#endif
+    else {
         lua_pushnil(L);
     }
 

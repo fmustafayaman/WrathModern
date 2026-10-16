@@ -436,7 +436,15 @@ bool CMapObj::Read(char* fileName) {
 
     SFileImpl* file = nullptr;
 
-    if (CMap::SafeOpen(fileName, &file)) {
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // A missing building is drawn as the placeholder model that ships with the game instead of ending the session
+    // with a fatal error
+    static const int32_t kFatal = 0;
+#else
+    static const int32_t kFatal = 1;
+#endif
+
+    if (CMap::SafeOpen(fileName, &file, kFatal)) {
         SStrCopy(this->m_wmoName, fileName, STORM_MAX_STR);
     } else {
         CMap::SafeOpen("world\\wmo\\Dungeon\\test\\missingwmo.wmo", &file);

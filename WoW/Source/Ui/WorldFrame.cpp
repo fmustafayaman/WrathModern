@@ -918,7 +918,12 @@ void CGWorldFrame::SetPlayerFadeCameraValue(uint8_t value) {
         }
     }
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // Characters stay opaque when the camera zooms in on them
+    unit->SetMaxAlpha(1.0f);
+#else
     unit->SetMaxAlpha(value * (1.0f / 255.0f));
+#endif
 }
 
 // VERIFY: 4da3f8e7 manual

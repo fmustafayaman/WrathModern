@@ -132,6 +132,12 @@ static NSURLSession* Session() {
 }
 
 bool OsUrlDownload::DownloadString(const char* url, OsURLDownloadCallback callback, void* param, int32_t timeout) {
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // The client makes no web requests (Blizzard news, help articles, terms of use, server alerts); every caller
+    // treats the refusal as a download that is not available
+    return false;
+#endif
+
     @autoreleasepool {
         NSURL* target = url ? [NSURL URLWithString:[NSString stringWithUTF8String:url]] : nil;
 

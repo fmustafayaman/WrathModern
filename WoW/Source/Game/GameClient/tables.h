@@ -37,6 +37,16 @@ ClientGameTable<T>::ClientGameTable(const char* name, WowClientDB<T>* db) : Clie
 // OFFSET: [0x007F69B0, 0x007F69E0]
 template <class T>
 float ClientGameTable<T>::EvaluateTable(uint32_t column, uint32_t row) {
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // The tables hold one entry per level up to 100; higher levels (custom servers) read the last one instead of
+    // running into the next column or past the table
+    uint32_t numRows = this->m_gameTable->m_numRows;
+
+    if (numRows && column >= numRows) {
+        column = numRows - 1;
+    }
+#endif
+
     return this->m_db->GetRecord(column + row * this->m_gameTable->m_numRows)->m_data;
 }
 

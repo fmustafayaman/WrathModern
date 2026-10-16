@@ -1169,6 +1169,22 @@ int32_t CGlueMgr::Idle(const void* data, void* param) {
             case 6: {
                 const char* fileName = ClientServices::LoginConnection()->m_fileName;
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+                // The login server can push a client patch or a hardware survey, which runs downloaded code. Both are
+                // refused: a survey transfer is declined, and a server that insists on a patch is logged off from
+                if (!ClientServices::LoginConnection()->GetLoginServerType()) {
+                    ClientServices::FileAccept(false, 0);
+                }
+
+                if (!SStrCmpI(fileName, "Patch", STORM_MAX_STR)) {
+                    ClientServices::LoginConnection()->Logoff();
+                    CGlueMgr::m_idleState = IDLE_NONE;
+                    CGlueMgr::m_showedDisconnect = 0;
+                }
+
+                return 1;
+#endif
+
                 if (!SStrCmpI(fileName, "Patch", STORM_MAX_STR)) {
                     CGlueMgr::PatchDownloadStart();
                     return 1;

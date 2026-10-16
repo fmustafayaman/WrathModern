@@ -262,7 +262,7 @@ class CMap {
     static void LoadTex();
     static void LoadWdt();
     static CTexture* LoadTexture(const char* fileName);
-    static int32_t SafeOpen(const char* fileName, SFileImpl** file);
+    static int32_t SafeOpen(const char* fileName, SFileImpl** file, int32_t fatal = 1);
     static int32_t SafeRead(const char* fileName, SFileImpl* file, void* buffer, uint32_t size);
     static CMapArea* AllocArea();
     static CMapArea* GetLoadedArea(int32_t areaX, int32_t areaY);
