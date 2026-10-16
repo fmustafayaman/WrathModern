@@ -936,6 +936,23 @@ static int32_t Script_IsConnectedToServer(lua_State* L) {
 // VERIFY: 1e6a625a manual
 // OFFSET: 0x004DE2E0
 static int32_t Script_RequestRealmSplitInfo(lua_State* L) {
+    // Diagnostics: the Lua stack of the first few calls goes to Logs/realmsplit.log
+    static int32_t s_logged = 0;
+
+    if (s_logged < 4) {
+        s_logged++;
+        lua_getfield(L, LUA_GLOBALSINDEX, "debugstack");
+
+        if (lua_pcall(L, 0, 1, 0) == 0) {
+            if (FILE* log = fopen("Logs/realmsplit.log", "a")) {
+                fprintf(log, "---- call %d\n%s\n", s_logged, lua_tolstring(L, -1, nullptr));
+                fclose(log);
+            }
+        }
+
+        lua_settop(L, 0);
+    }
+
     WDataStore msg;
     msg.Put(static_cast<uint32_t>(CMSG_REALM_SPLIT));
     msg.Put(static_cast<uint32_t>(0xFFFFFFFF));

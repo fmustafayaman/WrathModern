@@ -19,7 +19,7 @@ Son güncelleme: 2026-10-17.
 - **Grimfall istemcisi:** `/Volumes/Yaman SSD/GimfallWow/Wotlk`
 - **Grimfall başlatıcısı:** `/Volumes/Yaman SSD/Grimfall Launcher` (Electron). Wow.exe'yi argümansız çalıştırıyor, realmlist'e dokunmuyor.
 - **Grimfall'ın Windows eklentileri:**
-  - `Data/extensions/clientextensions.dll` (4,5 MB, metinleri gizlenmiş).
+  - `Data/extensions/clientextensions.dll` (4,5 MB, metinleri gizlenmiş). Grimfall'ın içerik modu: yeni ırklar, sınıflar ve diğer özel içerik. Warden ya da hile korumasıyla ilgisi yok.
   - `Data/extensions/discord_game_sdk.dll`.
   - `DivxDecoder.dll` yükleyicisi, `dlls.txt` ve `mods/` (Wine/Apple Silicon yamaları).
 - **Eklentinin kullandığı özel DBC'ler** (`Logs/Extensions.log` ve DLL içi metinlerden): `MysticEnchantments`, `StoreItemEntryRealmDisable`, `CharacterGeosetMapping`.
@@ -93,12 +93,15 @@ RECV 0x0209 SMSG_ACCOUNT_DATA_TIMES
 - Yukarıdaki "Takıldığımız yer" bölümüne bak.
 - Sunucu sahipleriyle konuşulabilir: hesap `loradona`, istemci platformu `Win`.
 
-### 3. Karakter listesinden sonrası (henüz görülmedi)
+### 3. Grimfall içerik modu (`clientextensions.dll`) için native destek
 
-Grimfall'ın özel özellikleri Windows eklentisinde; native istemcide karşılıkları yok. Oyuna girilirse beklenenler:
-- Özel DBC'ler (`MysticEnchantments` vb.) okunmayacak; bunlara dayanan arayüzler eksik ya da hatalı olabilir.
-- Sunucunun özel paketleri tanınmayacak ve yok sayılacak.
-- `Data/patch-*.mpq` içindeki özel modeller ve dokular normal yükleniyor.
+Bu mod Grimfall'ın özel ırklarını, sınıflarını ve diğer içeriğini istemciye ekliyor. Native istemcide karşılıkları henüz yok; uyumluluk işi olarak yapılacak:
+- Özel DBC'leri okumak (`MysticEnchantments`, `StoreItemEntryRealmDisable`, `CharacterGeosetMapping` ve ırk/sınıf tabloları).
+- Karakter oluşturma ve seçim ekranında yeni ırk ve sınıfları göstermek.
+- Sunucunun bu içerik için gönderdiği özel paketleri işlemek.
+- `Data/patch-*.mpq` içindeki özel modeller ve dokular zaten normal yükleniyor.
+
+Karakter listesi geldiğinde (madde 2) hangi verinin eksik kaldığı oradan görülecek.
 
 ### 4. Temizlik
 
