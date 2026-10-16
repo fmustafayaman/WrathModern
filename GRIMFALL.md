@@ -70,6 +70,11 @@ RECV 0x0209 SMSG_ACCOUNT_DATA_TIMES
 - Sunucu `SMSG_WARDEN_DATA` gönderiyor. Bizim istemcide Warden yalnızca boş bir kalıp; paketi alıyor, cevap göndermiyor (`WoW/Source/Game/GameClient/Win64/WardenClient.cpp`).
 - Sunucu karakter listesini Warden cevabına bağlamış görünüyor. Wine'daki Windows istemcisi (gerçek Wow.exe ve eklentileriyle) aynı noktadan sorunsuz geçiyor.
 - Sunucu tarafında bir hesap istisnası tanımlanırsa (Warden'ın bu hesap için kapatılması), istemci büyük ihtimalle bu noktayı geçer.
+- İkinci olasılık: `clientextensions.dll` oyun sunucusuna bağlanınca kendine özel bir el sıkışma paketi gönderiyor ve sunucu karakter listesini bu pakete bağlıyor. Öyleyse yapılacak iş, o paketi native istemciye eklemek.
+- Grimfall geliştiricilerinden öğrenilecekler:
+  1. Eklentinin girişten sonra gönderdiği paket(ler)in opcode'u ve içeriği.
+  2. Sunucunun karakter listesinden önce neyi beklediği.
+  3. Özel ırk ve sınıflar için kullanılan DBC'ler ve paketler.
 
 ## Açık işler
 
