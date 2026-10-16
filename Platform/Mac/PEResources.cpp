@@ -217,6 +217,166 @@ const void* Find(const char* type, const char* name, uint16_t language, uint32_t
     return s_client ? s_client->Find(type, name, language, size) : nullptr;
 }
 
+// Appends UTF-16 text to a UTF-8 buffer. Returns the UTF-8 length.
+static uint32_t ToUTF8(const uint8_t* utf16, uint32_t chars, char* buffer, uint32_t buffersize) {
+    uint32_t used = 0;
+
+    for (uint32_t i = 0; i < chars; i++) {
+        uint32_t c = utf16[i * 2] | (utf16[i * 2 + 1] << 8);
+
+        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < chars) {
+            uint32_t low = utf16[(i + 1) * 2] | (utf16[(i + 1) * 2 + 1] << 8);
+
+            if (low >= 0xDC00 && low <= 0xDFFF) {
+                c = 0x10000 + ((c - 0xD800) << 10) + (low - 0xDC00);
+                i++;
+            }
+        }
+
+        char encoded[4];
+        uint32_t length;
+
+        if (c < 0x80) {
+            encoded[0] = static_cast<char>(c);
+            length = 1;
+        } else if (c < 0x800) {
+            encoded[0] = static_cast<char>(0xC0 | (c >> 6));
+            encoded[1] = static_cast<char>(0x80 | (c & 0x3F));
+            length = 2;
+        } else if (c < 0x10000) {
+            encoded[0] = static_cast<char>(0xE0 | (c >> 12));
+            encoded[1] = static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+            encoded[2] = static_cast<char>(0x80 | (c & 0x3F));
+            length = 3;
+        } else {
+            encoded[0] = static_cast<char>(0xF0 | (c >> 18));
+            encoded[1] = static_cast<char>(0x80 | ((c >> 12) & 0x3F));
+            encoded[2] = static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+            encoded[3] = static_cast<char>(0x80 | (c & 0x3F));
+            length = 4;
+        }
+
+        if (used + length + 1 > buffersize) {
+            break;
+        }
+
+        memcpy(buffer + used, encoded, length);
+        used += length;
+    }
+
+    if (buffersize) {
+        buffer[used] = 0;
+    }
+
+    return used;
+}
+
+uint32_t LoadString(uint32_t id, char* buffer, uint32_t buffersize) {
+    if (!buffer || !buffersize) {
+        return 0;
+    }
+
+    buffer[0] = 0;
+
+    // Strings are stored in blocks of 16, block (id / 16) + 1, each a length-prefixed UTF-16 string.
+    uint32_t size = 0;
+    const uint8_t* block = static_cast<const uint8_t*>(Find(reinterpret_cast<const char*>(6), reinterpret_cast<const char*>(static_cast<uintptr_t>((id >> 4) + 1)), 0, &size));
+
+    if (!block) {
+        return 0;
+    }
+
+    uint32_t offset = 0;
+
+    for (uint32_t i = 0; i < 16 && offset + 2 <= size; i++) {
+        uint32_t length = block[offset] | (block[offset + 1] << 8);
+        offset += 2;
+
+        if (i == (id & 15)) {
+            return offset + length * 2 <= size ? ToUTF8(block + offset, length, buffer, buffersize) : 0;
+        }
+
+        offset += length * 2;
+    }
+
+    return 0;
+}
+
+uint32_t FormatMessage(uint32_t id, char* buffer, uint32_t buffersize) {
+    if (!buffer || !buffersize) {
+        return 0;
+    }
+
+    buffer[0] = 0;
+
+    uint32_t size = 0;
+    const uint8_t* table = static_cast<const uint8_t*>(Find(reinterpret_cast<const char*>(11), reinterpret_cast<const char*>(1), 0, &size));
+
+    if (!table || size < 4) {
+        return 0;
+    }
+
+    // MESSAGE_RESOURCE_DATA: block count, then blocks of (low id, high id, offset to entries); each
+    // entry is (length, flags, text), text UTF-16 when flags is 1, ANSI otherwise.
+    uint32_t blocks;
+    memcpy(&blocks, table, 4);
+
+    for (uint32_t b = 0; b < blocks && 4 + (b + 1) * 12 <= size; b++) {
+        uint32_t low;
+        uint32_t high;
+        uint32_t offset;
+        memcpy(&low, table + 4 + b * 12, 4);
+        memcpy(&high, table + 8 + b * 12, 4);
+        memcpy(&offset, table + 12 + b * 12, 4);
+
+        if (id < low || id > high) {
+            continue;
+        }
+
+        for (uint32_t current = low; offset + 4 <= size; current++) {
+            uint16_t length;
+            uint16_t flags;
+            memcpy(&length, table + offset, 2);
+            memcpy(&flags, table + offset + 2, 2);
+
+            if (length < 4 || offset + length > size) {
+                return 0;
+            }
+
+            if (current == id) {
+                const uint8_t* text = table + offset + 4;
+                uint32_t bytes = length - 4;
+                uint32_t used;
+
+                if (flags & 1) {
+                    uint32_t chars = bytes / 2;
+
+                    while (chars && !(text[(chars - 1) * 2] | text[(chars - 1) * 2 + 1])) {
+                        chars--;
+                    }
+
+                    used = ToUTF8(text, chars, buffer, buffersize);
+                } else {
+                    used = 0;
+
+                    while (used < bytes && text[used] && used + 1 < buffersize) {
+                        buffer[used] = static_cast<char>(text[used]);
+                        used++;
+                    }
+
+                    buffer[used] = 0;
+                }
+
+                return used;
+            }
+
+            offset += length;
+        }
+    }
+
+    return 0;
+}
+
 bool ReadFileVersion(const char* path, uint32_t* fileMS, uint32_t* fileLS, uint32_t* productMS, uint32_t* productLS) {
     Image image;
 

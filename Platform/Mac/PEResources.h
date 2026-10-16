@@ -35,6 +35,14 @@ class Image {
 // Finds a resource in the client's Wow.exe. The pointer stays valid for the life of the process.
 const void* Find(const char* type, const char* name, uint16_t language, uint32_t* size);
 
+// LoadStringA for the client's Wow.exe: copies string id of its string table (RT_STRING), as UTF-8.
+// Returns the length copied, 0 if there is no such string.
+uint32_t LoadString(uint32_t id, char* buffer, uint32_t buffersize);
+
+// FormatMessageA(FORMAT_MESSAGE_FROM_HMODULE) for the client's Wow.exe: copies message id of its
+// message table (RT_MESSAGETABLE), as UTF-8. Returns the length copied, 0 if there is none.
+uint32_t FormatMessage(uint32_t id, char* buffer, uint32_t buffersize);
+
 // Reads the fixed version record (VS_FIXEDFILEINFO) of a PE file: file version and product version,
 // each as most and least significant 32 bits. Returns false if the file has none.
 bool ReadFileVersion(const char* path, uint32_t* fileMS, uint32_t* fileLS, uint32_t* productMS, uint32_t* productLS);

@@ -5,6 +5,9 @@
 #if defined(WOWDECOMP_PLATFORM_WIN)
 #include <windows.h>
 #endif
+#if defined(WOWDECOMP_PLATFORM_MAC)
+#include "Engine/Source/Storm/Source/Mac/MachineStateTypes.h"
+#endif
 
 #define LOG_OPTION_DEFAULT 0x1
 #define LOG_OPTION_TITLE 0x2
