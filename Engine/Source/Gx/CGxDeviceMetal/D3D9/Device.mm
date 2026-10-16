@@ -341,9 +341,15 @@ struct DeviceImpl::ImplState {
     id<MTLDepthStencilState> m_clearDepthWrite = nil;
     id<MTLDepthStencilState> m_clearDepthKeep = nil;
 
-    // Cursor
+    // Cursor: the last bitmap, kept to rebuild the cursor at another scale
     NSCursor* m_cursor = nil;
     bool m_cursorShown = false;
+    float m_cursorScale = 1.0f;
+    std::vector<uint8_t> m_cursorPixels;    // RGBA, non-premultiplied
+    uint32_t m_cursorWidth = 0;
+    uint32_t m_cursorHeight = 0;
+    uint32_t m_cursorHotspotX = 0;
+    uint32_t m_cursorHotspotY = 0;
 };
 
 // Device lifetime
@@ -2050,6 +2056,34 @@ HRESULT DeviceImpl::PresentImpl() {
 
 // Cursor
 
+static NSCursor* MakeCursor(const std::vector<uint8_t>& pixels, uint32_t width, uint32_t height, uint32_t hotspotX, uint32_t hotspotY, float scale) {
+    NSBitmapImageRep* source = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:nullptr pixelsWide:width pixelsHigh:height bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bitmapFormat:NSBitmapFormatAlphaNonpremultiplied bytesPerRow:width * 4 bitsPerPixel:32];
+    memcpy(source.bitmapData, pixels.data(), pixels.size());
+
+    // The image measures scale points per bitmap pixel and carries a bitmap at twice that, so
+    // Retina displays show it at full resolution and at the intended size
+    NSSize size = NSMakeSize(std::max(1.0f, width * scale), std::max(1.0f, height * scale));
+    NSInteger pixelsWide = static_cast<NSInteger>(ceil(size.width * 2.0));
+    NSInteger pixelsHigh = static_cast<NSInteger>(ceil(size.height * 2.0));
+
+    NSBitmapImageRep* scaled = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:nullptr pixelsWide:pixelsWide pixelsHigh:pixelsHigh bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bitmapFormat:0 bytesPerRow:0 bitsPerPixel:32];
+    scaled.size = size;
+
+    [NSGraphicsContext saveGraphicsState];
+    NSGraphicsContext* context = [NSGraphicsContext graphicsContextWithBitmapImageRep:scaled];
+    NSGraphicsContext.currentContext = context;
+    context.imageInterpolation = NSImageInterpolationHigh;
+    [[NSColor clearColor] set];
+    NSRectFillUsingOperation(NSMakeRect(0, 0, size.width, size.height), NSCompositingOperationCopy);
+    [source drawInRect:NSMakeRect(0, 0, size.width, size.height) fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1.0 respectFlipped:YES hints:nil];
+    [NSGraphicsContext restoreGraphicsState];
+
+    NSImage* image = [[NSImage alloc] initWithSize:size];
+    [image addRepresentation:scaled];
+
+    return [[NSCursor alloc] initWithImage:image hotSpot:NSMakePoint(hotspotX * scale, hotspotY * scale)];
+}
+
 HRESULT DeviceImpl::SetCursorPropertiesImpl(uint32_t hotspotX, uint32_t hotspotY, Surface* bitmap) {
     ImplState& s = *this->m_state;
     SurfaceImpl* surface = static_cast<SurfaceImpl*>(bitmap);
@@ -2060,24 +2094,25 @@ HRESULT DeviceImpl::SetCursorPropertiesImpl(uint32_t hotspotX, uint32_t hotspotY
 
     uint32_t width = surface->m_width;
     uint32_t height = surface->m_height;
+    s.m_cursorPixels.resize(width * height * 4);
 
-    NSBitmapImageRep* image = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:nullptr pixelsWide:width pixelsHigh:height bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bitmapFormat:NSBitmapFormatAlphaNonpremultiplied bytesPerRow:width * 4 bitsPerPixel:32];
-
-    uint8_t* pixels = image.bitmapData;
     for (uint32_t y = 0; y < height; y++) {
         const uint8_t* row = surface->m_mirror.data() + y * surface->m_mirrorPitch;
+        uint8_t* out = s.m_cursorPixels.data() + y * width * 4;
         for (uint32_t x = 0; x < width; x++) {
             // A8R8G8B8 is stored B, G, R, A
-            pixels[(y * width + x) * 4 + 0] = row[x * 4 + 2];
-            pixels[(y * width + x) * 4 + 1] = row[x * 4 + 1];
-            pixels[(y * width + x) * 4 + 2] = row[x * 4 + 0];
-            pixels[(y * width + x) * 4 + 3] = row[x * 4 + 3];
+            out[x * 4 + 0] = row[x * 4 + 2];
+            out[x * 4 + 1] = row[x * 4 + 1];
+            out[x * 4 + 2] = row[x * 4 + 0];
+            out[x * 4 + 3] = row[x * 4 + 3];
         }
     }
 
-    NSImage* cursorImage = [[NSImage alloc] initWithSize:NSMakeSize(width, height)];
-    [cursorImage addRepresentation:image];
-    s.m_cursor = [[NSCursor alloc] initWithImage:cursorImage hotSpot:NSMakePoint(hotspotX, hotspotY)];
+    s.m_cursorWidth = width;
+    s.m_cursorHeight = height;
+    s.m_cursorHotspotX = hotspotX;
+    s.m_cursorHotspotY = hotspotY;
+    s.m_cursor = MakeCursor(s.m_cursorPixels, width, height, hotspotX, hotspotY, s.m_cursorScale);
     return D3D_OK;
 }
 
@@ -2683,6 +2718,21 @@ void* Device::GetCursorImage() {
 
 bool Device::IsCursorShown() {
     return static_cast<DeviceImpl*>(this)->m_state->m_cursorShown;
+}
+
+void Device::SetCursorScale(float scale) {
+    DeviceImpl::ImplState& s = *static_cast<DeviceImpl*>(this)->m_state;
+    scale = std::clamp(scale, 0.5f, 4.0f);
+
+    if (scale == s.m_cursorScale) {
+        return;
+    }
+
+    s.m_cursorScale = scale;
+
+    if (!s.m_cursorPixels.empty()) {
+        s.m_cursor = MakeCursor(s.m_cursorPixels, s.m_cursorWidth, s.m_cursorHeight, s.m_cursorHotspotX, s.m_cursorHotspotY, scale);
+    }
 }
 
 HRESULT Device::CreateVertexBuffer(uint32_t length, uint32_t usage, uint32_t fvf, D3DPOOL pool, VertexBuffer** buffer) {

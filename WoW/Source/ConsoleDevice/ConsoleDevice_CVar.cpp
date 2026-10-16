@@ -1,5 +1,6 @@
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include "ConsoleDevice.h"
 #include "Engine/Source/ConsoleBase/ConsoleVar.h"
@@ -221,6 +222,20 @@ static bool CVGxMaximizeCallback(CVar* var, const char* oldValue, const char* va
 
 // VERIFY: 5986dd1d auto
 // OFFSET: 0x007695E0
+#if defined(WOWDECOMP_PLATFORM_MAC)
+static bool CVGxCursorScaleCallback(CVar* var, const char* oldValue, const char* value, void* arg) {
+    float scale = static_cast<float>(atof(value));
+
+    if (scale < 0.5f || scale > 4.0f) {
+        ConsoleWrite("gxCursorScale must be between 0.5 and 4", DEFAULT_COLOR);
+        return false;
+    }
+
+    GxCursorSetScale(scale);
+    return true;
+}
+#endif
+
 static bool CVGxCursorCallback(CVar* var, const char* oldValue, const char* value, void* arg) {
     s_requestedFormat.m_hwCursor = SStrToInt(value) != 0;
     ConsoleWrite("set pending gxRestart", DEFAULT_COLOR);
@@ -558,6 +573,11 @@ void RegisterGxCVars() {
     s_cvGxVSync = CVar::Register("gxVSync", "vsync on or off", 3, "1", CVGxVSyncCallback, CATEGORY_GRAPHICS, false, nullptr, false);
     s_cvGxAspect = CVar::Register("gxAspect", "constrain window aspect", 3, "1", CVGxAspectCallback, CATEGORY_GRAPHICS, false, nullptr, false);
     s_cvGxCursor = CVar::Register("gxCursor", "toggle hardware cursor", 3, "1", CVGxCursorCallback, CATEGORY_GRAPHICS, false, nullptr, false);
+#if defined(WOWDECOMP_PLATFORM_MAC)
+    // Cursor size in points per cursor bitmap pixel; 1.5 shows the 32 pixel cursor at 48 points
+    CVar* cursorScale = CVar::Register("gxCursorScale", "hardware cursor size", 3, "1.5", CVGxCursorScaleCallback, CATEGORY_GRAPHICS, false, nullptr, false);
+    GxCursorSetScale(static_cast<float>(atof(cursorScale->m_stringValue.m_str)));
+#endif
 
     SStrPrintf(value, sizeof(value), "%d", s_hardware.m_videoHw->m_multisample);
     s_cvGxMultisample = CVar::Register("gxMultisample", "multisample", 3, value, CVGxMultisampleCallback, CATEGORY_GRAPHICS, false, nullptr, false);

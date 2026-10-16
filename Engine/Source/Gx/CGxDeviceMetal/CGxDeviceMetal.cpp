@@ -69,6 +69,9 @@ static D3DLIGHT9 s_d3dLight;
 
 static int32_t s_isIdent;
 
+// The cursor size set through gxCursorScale, applied to every device
+static float s_cursorScale = 1.5f;
+
 void CGxDeviceMetal::IBufUnlock(CGxBuf* buf) {
     CGxPool* pool = buf->m_pool;
     EmergencyMem& emergencyMem = this->m_emergencyMem[pool->m_target];
@@ -2232,6 +2235,7 @@ int32_t CGxDeviceMetal::ICreateD3dDevice(const CGxFormat& format) {
 
     this->IStateSetD3DDefaults();
     this->DeviceSetGamma(this->m_gammaRamp);
+    this->m_d3dDevice->SetCursorScale(s_cursorScale);
     this->ICursorCreate(format);
     static uint32_t s_defaultColor = 0xFF00FF00;
 
@@ -3405,6 +3409,16 @@ void CGxDeviceMetal::IUpdateCursor() {
     // The client's cursor becomes the pointer over the game view; a software cursor hides it
     bool visible = this->m_hwCursor ? this->m_d3dDevice->IsCursorShown() : false;
     OsMacSetGameCursor(this->m_d3dDevice->GetCursorImage(), visible);
+}
+
+void GxCursorSetScale(float scale) {
+    s_cursorScale = scale;
+
+    CGxDeviceMetal* device = dynamic_cast<CGxDeviceMetal*>(g_theGxDevicePtr);
+    if (device && device->m_d3dDevice) {
+        device->m_d3dDevice->SetCursorScale(scale);
+        device->IUpdateCursor();
+    }
 }
 
 CGxDevice* CreateCGxDeviceMetal() {

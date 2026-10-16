@@ -431,6 +431,7 @@ static void DetachCursor(bool detach) {
         [NSCursor hide];
     } else {
         [NSCursor unhide];
+        OsMacRefreshGameCursor();
     }
 }
 

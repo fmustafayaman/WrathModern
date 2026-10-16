@@ -192,6 +192,8 @@ public:
     // The NSCursor made by SetCursorProperties, unretained, or null; and whether it is shown
     void* GetCursorImage();
     bool IsCursorShown();
+    // Size of the cursor image in points per bitmap pixel (1 shows a 32 x 32 bitmap at 32 points)
+    void SetCursorScale(float scale);
 
     // Resources
     HRESULT CreateVertexBuffer(uint32_t length, uint32_t usage, uint32_t fvf, D3DPOOL pool, VertexBuffer** buffer);

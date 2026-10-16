@@ -53,6 +53,8 @@ CGxDevice* CreateCGxDeviceD3d();
 CGxDevice* CreateCGxDeviceD3d9Ex();
 CGxDevice* CreateCGxDeviceOpenGl();
 CGxDevice* CreateCGxDeviceMetal();
+// macOS: size of the hardware cursor in points per cursor bitmap pixel
+void GxCursorSetScale(float scale);
 CGxDevice* CreateGxDevice(EGxApi api, GxWindowProc windowProc, const CGxFormat& format);
 int32_t GxAdapterDesktopMode(CGxMonitorMode& mode);
 int32_t GxAdapterID(uint16_t& vendorID, uint16_t& deviceID, uint32_t& driverVersionHi, uint32_t& driverVersionLo);

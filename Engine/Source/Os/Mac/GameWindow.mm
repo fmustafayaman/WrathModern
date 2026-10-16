@@ -226,18 +226,22 @@ static void UpdateDrawableSize(NSView* view) {
 }
 
 - (void)mouseMoved:(NSEvent*)event {
+    OsMacRefreshGameCursor();
     OsMacInputMouseMoved(self, event);
 }
 
 - (void)mouseDragged:(NSEvent*)event {
+    OsMacRefreshGameCursor();
     OsMacInputMouseMoved(self, event);
 }
 
 - (void)rightMouseDragged:(NSEvent*)event {
+    OsMacRefreshGameCursor();
     OsMacInputMouseMoved(self, event);
 }
 
 - (void)otherMouseDragged:(NSEvent*)event {
+    OsMacRefreshGameCursor();
     OsMacInputMouseMoved(self, event);
 }
 
@@ -446,8 +450,11 @@ static void ApplyWindowMode(WMGameWindow* window, const OsMacWindowParams& param
     if (params.m_fullscreen) {
         // Fullscreen takes the whole display without a mode change; the graphics device renders at the
         // requested resolution and the compositor scales it to the display.
+        // A borderless window over the whole display at the normal level: the Dock and menu bar
+        // hide only while the client is the active application, so switching applications
+        // (Cmd+Tab) brings other windows in front as usual
         window.styleMask = NSWindowStyleMaskBorderless;
-        window.level = NSMainMenuWindowLevel + 1;
+        window.level = NSNormalWindowLevel;
         window.hasShadow = NO;
         [window setFrame:screen.frame display:YES];
         NSApp.presentationOptions = NSApplicationPresentationHideDock | NSApplicationPresentationHideMenuBar;
@@ -556,6 +563,14 @@ void OsMacSetDrawableSize(void* window, int32_t width, int32_t height) {
     if (nsWindow) {
         UpdateDrawableSize(nsWindow.contentView);
         OsMacInputResized();
+    }
+}
+
+void OsMacRefreshGameCursor() {
+    // Cursor rects only change the pointer when it enters them; set it again whenever the
+    // pointer moves over the key window so a cursor change while inside always shows
+    if (s_window && s_window.isKeyWindow && NSApp.active) {
+        [CurrentCursor() set];
     }
 }
 
