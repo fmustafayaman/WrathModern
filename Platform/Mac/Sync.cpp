@@ -264,9 +264,10 @@ Waitable* ThreadCreate(ThreadFunction function, void* param, uint32_t stackSize,
     pthread_attr_init(&attr);
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 
-    // The client asks for Win32 stack reservations; macOS needs page multiples of at least
-    // PTHREAD_STACK_MIN. Secondary threads otherwise get 512 KB, less than Windows' default 1 MB.
-    size_t stack = stackSize ? stackSize : 1024 * 1024;
+    // On Windows the requested size is the initial commit; every thread still reserves at least
+    // the executable's default of 1 MB, and code relies on that depth. macOS stacks are fixed at
+    // creation, so the stack is the larger of the two, in pages.
+    size_t stack = stackSize > 1024 * 1024 ? stackSize : 1024 * 1024;
     size_t page = static_cast<size_t>(getpagesize());
     stack = (stack + page - 1) / page * page;
 

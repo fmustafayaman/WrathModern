@@ -277,7 +277,13 @@ FMOD_RESULT FMOD_OS_Thread_Create(const char *name, THREAD_RETURNTYPE (THREAD_CA
     pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    pthread_attr_setstacksize(&attr, stacksize > (int)PTHREAD_STACK_MIN ? (size_t)((stacksize + 0xFFF) & ~0xFFF) : 1024 * 1024);
+    /*
+        FMOD's sizes are what the Windows version commits up front; Windows still reserves the
+        executable's 1 MB default per thread, which the client's file callbacks need (MPQ reads run
+        on FMOD's async thread). Use the larger of the two.
+    */
+    size_t stackbytes = stacksize > 1024 * 1024 ? (size_t)((stacksize + 0xFFF) & ~0xFFF) : 1024 * 1024;
+    pthread_attr_setstacksize(&attr, stackbytes);
 
     pthread_t thread;
     int result = pthread_create(&thread, &attr, ThreadStart, start);
