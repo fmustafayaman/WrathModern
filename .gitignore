@@ -413,3 +413,4 @@ CMakeSettings.json
 
 # WrathModern: CMake build trees
 /build/
+.DS_Store
