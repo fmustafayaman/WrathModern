@@ -574,8 +574,9 @@ void RegisterGxCVars() {
     s_cvGxAspect = CVar::Register("gxAspect", "constrain window aspect", 3, "1", CVGxAspectCallback, CATEGORY_GRAPHICS, false, nullptr, false);
     s_cvGxCursor = CVar::Register("gxCursor", "toggle hardware cursor", 3, "1", CVGxCursorCallback, CATEGORY_GRAPHICS, false, nullptr, false);
 #if defined(WOWDECOMP_PLATFORM_MAC)
-    // Cursor size in points per cursor bitmap pixel; 1.5 shows the 32 pixel cursor at 48 points
-    CVar* cursorScale = CVar::Register("gxCursorScale", "hardware cursor size", 3, "1.5", CVGxCursorScaleCallback, CATEGORY_GRAPHICS, false, nullptr, false);
+    // Cursor size in points per cursor bitmap pixel; 1 shows the 32 pixel cursor at 32 points,
+    // the size of the system pointers
+    CVar* cursorScale = CVar::Register("gxCursorScale", "hardware cursor size", 3, "1", CVGxCursorScaleCallback, CATEGORY_GRAPHICS, false, nullptr, false);
     GxCursorSetScale(static_cast<float>(atof(cursorScale->m_stringValue.m_str)));
 #endif
 

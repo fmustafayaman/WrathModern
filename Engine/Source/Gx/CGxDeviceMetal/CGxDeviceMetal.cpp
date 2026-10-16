@@ -70,7 +70,7 @@ static D3DLIGHT9 s_d3dLight;
 static int32_t s_isIdent;
 
 // The cursor size set through gxCursorScale, applied to every device
-static float s_cursorScale = 1.5f;
+static float s_cursorScale = 1.0f;
 
 void CGxDeviceMetal::IBufUnlock(CGxBuf* buf) {
     CGxPool* pool = buf->m_pool;
