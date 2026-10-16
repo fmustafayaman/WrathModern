@@ -1,7 +1,9 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#if defined(WOWDECOMP_PLATFORM_WIN)
 #include <windows.h>
+#endif
 #include "Engine/Source/Storm/H/storm.h"
 
 #ifndef NDEBUG

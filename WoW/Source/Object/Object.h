@@ -3,7 +3,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#if defined(WOWDECOMP_PLATFORM_WIN)
 #include <windows.h>
+#endif
 #include "WoW/Source/Object/ObjectClient/Types.h"
 #include "WoW/Source/Object/Types.h"
 #include "WoW/Source/Object/WGUID.h"

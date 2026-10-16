@@ -1,5 +1,7 @@
 #include <cstdint>
+#if defined(WOWDECOMP_PLATFORM_WIN)
 #include <windows.h>
+#endif
 #include "Engine/Source/Base/CDataRecycler.h"
 #include "Engine/Source/Storm/H/storm.h"
 

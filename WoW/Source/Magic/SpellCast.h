@@ -3,7 +3,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#if defined(WOWDECOMP_PLATFORM_WIN)
 #include <windows.h>
+#endif
 
 class SpellCast {
     public:

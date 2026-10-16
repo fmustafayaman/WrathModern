@@ -7,15 +7,29 @@ set(FMODEX_FLAC_DIR ${FMODEX_DIR}/lib/flac-1.1.4)
 
 file(GLOB FMODEX_SOURCES CONFIGURE_DEPENDS
     "${FMODEX_DIR}/src/*.cpp"
-    "${FMODEX_DIR}/win32/src/*.cpp"
-    "${FMODEX_DIR}/win32/src/asio/*.cpp"
     "${FMODEX_DIR}/lib/ogg_vorbis/ogg/src/*.c"
     "${FMODEX_DIR}/lib/ogg_vorbis/vorbis/lib/*.c"
     "${FMODEX_FLAC_DIR}/src/libFLAC/*.c"
-    "${FMODEX_DIR}/lib/openal/utils/*.cpp"
     "${FMODEX_DIR}/lib/freeverb/*.cpp"
     "${FMODEX_DIR}/lib/sfx/foreverb/*.cpp"
 )
+
+# FMOD Ex keeps its platform layer (output drivers, threads, timers, file and net I/O) in a directory
+# per platform, as the original FMOD Ex source tree did.
+if (WOWDECOMP_PLATFORM_MAC)
+    set(FMODEX_PLATFORM_DIR ${FMODEX_DIR}/mac/src)
+    file(GLOB FMODEX_PLATFORM_SOURCES CONFIGURE_DEPENDS
+        "${FMODEX_PLATFORM_DIR}/*.cpp"
+    )
+else ()
+    set(FMODEX_PLATFORM_DIR ${FMODEX_DIR}/win32/src)
+    file(GLOB FMODEX_PLATFORM_SOURCES CONFIGURE_DEPENDS
+        "${FMODEX_PLATFORM_DIR}/*.cpp"
+        "${FMODEX_PLATFORM_DIR}/asio/*.cpp"
+        "${FMODEX_DIR}/lib/openal/utils/*.cpp"
+    )
+endif ()
+list(APPEND FMODEX_SOURCES ${FMODEX_PLATFORM_SOURCES})
 
 add_library(fmodex STATIC ${FMODEX_SOURCES})
 
@@ -23,7 +37,7 @@ target_include_directories(fmodex
     PUBLIC
         ${FMODEX_DIR}/src
     PRIVATE
-        ${FMODEX_DIR}/win32/src
+        ${FMODEX_PLATFORM_DIR}
         ${FMODEX_DIR}/lib/ogg_vorbis/ogg/include
         ${FMODEX_DIR}/lib/ogg_vorbis/vorbis/include
         ${FMODEX_DIR}/lib/ogg_vorbis/vorbis/lib
@@ -41,12 +55,14 @@ target_compile_definitions(fmodex
         FLAC__HAS_OGG=1
 )
 
-target_link_libraries(fmodex
-    INTERFACE
-        winmm
-        ws2_32
-        msacm32
-)
+if (WIN32)
+    target_link_libraries(fmodex
+        INTERFACE
+            winmm
+            ws2_32
+            msacm32
+    )
+endif ()
 
 if (MSVC)
     target_compile_options(fmodex PRIVATE /MP)

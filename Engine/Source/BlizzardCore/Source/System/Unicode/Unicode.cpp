@@ -1,6 +1,8 @@
 #include <cstdint>
 #include <cstring>
+#if defined(WOWDECOMP_PLATFORM_WIN)
 #include <windows.h>
+#endif
 #include "Engine/Source/BlizzardCore/Source/System/Unicode/Unicode.h"
 
 // STATIC: 0x009E5360

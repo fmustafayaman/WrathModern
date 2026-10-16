@@ -691,12 +691,13 @@
 #elif defined(PLATFORM_MAC)
 
     #define FMOD_SUPPORT_COREAUDIO
-    #define FMOD_SUPPORT_VSTPLUGIN   
     #define FMOD_SUPPORT_PRAGMAPACK
-    #define FMOD_SUPPORT_NEURAL
 
     #undef FMOD_SUPPORT_ASF
 	#undef FMOD_SUPPORT_VAG
+
+    /* WrathModern: the client plays no CD audio and loads no VST or Neural plugins. */
+    #undef FMOD_SUPPORT_CDDA
       
 #elif defined(PLATFORM_GC)
 

@@ -1,7 +1,9 @@
 #include <cstdint>
 #include <cstdlib>
 #include <process.h>
+#if defined(WOWDECOMP_PLATFORM_WIN)
 #include <windows.h>
+#endif
 #include "Engine/Source/BlizzardCore/SFile2-Core.h"
 #include "Engine/Source/Storm/H/storm.h"
 
@@ -15,9 +17,15 @@ static int32_t s_exitcount;
 // OFFSET: 0x007739B0
 static void StormAtExit() {
     if (s_exitcount++ == 0) {
+#if defined(WOWDECOMP_PLATFORM_WIN)
         _cexit();
         StormRtlDestroy();
         _exit(s_exitcode);
+#else
+        // StormAtExit runs as an atexit handler, so exit() is already unwinding with the exit code;
+        // letting it finish runs the remaining handlers and static destructors as _cexit() does.
+        StormRtlDestroy();
+#endif
     }
 }
 
@@ -45,8 +53,12 @@ void STORMAPI StormDestroy() {
 
 // VERIFY: 75275781 auto
 // OFFSET: 0x00773A30
-HINSTANCE STORMAPI StormGetInstance() {
+HINSTANCE__* STORMAPI StormGetInstance() {
+#if defined(WOWDECOMP_PLATFORM_WIN)
     return GetModuleHandleA(nullptr);
+#else
+    return nullptr;
+#endif
 }
 
 // VERIFY: 8c025427 auto
@@ -60,5 +72,9 @@ void StormExit(int32_t code) {
 // OFFSET: 0x00773A60
 void StormExitProcess(int32_t code) {
     s_exitcode = code;
+#if defined(WOWDECOMP_PLATFORM_WIN)
     ExitProcess(code);
+#else
+    _exit(code);
+#endif
 }

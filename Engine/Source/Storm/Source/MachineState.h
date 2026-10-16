@@ -2,7 +2,9 @@
 #define ENGINE_SOURCE_STORM_SOURCE_MACHINESTATE_H
 
 #include <cstdint>
+#if defined(WOWDECOMP_PLATFORM_WIN)
 #include <windows.h>
+#endif
 
 #define LOG_OPTION_DEFAULT 0x1
 #define LOG_OPTION_TITLE 0x2

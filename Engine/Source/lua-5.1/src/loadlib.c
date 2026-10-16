@@ -89,7 +89,9 @@ static lua_CFunction ll_sym (lua_State *L, void *lib, const char *sym) {
 ** =======================================================================
 */
 
+#if defined(WOWDECOMP_PLATFORM_WIN)
 #include <windows.h>
+#endif
 
 
 #undef setprogdir

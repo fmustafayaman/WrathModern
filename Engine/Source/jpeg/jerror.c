@@ -25,7 +25,9 @@
 #include "jerror.h"
 
 #ifdef USE_WINDOWS_MESSAGEBOX
+#if defined(WOWDECOMP_PLATFORM_WIN)
 #include <windows.h>
+#endif
 #endif
 
 #ifndef EXIT_FAILURE		/* define exit() codes if not provided */
