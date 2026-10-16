@@ -13,11 +13,41 @@ elseif (WIN32)
     set(WOWDECOMP_BIN_DIR ${CMAKE_SOURCE_DIR}/bin/Win)
 endif ()
 
+# Win64/ files that are portable logic over Win32 kernel objects. The macOS build compiles them
+# unchanged against the curated <windows.h> in Platform/Mac/Include instead of keeping a second copy;
+# everything else in Win32/ and Win64/ has a macOS counterpart in a Mac/ directory.
+set(WOWDECOMP_MAC_SHARED_WIN64
+    "/Packages/Streaming/Win64/[^/]+\\.cpp$"
+    "/System/File/Win64/Filestack_Streaming\\.cpp$"
+    "/Storm/Source/Win64/SCritSect\\.cpp$"
+    "/Storm/Source/Win64/SLock\\.cpp$"
+)
+
 function(wowdecomp_platform_sources var)
     set(sources ${${var}})
 
     if (WOWDECOMP_PLATFORM_MAC)
+        set(shared "")
+
+        foreach (pattern ${WOWDECOMP_MAC_SHARED_WIN64})
+            set(matches ${sources})
+            list(FILTER matches INCLUDE REGEX "${pattern}")
+            list(APPEND shared ${matches})
+        endforeach ()
+
         list(FILTER sources EXCLUDE REGEX "/Win(32|64)/")
+        list(APPEND sources ${shared})
+
+        # Objective-C++ sources of the Mac/ directories; modules glob only *.cpp.
+        file(GLOB_RECURSE objcxx CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.mm")
+        list(FILTER objcxx INCLUDE REGEX "/Mac/")
+        list(APPEND sources ${objcxx})
+
+        # Shared Win64 files get <windows.h> the way the Windows build gives it to them, through
+        # headers that include it only on Windows.
+        if (shared)
+            set_source_files_properties(${shared} PROPERTIES COMPILE_OPTIONS "-include;windows.h")
+        endif ()
         # Logitech G-series keyboard LCD support exists only on Windows.
         list(FILTER sources EXCLUDE REGEX "/UILCD/(Windows/|LCD\\.cpp$)")
         list(FILTER sources EXCLUDE REGEX "/CGxDevice(D3d|D3d9Ex|OpenGL)/")

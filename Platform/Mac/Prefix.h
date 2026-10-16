@@ -48,6 +48,12 @@
 #define __thiscall
 #endif
 
+// MSVC intrinsics that clang provides only on x86
+
+#if defined(__aarch64__)
+#define __nop() __asm__ __volatile__("nop")
+#endif
+
 // MSVC CRT. _rotl and friends are clang builtins under -fms-extensions.
 
 #define _stricmp strcasecmp
@@ -95,7 +101,12 @@ typedef int32_t LONG;
 typedef uint32_t DWORD;
 typedef void* HANDLE;
 typedef void* HWND;
-typedef pthread_mutex_t CRITICAL_SECTION;
+// A Win32 critical section: a recursive pthread mutex plus the DebugInfo field the client clears
+// after deleting one.
+typedef struct _CRITICAL_SECTION {
+    pthread_mutex_t m_mutex;
+    void* DebugInfo;
+} CRITICAL_SECTION;
 
 typedef union _LARGE_INTEGER {
     struct {

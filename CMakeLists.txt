@@ -67,6 +67,7 @@ if (WOWDECOMP_PLATFORM_MAC)
 
     include_directories(BEFORE SYSTEM ${CMAKE_SOURCE_DIR}/Platform/Mac/Include)
     add_compile_options("$<$<COMPILE_LANGUAGE:CXX,OBJCXX>:SHELL:-include ${CMAKE_SOURCE_DIR}/Platform/Mac/Prefix.h>")
+    add_compile_options("$<$<COMPILE_LANGUAGE:OBJC,OBJCXX>:-fobjc-arc>")
 else ()
     add_compile_definitions(
         WOWDECOMP_PLATFORM_WIN=1
@@ -83,6 +84,12 @@ endif ()
 option(WOWDECOMP_DISABLE_SIGNATURE_CHECKS "Skip MPQ file signature and .toc signature checks" OFF)
 if (WOWDECOMP_DISABLE_SIGNATURE_CHECKS)
     add_compile_definitions(DISABLE_SIGNATURE_CHECKS=1)
+endif ()
+
+# macOS platform support, linked into every module so Mac/ implementations can use it.
+if (WOWDECOMP_PLATFORM_MAC)
+    add_subdirectory(Platform/Mac)
+    link_libraries(MacPlatform)
 endif ()
 
 # Third-party code is linked, not decompiled, for now.
