@@ -29,6 +29,8 @@ struct MEMDUMP {
     void* logLineProcParam;
 };
 
+int32_t g_memFullError;
+
 static char s_monthNames[12][4] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
 static volatile int32_t sgRecursionLevel;
 

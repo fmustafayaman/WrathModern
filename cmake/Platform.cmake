@@ -21,6 +21,7 @@ set(WOWDECOMP_MAC_SHARED_WIN64
     "/System/File/Win64/Filestack_Streaming\\.cpp$"
     "/Storm/Source/Win64/SCritSect\\.cpp$"
     "/Storm/Source/Win64/SLock\\.cpp$"
+    "/Os/Win64/OsFile\\.cpp$"
 )
 
 function(wowdecomp_platform_sources var)

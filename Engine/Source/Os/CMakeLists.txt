@@ -21,3 +21,14 @@ if(WIN32)
             version
     )
 endif()
+
+if (WOWDECOMP_PLATFORM_MAC)
+    target_link_libraries(Os
+        PUBLIC
+            "-framework AppKit"
+            "-framework Carbon"
+            "-framework GameController"
+            "-framework QuartzCore"
+            "-framework Security"
+    )
+endif ()

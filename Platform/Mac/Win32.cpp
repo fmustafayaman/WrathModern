@@ -144,6 +144,16 @@ BOOL TryEnterCriticalSection(CRITICAL_SECTION* section) {
     return pthread_mutex_trylock(&section->m_mutex) == 0 ? TRUE : FALSE;
 }
 
+static thread_local DWORD s_lastError;
+
+void SetLastError(DWORD error) {
+    s_lastError = error;
+}
+
+DWORD GetLastError() {
+    return s_lastError;
+}
+
 void Sleep(DWORD milliseconds) {
     if (!milliseconds) {
         // Sleep(0) gives up the rest of the time slice.

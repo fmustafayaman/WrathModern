@@ -56,6 +56,25 @@ typedef DWORD (*LPTHREAD_START_ROUTINE)(LPVOID param);
 #define INVALID_HANDLE_VALUE (reinterpret_cast<HANDLE>(static_cast<intptr_t>(-1)))
 #define CREATE_SUSPENDED 0x00000004
 
+#define GENERIC_READ 0x80000000
+#define GENERIC_WRITE 0x40000000
+#define FILE_SHARE_READ 0x00000001
+#define FILE_SHARE_WRITE 0x00000002
+#define CREATE_NEW 1
+#define CREATE_ALWAYS 2
+#define OPEN_EXISTING 3
+#define OPEN_ALWAYS 4
+#define TRUNCATE_EXISTING 5
+#define FILE_ATTRIBUTE_READONLY 0x00000001
+#define FILE_ATTRIBUTE_HIDDEN 0x00000002
+#define FILE_ATTRIBUTE_SYSTEM 0x00000004
+#define FILE_ATTRIBUTE_DIRECTORY 0x00000010
+#define FILE_ATTRIBUTE_ARCHIVE 0x00000020
+#define FILE_ATTRIBUTE_NORMAL 0x00000080
+
+#define ERROR_SUCCESS 0
+#define ERROR_INVALID_PARAMETER 87
+
 #define THREAD_PRIORITY_IDLE (-15)
 #define THREAD_PRIORITY_LOWEST (-2)
 #define THREAD_PRIORITY_BELOW_NORMAL (-1)
@@ -108,6 +127,11 @@ void DeleteCriticalSection(CRITICAL_SECTION* section);
 void EnterCriticalSection(CRITICAL_SECTION* section);
 void LeaveCriticalSection(CRITICAL_SECTION* section);
 BOOL TryEnterCriticalSection(CRITICAL_SECTION* section);
+
+// Per-thread last error
+
+void SetLastError(DWORD error);
+DWORD GetLastError();
 
 // Threads and processes
 
