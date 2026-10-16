@@ -821,6 +821,64 @@ int32_t SendBugOpcode(uint32_t suggestion, const char* text) {
     return 1;
 }
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+// Some server launchers (Grimfall) write the realm list address as "XRL1:" and hex digits: the address XORed with a
+// fixed key. Their own client decodes it in a Windows extension DLL; this reads the same format. Anything that does not
+// decode to a printable address is passed on unchanged.
+static const char* DecodeRealmList(const char* realmList) {
+    static char s_decoded[256];
+    static const char kPrefix[] = "XRL1:";
+    static const char kKey[] = "Qx7P9rT2mL5vC";
+
+    if (!realmList || SStrCmpI(realmList, kPrefix, sizeof(kPrefix) - 1)) {
+        return realmList;
+    }
+
+    const char* hex = realmList + sizeof(kPrefix) - 1;
+    uint32_t length = SStrLen(hex);
+
+    if (!length || (length & 1) || length / 2 >= sizeof(s_decoded)) {
+        return realmList;
+    }
+
+    auto nibble = [](char c) -> int32_t {
+        if (c >= '0' && c <= '9') {
+            return c - '0';
+        }
+
+        if (c >= 'a' && c <= 'f') {
+            return c - 'a' + 10;
+        }
+
+        if (c >= 'A' && c <= 'F') {
+            return c - 'A' + 10;
+        }
+
+        return -1;
+    };
+
+    for (uint32_t i = 0; i < length / 2; i++) {
+        int32_t high = nibble(hex[2 * i]);
+        int32_t low = nibble(hex[2 * i + 1]);
+
+        if (high < 0 || low < 0) {
+            return realmList;
+        }
+
+        char c = static_cast<char>(((high << 4) | low) ^ kKey[i % (sizeof(kKey) - 1)]);
+
+        if (c < 0x21 || c > 0x7E) {
+            return realmList;
+        }
+
+        s_decoded[i] = c;
+    }
+
+    s_decoded[length / 2] = '\0';
+    return s_decoded;
+}
+#endif
+
 // VERIFY: 619198b6 manual
 // OFFSET: 0x006B2A90
 void ClientServices::Logon(const char* username, const char* password) {
@@ -888,6 +946,9 @@ void ClientServices::Logon(const char* username, const char* password) {
 
     const char* portal = ClientServices::s_loginObj->GetLoginServerType() == 1 ? ClientServices::s_portalVar->m_stringValue.m_str : "";
     const char* realmList = ClientServices::s_loginObj->GetLoginServerType() == 1 ? ClientServices::s_realmListBNVar->m_stringValue.m_str : ClientServices::s_realmListVar->m_stringValue.m_str;
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    realmList = DecodeRealmList(realmList);
+#endif
     ClientServices::s_loginObj->Logon(realmList, portal);
 }
 
@@ -1509,7 +1570,11 @@ const char* ClientServices::GetLoginServer() {
         return ClientServices::s_realmListBNVar->m_stringValue.m_str;
     }
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    return DecodeRealmList(ClientServices::s_realmListVar->m_stringValue.m_str);
+#else
     return ClientServices::s_realmListVar->m_stringValue.m_str;
+#endif
 }
 
 // VERIFY: 3cff0526 manual
