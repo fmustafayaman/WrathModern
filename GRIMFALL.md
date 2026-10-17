@@ -120,3 +120,15 @@ Karakter listesi geldiğinde (madde 2) hangi verinin eksik kaldığı oradan gö
 - Kalan yollar: (1) Grimfall geliştiricilerinden native istemci için istisna, (2) clientextensions.dll'in
   sunucuyla protokolünü çözüp native yazmak (DLL 4,5 MB ve gizlenmiş; sunucu DLL'in kendisini de
   inceliyorsa yetmeyebilir).
+
+## ClientExtensions — karakter listesi el sıkışması (2026-10-17, grimfall 89a4579)
+- DLL paketlenmemiş MSVC C++ (kod 1,8 MB, derleme 2026-10-16 — sık güncelleniyor). Hook yöneticisi
+  `[0x10427AD0]` (+0xC kur, +4 orijinal). İstemci fonksiyon tablosu `.data 0x10427A84..` (CDataStore,
+  ClientServices::Connection/SetMessageHandler/SendPacket, NetClient::Send, ObjMgr, FrameScript).
+- `RequestCharacterEnum` (0x464A40) hook'u (0x10014B90 → 0x10015900): eklenti başlatıldıysa yalnızca
+  opcode **0x52E** içeren boş paketi `NetClient::Send` ile yollar, sonra orijinali çağırır. Sunucu
+  CHAR_ENUM'u buna bağlıyor. Native istemci artık aynısını yapıyor.
+- Tanımsız sunucu paketleri `Logs/grimfall-packets.log`'a tam yazılıyor (sonraki protokol işi için).
+- Analiz araçları: decomp OFFSET haritası (20087 fonksiyon) ile DLL'deki istemci adresi referansları
+  taranıyor; 262 eşleşme (yuvarlak adreslerde yanlış pozitif var). Öne çıkanlar: ProcessMessage (8),
+  SetMessageHandler, karakter oluşturma script'leri, CCharacterComponent geoset/model, Spell/Tooltip, LFG roller.
