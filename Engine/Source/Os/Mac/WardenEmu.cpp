@@ -10,8 +10,10 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <pthread.h>
 #include <strings.h>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 /*
@@ -484,6 +486,13 @@ uint32_t WardenEmu::Impl::KnownImportArgumentBytes(const char* name) {
         { "lstrlenA", 4 },
         { "lstrcpyA", 8 },
         { "lstrcatA", 8 },
+        { "VirtualAlloc", 16 }, // address, size, allocationType, protect
+        { "VirtualFree", 12 }, // address, size, freeType
+        { "VirtualProtect", 16 }, // address, size, newProtect, &oldProtect
+        { "GetCurrentProcessId", 0 },
+        { "GetCurrentThreadId", 0 },
+        { "ReadProcessMemory", 20 }, // process, base, buffer, size, &read
+        { "WriteProcessMemory", 20 }, // process, base, buffer, size, &written
     };
 
     for (const KnownImport& import : known) {
@@ -663,6 +672,80 @@ uint32_t WardenEmu::Impl::RunImport(const ImportStub& stub, uint32_t* arguments,
         }
 
         return arguments[0];
+    }
+
+    if (strcasecmp(stub.name, "VirtualAlloc") == 0 && argumentCount >= 4) {
+        uint32_t requestedAddress = arguments[0];
+        uint32_t size = arguments[1];
+
+        // A specific address can only be honoured when the bump heap happens to be there; the
+        // honest answer for an unavailable region is failure, which is what a real allocator
+        // returns. Modules in practice pass null and take whatever comes back.
+        if (requestedAddress) {
+            WardenLog("VirtualAlloc(%08x, %u): fixed-address requests are not available", requestedAddress, size);
+            return 0;
+        }
+
+        uint32_t address = GuestAlloc(size);
+
+        if (address) {
+            WardenLog("VirtualAlloc(%u, flags %08x) -> %08x", size, arguments[2], address);
+        }
+
+        return address;
+    }
+
+    if (strcasecmp(stub.name, "VirtualFree") == 0) {
+        // The bump heap releases everything with the module, exactly like the pad's MemoryFree.
+        return 1; // TRUE
+    }
+
+    if (strcasecmp(stub.name, "VirtualProtect") == 0 && argumentCount >= 4) {
+        // Every mapped region already carries full permissions, so the requested protection is
+        // in effect immediately; report the old protection as the full-access default.
+        return WriteWord(arguments[3], 0x40 /* PAGE_EXECUTE_READWRITE */) ? 1 : 0;
+    }
+
+    if (strcasecmp(stub.name, "GetCurrentProcessId") == 0) {
+        // The client's real host process identity; Warden only needs something stable.
+        return (uint32_t)getpid();
+    }
+
+    if (strcasecmp(stub.name, "GetCurrentThreadId") == 0) {
+        return (uint32_t)(uintptr_t)pthread_self();
+    }
+
+    if ((strcasecmp(stub.name, "ReadProcessMemory") == 0 ||
+            strcasecmp(stub.name, "WriteProcessMemory") == 0) &&
+        argumentCount >= 5) {
+        uint32_t baseAddress = arguments[1];
+        uint32_t targetBuffer = arguments[2];
+        uint32_t size = arguments[3];
+        bool writing = strcasecmp(stub.name, "WriteProcessMemory") == 0;
+
+        if (size > MAX_HOST_TRANSFER_BYTES) {
+            WardenLog("%s: size too large (%u)", stub.name, size);
+            return 0;
+        }
+
+        moduleTransferBuffer.resize(size);
+
+        if (writing) {
+            // The module writing into "the process" is writing into our guest memory space.
+            if (!ReadMemory(targetBuffer, moduleTransferBuffer.data(), size) ||
+                !WriteMemory(baseAddress, moduleTransferBuffer.data(), size)) {
+                WardenLog("WriteProcessMemory failed on %08x size %u", baseAddress, size);
+                return 0;
+            }
+        } else {
+            if (!ReadMemory(baseAddress, moduleTransferBuffer.data(), size) ||
+                !WriteMemory(targetBuffer, moduleTransferBuffer.data(), size)) {
+                WardenLog("ReadProcessMemory failed on %08x size %u", baseAddress, size);
+                return 0;
+            }
+        }
+
+        return WriteWord(arguments[4], size) ? 1 : 0;
     }
 
     WardenLog("import %s!%s was called but has no behavior; returning 0", stub.dll, stub.name);
