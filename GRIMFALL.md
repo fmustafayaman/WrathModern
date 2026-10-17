@@ -11,7 +11,8 @@ Son güncelleme: 2026-10-17.
 | Login düğmesi (Scan.dll engeli) | ✅ Düzeltildi |
 | Giriş sunucusu (GRUNT) | ✅ `LOGIN_STATE_AUTHENTICATED` |
 | Oyun sunucusu kimlik doğrulama | ✅ `AUTH_OK` (istemci platformu `Win` bildirince) |
-| Karakter listesi (`CMSG_CHAR_ENUM`) | ⛔ Sunucu cevap vermiyor — **takıldığımız yer** |
+| Warden modülü (emülasyon) | ✅ Hatasız çalışıyor, donma giderildi (bkz. WARDEN.md) |
+| Karakter listesi (`CMSG_CHAR_ENUM`) | ⛔ Sunucu cevap vermiyor — modül `ClientExtensions` DLL'ini arıyor |
 | Karakter ekranında "realm split" döngüsü | ➖ Orijinalde de var, bırakıldı |
 
 ## Dosyalar ve konumlar

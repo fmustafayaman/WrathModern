@@ -245,3 +245,39 @@ Notlar:
 1. Kullanıcı Grimfall'a **bir kez** giriş yapar (karakter listesine kadar beklemesi yeterli).
 2. `Logs/warden.log` → `trace:` satırları vahşi sıçramanın yerini doğrudan gösterir.
 3. `Logs/warden-snapshot.bin` + `warden-session-key.bin` ile tüm iterasyon offline yürür; yeni giriş gerekmez.
+
+---
+
+## ÇÖZÜLDÜ: vahşi sıçrama ve donma (2026-10-17, commit 4981633)
+
+**Kök neden (canlı oturumun dal izinden):** Sunucu, modüle "ana image + 0x46AE20'yi çöz, zaman
+kaynağı olarak çağır" isteği gönderiyor (`rva 0x2841` → `obj+0x7EC`, çağrı `rva 0x31AC: call ebx`).
+Windows'ta `GetModuleHandle(NULL)` = Wow.exe @ 0x00400000 → `0x0086AE20` = `OsGetAsyncTimeMs`
+(hız hilesi kontrolü: GetTickCount ile karşılaştırılıyor). Emülatör NULL için modülün kendi tabanını
+veriyordu → çağrı image'ın boş kuyruğuna düşüp megabaytlarca sıfırın üstünden ilk import stub'ına
+(LCMapStringA) kayıyordu. Her `Process`'te ~4M komutluk bu kayma = "authentication successful" donması.
+
+**Çözüm:**
+- Guest düzeni: 0x00400000–HEAP_BASE istemci exe'sine ait. Heap 0x01000000, modül 0x01800000,
+  stub/ext heap 0x02000000, sahte handle'lar 0x03000000+ (eşlenmemiş).
+- `WardenEmuServices::ClientImage`: oyun klasöründeki Wow.exe, Windows loader düzeninde
+  (`OsMacMapPeImage`, sürüm kanıtıyla aynı `MappedImage`) 0x00400000'a eşlenir. PEB/Ldr/`GetModuleHandle(NULL|"Wow.exe")` onu gösterir.
+- İstemci fonksiyon köprüleri (`s_clientFunctions`, prolog baytları doğrulanınca açılır):
+  `OsGetAsyncTimeMs` (0x86AE20) → bizim `OsGetAsyncTimeMs`; `OsLoadLibrary` (0x86C4E0) → emüle LoadLibraryA.
+  Köprüsüz bir istemci adresi çalıştırılırsa çağrı durur ve loglanır; Windows'un x86 kodu ÇALIŞTIRILMAZ.
+- Modül image'ının kullanılmayan kuyruğu çalıştırılamaz → vahşi sıçrama anında fault.
+- Doğrulama: yakalanan oturum offline 0,36 sn'de hatasız oynuyor; ilk iki cevap canlıyla birebir,
+  saat köprüsü iki kez çağrılıp doğru adrese dönüyor; yerleşik/sunucu smoke'ları yeşil.
+
+**Replay komutu (artık exe gerekli):**
+`WARDEN_CLIENT_EXE="<oyun>/Wow.exe" Tools/Wardendump/WardenSmoke <image> <traffic> <session-key>`
+(Eski manuel derleme satırı geçersiz; `ninja -C build/mac WardenSmoke` kullan. Eski snapshot'lar eski
+bellek düzenine ait, yeni sürümle oynatılamaz.)
+
+## SIRADAKİ BLOKAJ: Grimfall `ClientExtensions` kontrolü
+Hatasız çalışan modül, sunucunun isteğiyle `OsLoadLibrary("Data\Extensions\ClientExtensions")` yapıyor:
+Grimfall'ın içerik modu DLL'i yüklü mü diye bakıyor. Native istemcide bu Windows DLL'i yok; emüle loader
+dürüstçe 0 döndürüyor. Sunucu karakter listesini büyük ihtimalle bu kontrole bağlıyor. Sahte handle
+vermek hile korumasını kandırmak olur — YAPILMAYACAK. Yollar: (1) Grimfall geliştiricileriyle konuşmak
+(native istemci için istisna), (2) ClientExtensions'ın işlevini native yazmak; ama sunucu DLL'in kendisini
+de inceliyorsa bu da yetmez. Ayrıca modül `QueryDosDeviceA("IPSect")` soruyor (emülasyonda cihaz yok → başarısız).
