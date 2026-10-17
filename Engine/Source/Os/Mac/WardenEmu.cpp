@@ -304,6 +304,17 @@ bool WardenEmu::Impl::Boot() {
         }),
         this, LIB_STUBS, LIB_STUBS + LIB_SLOT_COUNT * 8 - 1);
 
+    // The import stubs live on their own page; a separate range keeps the code hook off every
+    // module instruction, which matters once real modules start running loops.
+    uc_hook importHook;
+    uc_hook_add(machine, &importHook, UC_HOOK_CODE,
+        reinterpret_cast<void*>(+[](uc_engine* machine, uint64_t address, uint32_t size, void* user) {
+            (void)machine;
+            (void)size;
+            static_cast<WardenEmu::Impl*>(user)->HandleCodeHook(address);
+        }),
+        this, HEAP_EXT_BASE, HEAP_EXT_BASE + 0x1000 - 1);
+
     uc_hook invalidHook;
     uc_hook_add(machine, &invalidHook, UC_HOOK_MEM_INVALID,
         reinterpret_cast<void*>(+[](uc_engine* machine, uc_mem_type type, uint64_t address, int size,
