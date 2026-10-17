@@ -130,6 +130,31 @@ public:
     // WardenClient::OurLibrary::ModuleCache in the Win32 file.
     void ModuleCache(const uint8_t* id, const void* data, uint32_t size) override {
         const CWardenKey& cacheKey = *reinterpret_cast<const CWardenKey*>(id);
+
+        // Keep a copy of every server-delivered module next to the logs; offline analysis of
+        // its imports and code keeps new emulator work grounded in what servers really send.
+        {
+            char name[64];
+            snprintf(name, sizeof(name), "Logs/warden-module-%02x%02x%02x%02x.bin", id[12], id[13], id[14],
+                id[15]);
+
+            FILE* file = fopen(name, "wb");
+
+            if (file) {
+                fwrite(data, 1, size, file);
+                fclose(file);
+                WardenClientLog("ModuleCache: wrote %s (%u bytes)", name, size);
+            } else {
+                file = fopen("warden-module.bin", "wb");
+
+                if (file) {
+                    fwrite(data, 1, size, file);
+                    fclose(file);
+                    WardenClientLog("ModuleCache: wrote warden-module.bin fallback (%u bytes)", size);
+                }
+            }
+        }
+
         g_wardenCache.Invalidate(cacheKey);
 
         WardenCachedModule module;

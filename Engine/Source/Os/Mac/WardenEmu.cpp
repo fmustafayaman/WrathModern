@@ -9,6 +9,9 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
+#include <strings.h>
+#include <string>
 #include <vector>
 
 /*
@@ -173,7 +176,7 @@ struct WardenEmu::Impl {
         char name[192];
     };
 
-    ImportStub imports[64];
+    ImportStub imports[128];
     uint32_t importCount = 0;
     uint32_t nextImportStub = 0;
 
@@ -181,10 +184,18 @@ struct WardenEmu::Impl {
     void Teardown();
     void SetupStubs();
 
+    // Import plumbing: which APIs have real implementations, and running one for a stub call.
+    static uint32_t KnownImportArgumentBytes(const char* name);
+    void HandleImport(const ImportStub& stub);
+    uint32_t RunImport(const ImportStub& stub, uint32_t* arguments, uint32_t argumentCount);
+
     bool ReadMemory(uint32_t address, void* out, uint32_t size) const;
     bool WriteMemory(uint32_t address, const void* in, uint32_t size);
     bool ReadWord(uint32_t address, uint32_t& value) const;
     bool WriteWord(uint32_t address, uint32_t value);
+
+    // NUL-terminated guest string reader used by the string import implementations.
+    uint32_t ReadGuestString(uint32_t address, char* out, uint32_t capacity) const;
 
     uint32_t GuestAlloc(uint32_t size);
     uint32_t NewImportStub(const char* dll, const char* name, uint32_t argumentBytes);
@@ -374,6 +385,25 @@ bool WardenEmu::Impl::WriteWord(uint32_t address, uint32_t value) {
     return true;
 }
 
+uint32_t WardenEmu::Impl::ReadGuestString(uint32_t address, char* out, uint32_t capacity) const {
+    for (uint32_t i = 0; i + 1 < capacity; i++) {
+        uint8_t byte;
+
+        if (!ReadMemory(address + i, &byte, 1)) {
+            return 0;
+        }
+
+        out[i] = static_cast<char>(byte);
+
+        if (!byte) {
+            return i + 1;
+        }
+    }
+
+    out[capacity - 1] = '\0';
+    return capacity;
+}
+
 // =====================================================================
 // Guest allocation and stub housekeeping
 // =====================================================================
@@ -437,6 +467,208 @@ uint32_t WardenEmu::Impl::NewImportStub(const char* dll, const char* name, uint3
     return address;
 }
 
+// The import set with real implementations. argumentBytes follows each function's __stdcall
+// signature (the stub cleans the stack). An entry missing here means the load is refused, and
+// the refused load lists every missing API, so implementations get added by what real modules
+// actually ask for rather than by guesswork.
+uint32_t WardenEmu::Impl::KnownImportArgumentBytes(const char* name) {
+    struct KnownImport {
+        const char* name;
+        uint32_t argumentBytes;
+    };
+
+    static const KnownImport known[] = {
+        { "Sleep", 4 },
+        { "GetTickCount", 0 },
+        { "LCMapStringA", 24 }, // locale, flags, src, cchSrc, dest, cchDest
+        { "lstrlenA", 4 },
+        { "lstrcpyA", 8 },
+        { "lstrcatA", 8 },
+    };
+
+    for (const KnownImport& import : known) {
+        if (strcasecmp(import.name, name) == 0) {
+            return import.argumentBytes;
+        }
+    }
+
+    return UINT32_MAX;
+}
+
+// A module call into an import stub: gather the stack arguments, run the real behavior, fill
+// EAX. The stub's own `ret n` then cleans the arguments as __stdcall expects.
+void WardenEmu::Impl::HandleImport(const ImportStub& stub) {
+    uint32_t esp;
+    uc_reg_read(machine, UC_X86_REG_ESP, &esp);
+
+    uint32_t arguments[8];
+    uint32_t argumentCount = stub.argumentBytes / 4;
+
+    if (argumentCount > 8) {
+        argumentCount = 8;
+    }
+
+    for (uint32_t i = 0; i < argumentCount; i++) {
+        ReadWord(esp + 4 + i * 4, arguments[i]);
+    }
+
+    uint32_t returnEax = RunImport(stub, arguments, argumentCount);
+    uc_reg_write(machine, UC_X86_REG_EAX, &returnEax);
+}
+
+uint32_t WardenEmu::Impl::RunImport(const ImportStub& stub, uint32_t* arguments, uint32_t argumentCount) {
+    // Windows API names resolve case-insensitively; match that instead of trusting modules to
+    // have spelled exactly like the headers.
+    if (strcasecmp(stub.name, "Sleep") == 0) {
+        WardenLog("Sleep(%u ms)", stub.argumentBytes >= 4 ? arguments[0] : 0);
+        // Waiting pauses the module on Windows only; in the synchronous emulator nothing can
+        // race the module, so the pause has no observable effect.
+        return 0;
+    }
+
+    if (strcasecmp(stub.name, "GetTickCount") == 0) {
+        // Real monotonic milliseconds, the same query the module issues on Windows.
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        return (uint32_t)((uint64_t)now.tv_sec * 1000u + (uint32_t)(now.tv_nsec / 1000000u));
+    }
+
+    if (strcasecmp(stub.name, "LCMapStringA") == 0 && argumentCount >= 6) {
+        uint32_t srcAddress = arguments[2];
+        int32_t cchSrc = (int32_t)arguments[3];
+        uint32_t destAddress = arguments[4];
+        int32_t cchDest = (int32_t)arguments[5];
+
+        const bool uppercase = (arguments[1] & 0x200) != 0; // LCMAP_UPPERCASE
+        const bool lowercase = (arguments[1] & 0x100) != 0; // LCMAP_LOWERCASE
+
+        // Anything beyond the plain case maps is refused the way the API refuses impossible
+        // work: a zero return and an untouched buffer, so the module sees a real failure
+        // rather than a made-up answer.
+        if ((arguments[1] & ~(0x200u | 0x100u)) != 0 || (uppercase && lowercase)) {
+            WardenLog("LCMapStringA: unsupported mapping flags %08x", arguments[1]);
+            return 0;
+        }
+
+        char source[1024];
+        uint32_t sourceLength;
+
+        if (cchSrc < 0) {
+            sourceLength = ReadGuestString(srcAddress, source, sizeof(source));
+
+            if (!sourceLength) {
+                WardenLog("LCMapStringA: unreadable source %08x", srcAddress);
+                return 0;
+            }
+        } else {
+            if (cchSrc == 0 || (uint32_t)cchSrc > sizeof(source)) {
+                WardenLog("LCMapStringA: bad source length %d", cchSrc);
+                return 0;
+            }
+
+            sourceLength = (uint32_t)cchSrc;
+
+            if (!ReadMemory(srcAddress, source, sourceLength)) {
+                WardenLog("LCMapStringA: unreadable source %08x", srcAddress);
+                return 0;
+            }
+        }
+
+        const uint32_t requiredLength = sourceLength;
+
+        WardenLog("LCMapStringA flags=%08x src=%08x cchSrc=%d len=%u", arguments[1], srcAddress, cchSrc,
+            requiredLength);
+
+        if (cchDest == 0) {
+            return requiredLength; // the size-query form
+        }
+
+        if (cchDest < (int32_t)requiredLength) {
+            WardenLog("LCMapStringA: destination buffer too small (%d < %u)", cchDest, requiredLength);
+            return 0;
+        }
+
+        for (uint32_t i = 0; i < sourceLength; i++) {
+            uint8_t byte = (uint8_t)source[i];
+
+            // ASCII plus the Latin-1 accented range, the same case behaviour of the Western
+            // codepages; Turkish-specific pairs are outside what a byte mapping can express.
+            if (uppercase) {
+                if ((byte >= 'a' && byte <= 'z') || (byte >= 0xE0 && byte <= 0xFE && byte != 0xF7)) {
+                    byte -= 0x20;
+                }
+            } else if (lowercase) {
+                if ((byte >= 'A' && byte <= 'Z') || (byte >= 0xC0 && byte <= 0xDE && byte != 0xD7)) {
+                    byte += 0x20;
+                }
+            }
+
+            source[i] = (char)byte;
+
+            if (!byte && cchSrc < 0) {
+                // The mapped terminator is the end of the mapped result; the rest of the
+                // caller's buffer stays untouched, exactly like the API.
+                break;
+            }
+        }
+
+        if (!WriteMemory(destAddress, source, requiredLength)) {
+            WardenLog("LCMapStringA: unwritable destination %08x", destAddress);
+            return 0;
+        }
+
+        return requiredLength;
+    }
+
+    if (strcasecmp(stub.name, "lstrlenA") == 0 && argumentCount >= 1) {
+        char text[1024];
+        uint32_t length = ReadGuestString(arguments[0], text, sizeof(text));
+
+        if (!length) {
+            return UINT32_MAX; // the lstrlen failure value (-1)
+        }
+
+        return length - 1;
+    }
+
+    if (strcasecmp(stub.name, "lstrcpyA") == 0 && argumentCount >= 2) {
+        char text[1024];
+        uint32_t length = ReadGuestString(arguments[1], text, sizeof(text));
+
+        if (!length || !WriteMemory(arguments[0], text, length)) {
+            WardenLog("lstrcpyA failed on %08x <- %08x", arguments[0], arguments[1]);
+            return 0;
+        }
+
+        return arguments[0];
+    }
+
+    if (strcasecmp(stub.name, "lstrcatA") == 0 && argumentCount >= 2) {
+        char destination[1024];
+        char addition[1024];
+        uint32_t destinationLength = ReadGuestString(arguments[0], destination, sizeof(destination));
+        uint32_t additionLength = ReadGuestString(arguments[1], addition, sizeof(addition));
+
+        if (!destinationLength || !additionLength ||
+            destinationLength + additionLength - 1 > sizeof(destination)) {
+            WardenLog("lstrcatA failed on %08x <- %08x", arguments[0], arguments[1]);
+            return 0;
+        }
+
+        memcpy(destination + destinationLength - 1, addition, additionLength);
+
+        if (!WriteMemory(arguments[0], destination, destinationLength + additionLength - 1)) {
+            WardenLog("lstrcatA unwritable destination %08x", arguments[0]);
+            return 0;
+        }
+
+        return arguments[0];
+    }
+
+    WardenLog("import %s!%s was called but has no behavior; returning 0", stub.dll, stub.name);
+    return 0;
+}
+
 // The OurLibrary stubs: one code stub per vtable slot. The hooks perform the work and the stub
 // itself performs the `ret n` (callee-style, matching MSVC __thiscall).
 void WardenEmu::Impl::SetupStubs() {
@@ -491,6 +723,17 @@ bool WardenEmu::Impl::CallGuest(uint32_t address, const uint32_t* stackArguments
 
 void WardenEmu::Impl::HandleCodeHook(uint64_t address) {
     if (address < LIB_STUBS || address >= LIB_STUBS + LIB_SLOT_COUNT * 8) {
+        // Import stub calls land here: run the real behavior, then the stub's `ret n` follows
+        // with EAX filled in.
+        if (address >= HEAP_EXT_BASE && address < HEAP_EXT_BASE + 0x1000) {
+            for (uint32_t i = 0; i < importCount; i++) {
+                if (imports[i].address == (uint32_t)address) {
+                    HandleImport(imports[i]);
+                    break;
+                }
+            }
+        }
+
         return;
     }
 
@@ -727,6 +970,7 @@ bool WardenEmu::Load(const void* data, uint32_t size) {
     // honest path: pretending to answer unknown imports would fake the module's behaviour.
     uint32_t importOffset = header[7];
     uint32_t importCount = header[8];
+    std::vector<std::string> unknowns;
 
     for (uint32_t i = 0; i < importCount; i++) {
         uint32_t dllPointer;
@@ -764,21 +1008,41 @@ bool WardenEmu::Load(const void* data, uint32_t size) {
 
             uint32_t stub = 0;
 
-            if (!byOrdinal && strcmp(dll, "kernel32.dll") == 0 && strcmp(name, "Sleep") == 0) {
-                stub = impl.NewImportStub(dll, name, 4);
-            } else if (!byOrdinal && strcmp(dll, "kernel32.dll") == 0 &&
-                       strcmp(name, "GetTickCount") == 0) {
-                stub = impl.NewImportStub(dll, name, 0);
+            if (!byOrdinal && strcasecmp(dll, "kernel32.dll") == 0) {
+                // Only imports with a real implementation below resolve; everything else is
+                // collected and reported once, so one failed load lists every missing API.
+                // Module DLL names vary in case between shipped modules ("KERNEL32.dll" is a
+                // real example), and Windows resolution is case-insensitive, hence strcasecmp.
+                uint32_t argumentBytes = Impl::KnownImportArgumentBytes(name);
+
+                if (argumentBytes != UINT32_MAX) {
+                    stub = impl.NewImportStub(dll, name, argumentBytes);
+                }
             }
 
             if (!stub) {
-                WardenLog("import %s!%s has no emulator implementation", dll, name);
-                return false;
+                unknowns.emplace_back(dll);
+                unknowns.back() += "!";
+                unknowns.back() += name;
+                // Keep resolving the remaining imports so their stubs fill in; the load still
+                // fails below, but the log then shows the complete set the module needs.
+                impl.WriteWord(IMAGE_BASE + thunk, impl.NewImportStub(dll, name, 4));
+                thunk += 4;
+                continue;
             }
 
             impl.WriteWord(IMAGE_BASE + thunk, stub);
             thunk += 4;
         }
+    }
+
+    if (!unknowns.empty()) {
+        for (const std::string& unknown : unknowns) {
+            WardenLog("import %s has no emulator implementation", unknown.c_str());
+        }
+
+        WardenLog("module load refused: %u unknown import(s)", (uint32_t)unknowns.size());
+        return false;
     }
 
     // Exports. The stored values stay unrelocated at load time (the builtin module's table is
