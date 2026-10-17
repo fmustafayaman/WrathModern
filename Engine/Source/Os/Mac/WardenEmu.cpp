@@ -3,6 +3,7 @@
 #if defined(WOWDECOMP_PLATFORM_MAC) && defined(WRATHMODERN_WARDEN_EMULATION)
 
 #include "Engine/Source/Os/WardenEmu.h"
+#include "Engine/Source/Os/Mac/WardenSystemExports.h"
 
 #include <unicorn/unicorn.h>
 
@@ -271,6 +272,9 @@ struct WardenEmu::Impl {
         uint32_t argumentBytes = 0;
         char dll[64];
         char name[192];
+        // False for a system export the module links but the emulator gives no behavior: the
+        // import resolves as it does on Windows, and a call into it stops the module.
+        bool implemented = true;
     };
 
     ImportStub imports[128];
@@ -318,6 +322,7 @@ struct WardenEmu::Impl {
 
     // Import plumbing: which APIs have real implementations, and running one for a stub call.
     static uint32_t KnownImportArgumentBytes(const char* name);
+    static bool IsSystemExport(const char* dll, const char* name);
     uint32_t StubForName(const char* name);
     void HandleImport(const ImportStub& stub);
     uint32_t RunImport(const ImportStub& stub, uint32_t* arguments, uint32_t argumentCount);
@@ -1013,6 +1018,7 @@ uint32_t WardenEmu::Impl::NewImportStub(const char* dll, const char* name, uint3
 
     ImportStub& stub = imports[importCount++];
     memset(&stub, 0, sizeof(stub));
+    stub.implemented = true;
     stub.address = address;
     stub.argumentBytes = argumentBytes;
     snprintf(stub.dll, sizeof(stub.dll), "%s", dll);
@@ -1107,11 +1113,43 @@ uint32_t WardenEmu::Impl::KnownImportArgumentBytes(const char* name) {
     return UINT32_MAX;
 }
 
+// Whether a Windows process would resolve dll!name at load time: the name is an export of the
+// 32-bit system library the import names (WardenSystemExports.h). Library names compare without
+// case, as the loader does; export names are exact, as GetProcAddress matches them.
+bool WardenEmu::Impl::IsSystemExport(const char* dll, const char* name) {
+    const char* const* begin;
+    const char* const* end;
+
+    if (strcasecmp(dll, "kernel32.dll") == 0 || strcasecmp(dll, "kernel32") == 0) {
+        begin = s_kernel32Exports;
+        end = s_kernel32Exports + sizeof(s_kernel32Exports) / sizeof(s_kernel32Exports[0]);
+    } else if (strcasecmp(dll, "user32.dll") == 0 || strcasecmp(dll, "user32") == 0) {
+        begin = s_user32Exports;
+        end = s_user32Exports + sizeof(s_user32Exports) / sizeof(s_user32Exports[0]);
+    } else {
+        return false;
+    }
+
+    return std::binary_search(begin, end, name,
+        [](const char* a, const char* b) { return strcmp(a, b) < 0; });
+}
+
 // A module call into an import stub: gather the stack arguments, run the real behavior, fill
 // EAX. The stub's own `ret n` then cleans the arguments as __stdcall expects.
 void WardenEmu::Impl::HandleImport(const ImportStub& stub) {
     uint32_t esp;
     uc_reg_read(machine, UC_X86_REG_ESP, &esp);
+
+    if (!stub.implemented) {
+        char reason[320];
+        snprintf(reason, sizeof(reason), "module called %s!%s, which the emulator does not implement; the call stops",
+            stub.dll, stub.name);
+        WardenLog("%s", reason);
+        DumpTrace(reason);
+        m_faulted = true;
+        uc_emu_stop(machine);
+        return;
+    }
 
     uint32_t arguments[8];
     uint32_t argumentCount = stub.argumentBytes / 4;
@@ -2181,7 +2219,7 @@ void WardenEmu::Impl::CaptureSnapshot(uint32_t address, const uint32_t* stackArg
 
 namespace {
 
-const char SNAPSHOT_MAGIC[8] = { 'W', 'E', 'M', 'U', 'S', 'N', 'P', '2' };
+const char SNAPSHOT_MAGIC[8] = { 'W', 'E', 'M', 'U', 'S', 'N', 'P', '3' };
 
 }
 
@@ -2539,6 +2577,18 @@ bool WardenEmu::Load(const void* data, uint32_t size) {
 
                 if (argumentBytes != UINT32_MAX) {
                     stub = impl.NewImportStub(dll, name, argumentBytes);
+                } else if (Impl::IsSystemExport(dll, name)) {
+                    // A real export the module links without the emulator implementing it
+                    // (the per-module filler imports retail Warden modules carry: none of
+                    // them is ever called). Windows resolves it, so the load goes on; a call
+                    // would stop the module instead of returning an invented result.
+                    stub = impl.NewImportStub(dll, name, 0);
+
+                    if (stub) {
+                        impl.imports[impl.importCount - 1].implemented = false;
+                        WardenLog("import %s!%s resolves without emulator behavior; a call to it stops the module",
+                            dll, name);
+                    }
                 }
             }
 
