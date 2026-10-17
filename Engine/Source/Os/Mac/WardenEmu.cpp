@@ -107,7 +107,13 @@ constexpr LibSlotInfo s_libSlots[LIB_SLOT_COUNT] = {
 // =====================================================================
 
 static void WardenLog(const char* format, ...) {
-    FILE* file = fopen("warden.log", "a");
+    // The app chdirs into the game directory; write into the shared logs folder, falling back
+    // to the directory root for first runs.
+    FILE* file = fopen("Logs/warden.log", "a");
+
+    if (!file) {
+        file = fopen("warden.log", "a");
+    }
 
     if (!file) {
         return;
@@ -143,10 +149,11 @@ struct WardenEmu::Impl {
     uint32_t exportAddress = 0;
     uint32_t moduleObject = 0;
 
-    // Guest heap bump allocator.
-    uint32_t heapNext = HEAP_BASE;
-    uint32_t heapLimit = HEAP_BASE + HEAP_SIZE;
-    bool heapExtended = false;
+    // Guest heap regions (bump allocated for the module). The extended region starts one page
+    // in, its first page holds the import stubs.
+    uint32_t m_heapNext[2] = { HEAP_BASE, HEAP_EXT_BASE + 0x1000 };
+    uint32_t m_heapLimit[2] = { HEAP_BASE + HEAP_SIZE, HEAP_EXT_BASE + HEAP_EXT_SIZE };
+    uint32_t heapRegion = 0;
 
     // Guest stub addresses handed out for imports.
     struct ImportStub {
@@ -196,11 +203,14 @@ bool WardenEmu::Impl::Boot() {
         return false;
     }
 
+    // Every region is mapped up front: Unicorn does not allow remapping while the machine is
+    // running, and hooks (MemoryAlloc, import stubs) run inside uc_emu_start.
     uc_mem_map(machine, STACK_BASE, STACK_SIZE, UC_PROT_ALL);
     uc_mem_map(machine, MISC_BASE, MISC_SIZE, UC_PROT_ALL);
     uc_mem_map(machine, SCRATCH_BASE, SCRATCH_SIZE, UC_PROT_ALL);
     uc_mem_map(machine, HEAP_BASE, HEAP_SIZE, UC_PROT_ALL);
     uc_mem_map(machine, IMAGE_BASE, IMAGE_SIZE, UC_PROT_ALL);
+    uc_mem_map(machine, HEAP_EXT_BASE, HEAP_EXT_SIZE, UC_PROT_ALL);
     uc_mem_map(machine, TEB_BASE, 0x1000, UC_PROT_READ | UC_PROT_WRITE);
     uc_mem_map(machine, GDT_BASE, 0x1000, UC_PROT_READ);
 
@@ -300,9 +310,11 @@ void WardenEmu::Impl::Teardown() {
     }
 
     booted = false;
-    heapNext = HEAP_BASE;
-    heapLimit = HEAP_BASE + HEAP_SIZE;
-    heapExtended = false;
+    m_heapNext[0] = HEAP_BASE;
+    m_heapNext[1] = HEAP_EXT_BASE + 0x1000;
+    m_heapLimit[0] = HEAP_BASE + HEAP_SIZE;
+    m_heapLimit[1] = HEAP_EXT_BASE + HEAP_EXT_SIZE;
+    heapRegion = 0;
     importCount = 0;
     nextImportStub = 0;
     imageLoaded = false;
@@ -357,45 +369,47 @@ bool WardenEmu::Impl::WriteWord(uint32_t address, uint32_t value) {
 // =====================================================================
 
 uint32_t WardenEmu::Impl::GuestAlloc(uint32_t size) {
-    size = (size + 7) & ~7u;
+    // The extended region starts one page in: the import stubs own its first page.
+    size = size ? (size + 7) & ~7u : 8;
 
-    if (heapNext + size > heapLimit) {
-        if (!heapExtended) {
-            uc_mem_map(machine, HEAP_EXT_BASE, HEAP_EXT_SIZE, UC_PROT_ALL);
-            heapExtended = true;
-            heapNext = HEAP_EXT_BASE + 0x1000; // keep room, import stubs claim the first page
-            heapLimit = HEAP_EXT_BASE + HEAP_EXT_SIZE;
-            WardenLog("guest heap exhausted, extended to %08x", HEAP_EXT_BASE);
-        }
+    uint32_t region = heapRegion;
 
-        if (heapNext + size > heapLimit) {
-            WardenLog("guest heap still exhausted after %u bytes", (uint32_t)(heapNext - HEAP_BASE));
-            return 0;
-        }
+    while (region < 2 && m_heapNext[region] + size > m_heapLimit[region]) {
+        region++;
     }
 
-    uint32_t address = heapNext;
-    heapNext += size;
+    if (region >= 2) {
+        WardenLog("guest heap allocation failed (%u bytes)", size);
+        return 0;
+    }
+
+    if (region != heapRegion) {
+        WardenLog("guest heap region %u exhausted, continuing in region %u", heapRegion, region);
+        heapRegion = region;
+    }
+
+    uint32_t address = m_heapNext[region];
+    m_heapNext[region] += size;
+
+    // Fresh memory reads as zeros in the original (VirtualAlloc MEM_COMMIT semantics).
+    uint32_t zero = 0;
+
+    for (uint32_t off = 0; off < size; off += sizeof(zero)) {
+        uint32_t chunk = size - off < sizeof(zero) ? size - off : sizeof(zero);
+        WriteMemory(address + off, &zero, chunk);
+    }
+
     return address;
 }
 
 uint32_t WardenEmu::Impl::NewImportStub(const char* dll, const char* name, uint32_t argumentBytes) {
-    if (importCount >= sizeof(imports) / sizeof(imports[0])) {
+    if (importCount >= sizeof(imports) / sizeof(imports[0]) || nextImportStub * 8 > 0x1000) {
         return 0;
     }
 
-    // Import stubs live above the heap so the module's sections do not interfere: only the
-    // code page range gets hooks, and the heap stays data.
+    // Import stubs live at the bottom of the extended area, below the heap bump start: the
+    // stub page is code, the rest of the extended region stays data for the guest heap.
     uint32_t address = HEAP_EXT_BASE + nextImportStub * 8;
-
-    if (!heapExtended) {
-        uc_mem_map(machine, HEAP_EXT_BASE, HEAP_EXT_SIZE, UC_PROT_ALL);
-        heapExtended = true;
-        // No GuestAlloc side effect yet; bump changes when the module really asks for memory.
-        if (heapNext < HEAP_BASE || heapNext + HEAP_EXT_SIZE > HEAP_EXT_BASE) {
-            // keep bump as-is: imports occupy the first page of the extended area.
-        }
-    }
 
     // __stdcall by construction: the stub itself cleans the arguments, which is what the
     // patched thunk callers expect from a LoadLibraryA-resolved address.

@@ -49,7 +49,13 @@ SCritSect s_wardenCritSect;
 // ---------------------------------------------------------------------
 
 void WardenClientLog(const char* format, ...) {
-    FILE* file = fopen("warden.log", "a");
+    // The app chdirs into the game directory; the Logs subdirectory is shared with the other
+    // client logs and may not exist on a first run, so fall back next to the application.
+    FILE* file = fopen("Logs/warden.log", "a");
+
+    if (!file) {
+        file = fopen("warden.log", "a");
+    }
 
     if (!file) {
         return;
@@ -64,6 +70,23 @@ void WardenClientLog(const char* format, ...) {
     fclose(file);
 }
 
+// Later parts of the flow log the shape of the warden conversation: the first bytes of every
+// server packet and of every module reply.
+static void WardenLogHex(const char* what, const uint8_t* data, uint32_t size) {
+    if (size > 62) {
+        size = 62; // first packet shapes matter; keep it to one line
+    }
+
+    char hex[256];
+    uint32_t hexUsed = 0;
+
+    for (uint32_t i = 0; i < size && hexUsed + 3 < sizeof(hex); i++) {
+        hexUsed += static_cast<uint32_t>(snprintf(hex + hexUsed, sizeof(hex) - hexUsed, "%02x ", data[i]));
+    }
+
+    WardenClientLog("%s bytes=%u %s", what, size, hex);
+}
+
 // ---------------------------------------------------------------------
 // The client services handed to the emulated module
 // ---------------------------------------------------------------------
@@ -72,6 +95,8 @@ class MacWardenServices : public WardenEmuServices {
 public:
     // WardenClient::OurLibrary::Data in the Win32 file.
     void ModuleOutput(const uint8_t* data, uint32_t size) override {
+        WardenLogHex("CMSG_WARDEN_DATA payload", data, size);
+
         WDataStore msg;
         msg.Put(static_cast<uint32_t>(CMSG_WARDEN_DATA));
 
@@ -297,6 +322,7 @@ int32_t ReceiveWardenData(void* param, NETMESSAGE msgId, uint32_t time, CDataSto
     msg->GetDataInSitu(data, size);
 
     WardenClientLog("SMSG_WARDEN_DATA %u bytes, active=%d", size, s_activeEmu != nullptr);
+    WardenLogHex("SMSG payload", reinterpret_cast<const uint8_t*>(data), size);
 
     uint32_t consumed = 0;
 
