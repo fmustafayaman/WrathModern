@@ -133,6 +133,7 @@ class NetClient : public WowConnectionResponse {
     void HandleAuthChallenge(WowConnection* connection, CDataStore* msg);
     void HandleIdle();
     void HandlePong(WowConnection* connection, CDataStore* msg);
+    void LogUnhandledMessage(uint32_t msgId, CDataStore* msg);
     void HandleRedirectClient(WowConnection* connection, CDataStore* msg);
     void HandleResumeComms(WowConnection* connection, CDataStore* msg);
     void HandleSuspendComms(WowConnection* connection, CDataStore* msg);

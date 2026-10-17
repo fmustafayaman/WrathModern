@@ -315,12 +315,41 @@ int32_t NetClient::ProcessMessage(uint32_t timeReceived, CDataStore* msg, int32_
         return this->m_handlers[msgId](this->m_handlerParams[msgId], static_cast<NETMESSAGE>(msgId), timeReceived, msg);
     }
 
+    // Grimfall sends its own messages (opcodes past the 3.3.5a range, handled by its client
+    // extension on Windows). Record every message nothing handles, whole, so the extension's
+    // protocol can be implemented from what the server really sends.
+    LogUnhandledMessage(msgId, msg);
+
     msg->Reset();
 
     return 0;
 }
 
 void NetClient::ValidateMessageId(uint32_t msgId) {
+}
+
+void NetClient::LogUnhandledMessage(uint32_t msgId, CDataStore* msg) {
+    FILE* file = fopen("Logs/grimfall-packets.log", "a");
+
+    if (!file) {
+        return;
+    }
+
+    uint32_t size = msg->m_size > msg->m_read ? msg->m_size - msg->m_read : 0;
+    void* data = nullptr;
+
+    if (size) {
+        msg->GetDataInSitu(data, size);
+    }
+
+    fprintf(file, "%u SMSG %04x unhandled, %u bytes:", OsGetAsyncTimeMs(), msgId, size);
+
+    for (uint32_t i = 0; i < size; i++) {
+        fprintf(file, " %02x", static_cast<const uint8_t*>(data)[i]);
+    }
+
+    fputc('\n', file);
+    fclose(file);
 }
 
 // VERIFY: eb4bad4d auto

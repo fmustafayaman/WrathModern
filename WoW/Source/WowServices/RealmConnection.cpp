@@ -7,6 +7,9 @@
 #include "WoW/Source/UIUtil/AddOns.h"
 #include "WoW/Source/WowServices/WDataStore.h"
 
+// Grimfall's client extension handshake opcode (outside the 3.3.5a range, see NUM_MSG_TYPES).
+static const uint32_t CMSG_GRIMFALL_CLIENT_EXTENSIONS = 0x52E;
+
 // STATIC: 0x00AB953C
 TSList<RealmConnection::REALMCONNECTIONNODE> RealmConnection::s_allRealmConnections;
 
@@ -399,6 +402,17 @@ void RealmConnection::HandleAuthChallenge(AuthenticationChallenge* challenge) {
 // VERIFY: 43999034 manual
 // OFFSET: 0x00464A40
 void RealmConnection::RequestCharacterEnum() {
+    // Grimfall: its client extension (Data/Extensions/clientextensions.dll) hooks this function
+    // and announces itself with an empty opcode-0x52E message right before the request, and the
+    // server answers the character list only after it. The native client carries that part of
+    // the extension itself.
+    {
+        CDataStore hello;
+        hello.Put(static_cast<uint32_t>(CMSG_GRIMFALL_CLIENT_EXTENSIONS));
+        hello.Finalize();
+        this->Send(&hello);
+    }
+
     CDataStore msg;
     msg.Put(static_cast<uint32_t>(CMSG_ENUM_CHARACTERS));
     msg.Finalize();
