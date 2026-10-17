@@ -57,8 +57,8 @@ constexpr uint32_t IMAGE_SIZE = 0x00800000; // 8 MiB, covers every known module 
 constexpr uint32_t HEAP_EXT_BASE = 0x00F00000;
 constexpr uint32_t HEAP_EXT_SIZE = 0x00200000; // relief block if the first heap fills up
 
-constexpr uint32_t MAX_TRANSFER_BYTES = 0x8000; // honest ceiling for bytes crossing the bridge
-
+// Honest ceiling for bytes crossing the bridge: buffers handed to the module live in the
+// scratch area below the out-parameter block, which caps the delivered packet size.
 // Objects inside MISC_BASE / SCRATCH_BASE.
 constexpr uint32_t STOP_ADDRESS = MISC_BASE + 0x10; // emu runs stop when EIP lands here
 constexpr uint32_t LIB_OBJECT = MISC_BASE + 0x80; // the guest OurLibrary object
@@ -67,6 +67,12 @@ constexpr uint32_t LIB_STUBS = MISC_BASE + 0x100; // 16 stubs, 8 bytes each
 constexpr uint32_t SCRATCH_KEY = SCRATCH_BASE + 0x0000; // session key copy
 constexpr uint32_t SCRATCH_DATA = SCRATCH_BASE + 0x0100; // bytes delivered to the module
 constexpr uint32_t SCRATCH_OUTPUT = SCRATCH_BASE + 0x9000; // out-parameters
+
+// Honest ceiling for bytes crossing the bridge. Buffers handed to the module live in the
+// scratch area below the out-parameter block, which caps the delivered packet size; everything
+// else moves between the module's own memory and host buffers under the same generous bound.
+constexpr uint32_t MAX_TRANSFER_BYTES = SCRATCH_OUTPUT - SCRATCH_DATA;
+constexpr uint32_t MAX_DELIVER_BYTES = SCRATCH_OUTPUT - SCRATCH_DATA;
 
 constexpr uint32_t LIB_SLOT_COUNT = 16;
 
@@ -898,7 +904,7 @@ void WardenEmu::Data(const void* data, uint32_t size, uint32_t& consumed) {
         return;
     }
 
-    if (size > MAX_TRANSFER_BYTES) {
+    if (size > MAX_DELIVER_BYTES) {
         WardenLog("Data delivered too large: %u", size);
         return;
     }
