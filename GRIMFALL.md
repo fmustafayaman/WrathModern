@@ -109,3 +109,14 @@ Karakter listesi geldiğinde (madde 2) hangi verinin eksik kaldığı oradan gö
   Verdigi dijital iz: `Tools/Wardendump/WardenVersionProbe "<oyun klasörü>"` (build: `cmake --build build/mac --target WardenVersionProbe`).
 - DİKKAT: DivxDecoder.dll değiştirilmişse (mod loader'ları değiştirir; klasörde .bak duruyor) kanıt orijinal olmaz.
   Warmane/kesin denetimi olan sunucular için orijinal .bak dosyasını geri koymak gerekir.
+
+## Durum (2026-10-17 12:14 girişi)
+- Warden el sıkışması baştan sona hatasız tamamlanıyor: MODULE_USE → OK, HASH_REQUEST → HASH_RESULT,
+  modüle özel kontrol isteği (288 B) → modül raporu (38 B). Fault yok, donma yok (AUTH_OK → karakter isteği 0,5 sn).
+- Sunucu rapordan sonra hiçbir şey göndermiyor; `COP_GET_CHARACTERS` cevapsız kalıyor.
+- Raporun içinde modülün `OsLoadLibrary("Data\Extensions\ClientExtensions")` sonucu var: native istemcide
+  bu DLL yok → "yüklü değil". Karakter listesi büyük ihtimalle buna (ya da DLL'in kendi el sıkışma paketine)
+  bağlı. Sahte "yüklü" cevabı verilmeyecek.
+- Kalan yollar: (1) Grimfall geliştiricilerinden native istemci için istisna, (2) clientextensions.dll'in
+  sunucuyla protokolünü çözüp native yazmak (DLL 4,5 MB ve gizlenmiş; sunucu DLL'in kendisini de
+  inceliyorsa yetmeyebilir).
