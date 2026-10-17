@@ -425,3 +425,6 @@ CMakeSettings.json
 /Tools/Wardendump/WardenVersionProbe
 /warden-snapshot.bin
 /Tools/Wardendump/captures/warden-check-snap.*
+
+# Captured Warden runtime data (module dumps, traffic traces) — local diagnostics only
+Tools/Wardendump/dump/
