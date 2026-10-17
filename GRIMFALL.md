@@ -98,3 +98,13 @@ Karakter listesi geldiğinde (madde 2) hangi verinin eksik kaldığı oradan gö
 ### 4. Temizlik
 
 - `XRL1` çözümünü istersen `macos`'tan `grimfall`'a taşı; şu an `macos`'ta duruyor ve başka adresleri etkilemiyor.
+
+## Warden ve versiyon kanıtı durumu (2026-10-17, macos merge sonrası)
+
+- Windows modülleri artık Unicorn emülasyonuyla çalışıyor (Engine/Source/Os/WardenEmu.h). İstek: düz oturum,
+  `Logs/warden.log` ve `Logs/connection.log` izle; SMSG_WARDEN_DATA modül CMSG ile yanıtlarsa karakter listesi
+  beklenir. warden.log hex dump'lar içerir: "SMSG payload" gelen, "CMSG_WARDEN_DATA payload" giden.
+- Versiyon kanıtı artık oyun klasöründeki Wow.exe/DivxDecoder.dll/unicows.dll'den üretilir (Windows kanıtı birebir).
+  Verdigi dijital iz: `Tools/Wardendump/WardenVersionProbe "<oyun klasörü>"` (build: `cmake --build build/mac --target WardenVersionProbe`).
+- DİKKAT: DivxDecoder.dll değiştirilmişse (mod loader'ları değiştirir; klasörde .bak duruyor) kanıt orijinal olmaz.
+  Warmane/kesin denetimi olan sunucular için orijinal .bak dosyasını geri koymak gerekir.
