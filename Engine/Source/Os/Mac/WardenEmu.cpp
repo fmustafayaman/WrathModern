@@ -14,6 +14,7 @@
 #include <strings.h>
 #include <string>
 #include <unistd.h>
+#include <algorithm>
 #include <vector>
 
 /*
@@ -122,6 +123,22 @@ constexpr ClientFunction s_clientFunctions[] = {
 
 constexpr uint32_t CLIENT_FUNCTION_COUNT = sizeof(s_clientFunctions) / sizeof(s_clientFunctions[0]);
 
+// Windows memory-management constants, as VirtualQuery / VirtualProtect / VirtualAlloc use them.
+constexpr uint32_t WIN_MEM_COMMIT = 0x00001000;
+constexpr uint32_t WIN_MEM_RESERVE = 0x00002000;
+constexpr uint32_t WIN_MEM_DECOMMIT = 0x00004000;
+constexpr uint32_t WIN_MEM_RELEASE = 0x00008000;
+constexpr uint32_t WIN_MEM_FREE = 0x00010000;
+constexpr uint32_t WIN_MEM_PRIVATE = 0x00020000;
+constexpr uint32_t WIN_MEM_IMAGE = 0x01000000;
+constexpr uint32_t WIN_PAGE_NOACCESS = 0x01;
+constexpr uint32_t WIN_PAGE_READONLY = 0x02;
+constexpr uint32_t WIN_PAGE_READWRITE = 0x04;
+constexpr uint32_t WIN_PAGE_EXECUTE_READ = 0x20;
+constexpr uint32_t WIN_PAGE_EXECUTE_READWRITE = 0x40;
+constexpr uint32_t WIN_PAGE_EXECUTE_WRITECOPY = 0x80;
+constexpr uint32_t WIN_USER_SPACE_END = 0x7FFF0000; // lpMaximumApplicationAddress + 1
+
 // MSVC __thiscall callee-side semantics: the stub's own `ret n` cleans the arguments, the hook
 // only fills EAX (and lets the ret run). Sizes follow the OurLibrary signatures.
 struct LibSlotInfo {
@@ -226,6 +243,23 @@ struct WardenEmu::Impl {
     uint32_t m_clientSize = 0;
     bool m_clientBridged[CLIENT_FUNCTION_COUNT] = { false };
 
+    // The address space as Windows describes it to the module (VirtualQuery), page granular,
+    // sorted and non-overlapping; anything not listed is free. It describes the process the
+    // module believes it runs in: the client image by section, private allocations with the
+    // protection they were given. The emulator's own plumbing (stubs, sentinel) is described as
+    // what it stands in for, since the real process has no such memory of its own.
+    struct MemoryRegion {
+        uint32_t base;
+        uint32_t size;
+        uint32_t allocationBase;
+        uint32_t allocationProtect;
+        uint32_t protect;
+        uint32_t state;
+        uint32_t type;
+    };
+
+    std::vector<MemoryRegion> m_memoryMap;
+
     // Set when the module takes a path the emulator cannot continue from (RaiseException,
     // TerminateProcess). The call that triggered it then reports failure instead of resuming
     // with state the real process would never have reached.
@@ -297,6 +331,14 @@ struct WardenEmu::Impl {
     uint32_t ReadGuestString(uint32_t address, char* out, uint32_t capacity) const;
 
     uint32_t GuestAlloc(uint32_t size);
+    uint32_t GuestAllocPages(uint32_t size);
+
+    // Memory map (see m_memoryMap).
+    void SetMemoryRange(const MemoryRegion& region);
+    void AddAllocation(uint32_t base, uint32_t size, uint32_t protect, uint32_t type);
+    bool ProtectMemory(uint32_t address, uint32_t size, uint32_t protect, uint32_t& oldProtect);
+    bool QueryMemory(uint32_t address, uint32_t* info) const;
+    void DescribeBootMemory();
     uint32_t NewImportStub(const char* dll, const char* name, uint32_t argumentBytes);
 
     bool CallGuest(uint32_t address, const uint32_t* stackArguments, uint32_t argumentCount,
@@ -383,6 +425,7 @@ bool WardenEmu::Impl::Boot() {
     selector = 0x18;
     uc_reg_write(machine, UC_X86_REG_FS, &selector);
 
+    DescribeBootMemory();
     MapClientImage();
     SetupEnvironment();
 
@@ -565,6 +608,45 @@ void WardenEmu::Impl::MapClientImage() {
     m_clientBase = base;
     m_clientSize = size;
 
+    // The image as the loader maps it: one MEM_IMAGE allocation, the headers read-only and each
+    // section with the protection its characteristics give a running process.
+    uint32_t ntOffset = 0;
+    memcpy(&ntOffset, data + 0x3C, sizeof(ntOffset));
+
+    if (ntOffset + 4 + 20 <= size) {
+        uint16_t sectionCount = 0;
+        uint16_t optionalSize = 0;
+        uint32_t headersSize = 0;
+        memcpy(&sectionCount, data + ntOffset + 6, sizeof(sectionCount));
+        memcpy(&optionalSize, data + ntOffset + 20, sizeof(optionalSize));
+
+        if (ntOffset + 24 + 64 <= size) {
+            memcpy(&headersSize, data + ntOffset + 24 + 60, sizeof(headersSize));
+        }
+
+        MemoryRegion headers = { base, (headersSize + 0xFFF) & ~0xFFFu, base, WIN_PAGE_EXECUTE_WRITECOPY,
+            WIN_PAGE_READONLY, WIN_MEM_COMMIT, WIN_MEM_IMAGE };
+        SetMemoryRange(headers);
+
+        uint32_t sectionTable = ntOffset + 24 + optionalSize;
+
+        for (uint32_t i = 0; i < sectionCount && sectionTable + (i + 1) * 40 <= size; i++) {
+            uint32_t virtualSize, virtualAddress, characteristics;
+            memcpy(&virtualSize, data + sectionTable + i * 40 + 8, 4);
+            memcpy(&virtualAddress, data + sectionTable + i * 40 + 12, 4);
+            memcpy(&characteristics, data + sectionTable + i * 40 + 36, 4);
+
+            bool executable = (characteristics & 0x20000000) != 0;
+            bool writable = (characteristics & 0x80000000) != 0;
+            uint32_t protect = executable ? (writable ? WIN_PAGE_EXECUTE_READWRITE : WIN_PAGE_EXECUTE_READ)
+                                          : (writable ? WIN_PAGE_READWRITE : WIN_PAGE_READONLY);
+
+            MemoryRegion section = { base + virtualAddress, (virtualSize + 0xFFF) & ~0xFFFu, base,
+                WIN_PAGE_EXECUTE_WRITECOPY, protect, WIN_MEM_COMMIT, WIN_MEM_IMAGE };
+            SetMemoryRange(section);
+        }
+    }
+
     for (uint32_t i = 0; i < CLIENT_FUNCTION_COUNT; i++) {
         const ClientFunction& function = s_clientFunctions[i];
         uint32_t offset = function.address - base;
@@ -707,6 +789,211 @@ uint32_t WardenEmu::Impl::GuestAlloc(uint32_t size) {
     }
 
     return address;
+}
+
+// Page-aligned blocks, as VirtualAlloc hands them out: the bump pointer skips to the next page
+// first, so the block owns its pages and can carry its own protection in the memory map.
+uint32_t WardenEmu::Impl::GuestAllocPages(uint32_t size) {
+    uint32_t pages = (size + 0xFFF) & ~0xFFFu;
+
+    if (!pages) {
+        return 0;
+    }
+
+    uint32_t region = heapRegion;
+
+    while (region < 2) {
+        uint32_t start = (m_heapNext[region] + 0xFFF) & ~0xFFFu;
+
+        if (start + pages <= m_heapLimit[region]) {
+            break;
+        }
+
+        region++;
+    }
+
+    if (region >= 2) {
+        WardenLog("guest page allocation failed (%u bytes)", size);
+        return 0;
+    }
+
+    heapRegion = region;
+    m_heapNext[region] = (m_heapNext[region] + 0xFFF) & ~0xFFFu;
+    return GuestAlloc(pages);
+}
+
+// =====================================================================
+// The memory map Windows reports (VirtualQuery and friends)
+// =====================================================================
+
+void WardenEmu::Impl::SetMemoryRange(const MemoryRegion& region) {
+    std::vector<MemoryRegion> updated;
+    updated.reserve(m_memoryMap.size() + 2);
+    uint64_t regionEnd = (uint64_t)region.base + region.size;
+
+    for (const MemoryRegion& existing : m_memoryMap) {
+        uint64_t existingEnd = (uint64_t)existing.base + existing.size;
+
+        if (existingEnd <= region.base || existing.base >= regionEnd) {
+            updated.push_back(existing);
+            continue;
+        }
+
+        if (existing.base < region.base) {
+            MemoryRegion left = existing;
+            left.size = region.base - existing.base;
+            updated.push_back(left);
+        }
+
+        if (existingEnd > regionEnd) {
+            MemoryRegion right = existing;
+            right.base = (uint32_t)regionEnd;
+            right.size = (uint32_t)(existingEnd - regionEnd);
+            updated.push_back(right);
+        }
+    }
+
+    if (region.size) {
+        updated.push_back(region);
+    }
+
+    std::sort(updated.begin(), updated.end(),
+        [](const MemoryRegion& a, const MemoryRegion& b) { return a.base < b.base; });
+    m_memoryMap.swap(updated);
+}
+
+// One committed allocation of its own (VirtualAlloc semantics: the allocation base is its start).
+void WardenEmu::Impl::AddAllocation(uint32_t base, uint32_t size, uint32_t protect, uint32_t type) {
+    MemoryRegion region = { base, (size + 0xFFF) & ~0xFFFu, base, protect, protect, WIN_MEM_COMMIT, type };
+    SetMemoryRange(region);
+}
+
+// VirtualProtect: every page in the range must be committed; the old protection is the first
+// page's, exactly as the API reports it.
+bool WardenEmu::Impl::ProtectMemory(uint32_t address, uint32_t size, uint32_t protect, uint32_t& oldProtect) {
+    uint32_t start = address & ~0xFFFu;
+    uint64_t end = ((uint64_t)address + (size ? size : 1) + 0xFFF) & ~(uint64_t)0xFFF;
+    uint64_t covered = start;
+    std::vector<MemoryRegion> pieces;
+
+    for (const MemoryRegion& region : m_memoryMap) {
+        uint64_t regionEnd = (uint64_t)region.base + region.size;
+
+        if (regionEnd <= covered || region.base >= end) {
+            continue;
+        }
+
+        if (region.base > covered || region.state != WIN_MEM_COMMIT) {
+            return false; // a gap or an uncommitted page inside the range
+        }
+
+        if (pieces.empty()) {
+            oldProtect = region.protect;
+        }
+
+        MemoryRegion piece = region;
+        piece.base = (uint32_t)covered;
+        piece.size = (uint32_t)((regionEnd < end ? regionEnd : end) - covered);
+        piece.protect = protect;
+        pieces.push_back(piece);
+        covered += piece.size;
+
+        if (covered >= end) {
+            break;
+        }
+    }
+
+    if (covered < end) {
+        return false;
+    }
+
+    for (const MemoryRegion& piece : pieces) {
+        SetMemoryRange(piece);
+    }
+
+    return true;
+}
+
+// MEMORY_BASIC_INFORMATION for the page holding address: the run of following pages with the same
+// allocation, state, protection and type, or the free gap up to the next allocation.
+bool WardenEmu::Impl::QueryMemory(uint32_t address, uint32_t* info) const {
+    if (address >= WIN_USER_SPACE_END) {
+        return false; // ERROR_INVALID_PARAMETER above lpMaximumApplicationAddress
+    }
+
+    uint32_t page = address & ~0xFFFu;
+    memset(info, 0, 7 * sizeof(uint32_t));
+
+    for (size_t i = 0; i < m_memoryMap.size(); i++) {
+        const MemoryRegion& region = m_memoryMap[i];
+
+        if (page >= region.base + region.size) {
+            continue;
+        }
+
+        if (page < region.base) {
+            info[0] = page;
+            info[3] = region.base - page; // free up to this allocation
+            info[4] = WIN_MEM_FREE;
+            info[5] = WIN_PAGE_NOACCESS;
+            return true;
+        }
+
+        uint32_t end = region.base + region.size;
+
+        for (size_t j = i + 1; j < m_memoryMap.size(); j++) {
+            const MemoryRegion& next = m_memoryMap[j];
+
+            if (next.base != end || next.allocationBase != region.allocationBase || next.state != region.state
+                || next.protect != region.protect || next.type != region.type) {
+                break;
+            }
+
+            end = next.base + next.size;
+        }
+
+        info[0] = page;
+        info[1] = region.allocationBase;
+        info[2] = region.allocationProtect;
+        info[3] = end - page;
+        info[4] = region.state;
+        info[5] = region.state == WIN_MEM_COMMIT ? region.protect : 0;
+        info[6] = region.type;
+        return true;
+    }
+
+    info[0] = page;
+    info[3] = WIN_USER_SPACE_END - page;
+    info[4] = WIN_MEM_FREE;
+    info[5] = WIN_PAGE_NOACCESS;
+    return true;
+}
+
+// The address space at boot, as the real client process would show it. The client image comes
+// from MapClientImage (by section); the module image from Load.
+void WardenEmu::Impl::DescribeBootMemory() {
+    m_memoryMap.clear();
+
+    // Thread and process blocks, loader data and the static-TLS array: private read/write.
+    AddAllocation(ENV_BASE, 0x1000, WIN_PAGE_READWRITE, WIN_MEM_PRIVATE);
+    AddAllocation(TLS_ARRAY_BASE, 0x1000, WIN_PAGE_READWRITE, WIN_MEM_PRIVATE);
+    AddAllocation(PEB_BASE, 0x1000, WIN_PAGE_READWRITE, WIN_MEM_PRIVATE);
+    AddAllocation(TEB_BASE, 0x1000, WIN_PAGE_READWRITE, WIN_MEM_PRIVATE);
+
+    // The thread stack, and the client-side data the bridge hands over (the OurLibrary object
+    // and the buffers, which live in the client's own data on Windows): private read/write.
+    AddAllocation(STACK_BASE, STACK_SIZE, WIN_PAGE_READWRITE, WIN_MEM_PRIVATE);
+    AddAllocation(MISC_BASE, MISC_SIZE, WIN_PAGE_READWRITE, WIN_MEM_PRIVATE);
+    AddAllocation(SCRATCH_BASE, SCRATCH_SIZE, WIN_PAGE_READWRITE, WIN_MEM_PRIVATE);
+
+    // The heaps MemoryAlloc and the CRT draw from.
+    AddAllocation(HEAP_BASE, HEAP_SIZE, WIN_PAGE_READWRITE, WIN_MEM_PRIVATE);
+    AddAllocation(HEAP_EXT_BASE + 0x1000, HEAP_EXT_SIZE - 0x1000, WIN_PAGE_READWRITE, WIN_MEM_PRIVATE);
+
+    // The import stubs stand in for system library code: image memory, execute/read.
+    MemoryRegion stubs = { HEAP_EXT_BASE, 0x1000, HEAP_EXT_BASE, WIN_PAGE_EXECUTE_WRITECOPY,
+        WIN_PAGE_EXECUTE_READ, WIN_MEM_COMMIT, WIN_MEM_IMAGE };
+    SetMemoryRange(stubs);
 }
 
 uint32_t WardenEmu::Impl::NewImportStub(const char* dll, const char* name, uint32_t argumentBytes) {
@@ -1013,24 +1300,74 @@ uint32_t WardenEmu::Impl::RunImport(const ImportStub& stub, uint32_t* arguments,
             return 0;
         }
 
-        uint32_t address = GuestAlloc(size);
+        uint32_t address = GuestAllocPages(size);
 
         if (address) {
-            WardenLog("VirtualAlloc(%u, flags %08x) -> %08x", size, arguments[2], address);
+            // MEM_RESERVE alone leaves the pages uncommitted; anything with MEM_COMMIT commits.
+            bool commit = (arguments[2] & WIN_MEM_COMMIT) != 0;
+            MemoryRegion region = { address, (size + 0xFFF) & ~0xFFFu, address, arguments[3],
+                commit ? arguments[3] : 0, commit ? WIN_MEM_COMMIT : WIN_MEM_RESERVE, WIN_MEM_PRIVATE };
+            SetMemoryRange(region);
+            WardenLog("VirtualAlloc(%u, type %08x, protect %08x) -> %08x", size, arguments[2], arguments[3], address);
         }
 
         return address;
     }
 
-    if (strcasecmp(stub.name, "VirtualFree") == 0) {
-        // The bump heap releases everything with the module, exactly like the pad's MemoryFree.
-        return 1; // TRUE
+    if (strcasecmp(stub.name, "VirtualFree") == 0 && argumentCount >= 3) {
+        // The bump heap keeps the bytes, but the address space reads as Windows leaves it:
+        // MEM_RELEASE frees the whole allocation, MEM_DECOMMIT turns the pages back to reserved.
+        uint32_t address = arguments[0];
+
+        if (arguments[2] & WIN_MEM_RELEASE) {
+            std::vector<MemoryRegion> kept;
+            bool found = false;
+
+            for (const MemoryRegion& region : m_memoryMap) {
+                if (region.allocationBase == address && region.type == WIN_MEM_PRIVATE) {
+                    found = true;
+                } else {
+                    kept.push_back(region);
+                }
+            }
+
+            m_memoryMap.swap(kept);
+            return found ? 1 : 0;
+        }
+
+        if (arguments[2] & WIN_MEM_DECOMMIT) {
+            uint32_t oldProtect;
+
+            if (!ProtectMemory(address, arguments[1], 0, oldProtect)) {
+                return 0;
+            }
+
+            uint64_t end = ((uint64_t)address + (arguments[1] ? arguments[1] : 1) + 0xFFF) & ~(uint64_t)0xFFF;
+
+            for (MemoryRegion& region : m_memoryMap) {
+                if (region.base >= (address & ~0xFFFu) && region.base < end && region.protect == 0
+                    && region.state == WIN_MEM_COMMIT) {
+                    region.state = WIN_MEM_RESERVE;
+                }
+            }
+
+            return 1;
+        }
+
+        return 0;
     }
 
     if (strcasecmp(stub.name, "VirtualProtect") == 0 && argumentCount >= 4) {
-        // Every mapped region already carries full permissions, so the requested protection is
-        // in effect immediately; report the old protection as the full-access default.
-        return WriteWord(arguments[3], 0x40 /* PAGE_EXECUTE_READWRITE */) ? 1 : 0;
+        // Guest pages stay fully accessible to the emulator; the protection the module sets is
+        // what the address space reports from now on, and the old one is the real old one.
+        uint32_t oldProtect = 0;
+
+        if (!ProtectMemory(arguments[0], arguments[1], arguments[2], oldProtect)) {
+            WardenLog("VirtualProtect(%08x, %u): range is not committed", arguments[0], arguments[1]);
+            return 0;
+        }
+
+        return WriteWord(arguments[3], oldProtect) ? 1 : 0;
     }
 
     if (strcasecmp(stub.name, "GetCurrentProcessId") == 0) {
@@ -1332,72 +1669,19 @@ uint32_t WardenEmu::Impl::RunImport(const ImportStub& stub, uint32_t* arguments,
     }
 
     if (strcasecmp(stub.name, "VirtualQuery") == 0 && argumentCount >= 3) {
-        uint32_t address = arguments[0];
-        uint32_t out = arguments[1];
-        uint32_t infoSize = arguments[2];
-
-        struct Region {
-            uint32_t base;
-            uint32_t size;
-        };
-
-        static const Region regions[] = {
-            { TEB_BASE, 0x1000 },
-            { GDT_BASE, 0x1000 },
-            { PEB_BASE, 0x1000 },
-            { TLS_ARRAY_BASE, 0x1000 },
-            { ENV_BASE, 0x1000 },
-            { STACK_BASE, STACK_SIZE },
-            { MISC_BASE, MISC_SIZE },
-            { SCRATCH_BASE, SCRATCH_SIZE },
-            { HEAP_BASE, HEAP_SIZE },
-            { IMAGE_BASE, IMAGE_SIZE },
-            { HEAP_EXT_BASE, HEAP_EXT_SIZE },
-        };
-
         uint32_t info[7];
-        memset(info, 0, sizeof(info));
+
+        if (!QueryMemory(arguments[0], info)) {
+            return 0;
+        }
+
         uint32_t responseSize = 28; // sizeof(MEMORY_BASIC_INFORMATION) on 32-bit
 
-        if (m_clientSize && address >= m_clientBase && address < m_clientBase + m_clientSize) {
-            info[0] = address & ~0xFFFu; // BaseAddress
-            info[1] = m_clientBase; // AllocationBase
-            info[2] = 0x80; // AllocationProtect (PAGE_EXECUTE_WRITECOPY, an image mapping)
-            info[3] = m_clientBase + ((m_clientSize + 0xFFF) & ~0xFFFu) - info[0]; // RegionSize
-            info[4] = 0x1000; // MEM_COMMIT
-            info[5] = 0x20; // PAGE_EXECUTE_READ
-            info[6] = 0x1000000; // MEM_IMAGE
+        if (arguments[2] < responseSize) {
+            return 0; // ERROR_BAD_LENGTH: the API writes nothing into a short buffer
         }
 
-        for (const Region& region : regions) {
-            if (info[0]) {
-                break;
-            }
-
-            if (address >= region.base && address < region.base + region.size) {
-                info[0] = region.base; // BaseAddress
-                info[1] = region.base; // AllocationBase
-                info[2] = 0x40;        // AllocationProtect (PAGE_EXECUTE_READWRITE)
-                info[3] = region.size; // RegionSize
-                info[4] = 0x1000;      // MEM_COMMIT
-                info[5] = 0x40;        // PAGE_EXECUTE_READWRITE
-                info[6] = 0x20000;     // MEM_PRIVATE
-                break;
-            }
-        }
-
-        if (info[0] == 0) {
-            // Free address space, described the way the API describes unmapped space.
-            info[0] = address;
-            info[3] = 4096;
-            info[4] = 0x10000; // MEM_FREE
-        }
-
-        if (infoSize < responseSize) {
-            responseSize = infoSize;
-        }
-
-        return WriteMemory(out, info, responseSize) ? responseSize : 0;
+        return WriteMemory(arguments[1], info, responseSize) ? responseSize : 0;
     }
 
     if (strcasecmp(stub.name, "SetUnhandledExceptionFilter") == 0) {
@@ -1872,7 +2156,7 @@ void WardenEmu::Impl::CaptureSnapshot(uint32_t address, const uint32_t* stackArg
 
 namespace {
 
-const char SNAPSHOT_MAGIC[8] = { 'W', 'E', 'M', 'U', 'S', 'N', 'P', '1' };
+const char SNAPSHOT_MAGIC[8] = { 'W', 'E', 'M', 'U', 'S', 'N', 'P', '2' };
 
 }
 
@@ -1904,6 +2188,10 @@ bool WardenEmu::Impl::WriteSnapshot(const char* path) const {
     fwrite(m_tlsValues, 4, TLS_SLOT_COUNT, file);
     fwrite(m_tlsUsed, 1, TLS_SLOT_COUNT, file);
     fwrite(imports, sizeof(ImportStub), importCount, file);
+
+    uint32_t mapCount = (uint32_t)m_memoryMap.size();
+    fwrite(&mapCount, 4, 1, file);
+    fwrite(m_memoryMap.data(), sizeof(MemoryRegion), mapCount, file);
 
     uint32_t regionCount = (uint32_t)snapshot.regions.size();
     fwrite(&regionCount, 4, 1, file);
@@ -1952,6 +2240,11 @@ bool WardenEmu::Impl::ReadSnapshot(const char* path) {
         && fread(imports, sizeof(ImportStub), scalars[11], file) == scalars[11];
 
     snapshot.what[sizeof(snapshot.what) - 1] = '\0';
+    uint32_t mapCount = 0;
+    ok = ok && fread(&mapCount, 4, 1, file) == 1 && mapCount <= 4096;
+    std::vector<MemoryRegion> memoryMap(ok ? mapCount : 0);
+    ok = ok && fread(memoryMap.data(), sizeof(MemoryRegion), mapCount, file) == mapCount;
+
     uint32_t regionCount = 0;
     ok = ok && fread(&regionCount, 4, 1, file) == 1 && regionCount <= 32;
     snapshot.regions.clear();
@@ -1991,6 +2284,7 @@ bool WardenEmu::Impl::ReadSnapshot(const char* path) {
     m_unhandledFilter = scalars[10];
     importCount = scalars[11];
     nextImportStub = scalars[12];
+    m_memoryMap.swap(memoryMap);
 
     for (const SnapshotRegion& region : snapshot.regions) {
         if (!region.bytes.empty() && !WriteMemory(region.base, region.bytes.data(), (uint32_t)region.bytes.size())) {
@@ -2097,6 +2391,30 @@ bool WardenEmu::Load(const void* data, uint32_t size) {
 
     if (imageEnd < IMAGE_SIZE) {
         uc_mem_protect(impl.machine, IMAGE_BASE + imageEnd, IMAGE_SIZE - imageEnd, UC_PROT_READ | UC_PROT_WRITE);
+    }
+
+    // The memory map as BLLLoader::Load leaves it: one read/write VirtualAlloc block, each
+    // section given the protection its header entry names, and everything from the relocation
+    // table onwards decommitted.
+    impl.AddAllocation(IMAGE_BASE, finalSize, WIN_PAGE_READWRITE, WIN_MEM_PRIVATE);
+
+    for (uint32_t i = 0; i < header[9] && 4 * (3 * i + 13) <= size; i++) {
+        uint32_t entry[3];
+        memcpy(entry, bytes + 4 * (3 * i + 10), sizeof(entry));
+        uint32_t oldProtect;
+
+        if (!impl.ProtectMemory(IMAGE_BASE + entry[0], entry[1], entry[2], oldProtect)) {
+            WardenLog("section %u (%08x +%08x) protection %08x lies outside the image", i, entry[0], entry[1],
+                entry[2]);
+        }
+    }
+
+    uint32_t decommitStart = (header[2] + 0xFFF) & ~0xFFFu;
+
+    if (header[2] < finalSize && decommitStart < finalSize) {
+        Impl::MemoryRegion reserved = { IMAGE_BASE + decommitStart, imageEnd - decommitStart, IMAGE_BASE,
+            WIN_PAGE_READWRITE, 0, WIN_MEM_RESERVE, WIN_MEM_PRIVATE };
+        impl.SetMemoryRange(reserved);
     }
 
     // Offline analysis hook: WARDEN_IMAGE_DUMP=<path> writes the relocated-free image (RVAs

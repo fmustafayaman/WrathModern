@@ -374,6 +374,18 @@ static int ReplaySession(const char* imagePath, const char* tracePath, const cha
         }
     }
 
+    // The client keeps polling after the last packet (the character screen sits there); periodic
+    // work such as memory scans runs on these frames. 3000 frames of 16 ms is about 48 seconds.
+    for (uint32_t frame = 0; frame < 3000; frame++) {
+        active->Process(16);
+
+        if (!activateNext()) {
+            return 1;
+        }
+    }
+
+    std::printf(".3000 trailing frames processed\n");
+
     active->Shutdown();
     delete active;
 
