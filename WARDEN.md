@@ -281,3 +281,13 @@ dürüstçe 0 döndürüyor. Sunucu karakter listesini büyük ihtimalle bu kont
 vermek hile korumasını kandırmak olur — YAPILMAYACAK. Yollar: (1) Grimfall geliştiricileriyle konuşmak
 (native istemci için istisna), (2) ClientExtensions'ın işlevini native yazmak; ama sunucu DLL'in kendisini
 de inceliyorsa bu da yetmez. Ayrıca modül `QueryDosDeviceA("IPSect")` soruyor (emülasyonda cihaz yok → başarısız).
+
+## Bellek haritası (2026-10-17, commit f3e0fe1)
+Canlı oturumda modül `VirtualQuery` ile tüm adres alanını tarıyor ve `MEM_FREE` olup `PAGE_NOACCESS`
+olmayan bölgeleri gizli kod adayı sayıp okuyor (rva 0x3950 döngüsü). Emülatör boşlukları 4 KB/koruma 0,
+her şeyi özel RWX olarak bildiriyordu → 0x10000/0x201000 okumalarında fault. Artık `m_memoryMap`
+Windows görünümünü tutuyor (boşluk MEM_FREE/NOACCESS ve gerçek boyut; Wow.exe bölüm bölüm MEM_IMAGE;
+modül BLLLoader'ın bıraktığı gibi; stack/heap özel RW; import stub sayfası sistem kütüphanesi kodu olarak
+MEM_IMAGE RX). VirtualAlloc/Protect/Free bu haritayı günceller. Replay 3000 ek kareyle hatasız; tarama
+kullanıcı alanını uçtan uca dolaşıyor. Not: MISC (OurLibrary stub'ları, STOP) gerçek süreçte istemcinin
+kendi verisine/koduna denk geldiği için özel RW bildiriliyor.
