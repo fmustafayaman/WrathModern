@@ -1091,6 +1091,11 @@ uint32_t WardenEmu::Impl::KnownImportArgumentBytes(const char* name) {
         // still resolve, and each reports what it can or cannot do honestly.
         { "DestroyIcon", 4 },
         { "DrawTextA", 20 }, // dc, text, count, rect, format
+        { "BeginPaint", 8 }, // window, &paintStruct
+        { "DefWindowProcA", 16 }, // window, message, wParam, lParam
+
+        // Seen linked (never called) by Warmane's module.
+        { "SetSystemTime", 4 }, // &systemTime
     };
 
     for (const KnownImport& import : known) {
@@ -1723,6 +1728,26 @@ uint32_t WardenEmu::Impl::RunImport(const ImportStub& stub, uint32_t* arguments,
 
     if (strcasecmp(stub.name, "DrawTextA") == 0) {
         WardenLog("DrawTextA: the emulated environment has no device context");
+        return 0;
+    }
+
+    // The module owns no window, so every handle it could pass is invalid: BeginPaint returns
+    // no device context and DefWindowProc has nothing to process, as Windows answers for an
+    // invalid window.
+    if (strcasecmp(stub.name, "BeginPaint") == 0) {
+        WardenLog("BeginPaint(%08x): no such window", arguments[0]);
+        return 0;
+    }
+
+    if (strcasecmp(stub.name, "DefWindowProcA") == 0) {
+        WardenLog("DefWindowProcA(%08x, %04x): no such window", arguments[0], arguments[1]);
+        return 0;
+    }
+
+    // Setting the clock needs SeSystemtimePrivilege, which the client process does not hold;
+    // Windows fails the call (ERROR_PRIVILEGE_NOT_HELD) and the host clock is never touched.
+    if (strcasecmp(stub.name, "SetSystemTime") == 0) {
+        WardenLog("SetSystemTime: the process holds no privilege to set the clock; the call fails");
         return 0;
     }
 

@@ -23,6 +23,9 @@
  *       rerun the entry call a live session failed in, from the machine state captured just
  *       before it; the full branch trace lands in Logs/warden.log (or ./warden.log).
  *
+ * WARDEN_REPLAY_COLD=1 replays a login whose client downloaded the module (a cache miss in
+ * the live log): the module comes from the trace's transfer instead of <module.bin>.
+ *
  * WARDEN_CLIENT_EXE=<path to Wow.exe> gives the module the client executable, as the client
  * does from its own directory; replays need it to match a live session.
  */
@@ -115,6 +118,12 @@ public:
     bool canUseModule = false;
     bool moduleRequested = false;
 
+    // Cold-cache replays: the module arrives through the trace (ModuleCache) and ModuleUse loads
+    // it like the client's LoadModule does (RC4 with the given key, then inflate).
+    std::string cachedId;
+    std::vector<uint8_t> cachedBlob;
+    std::vector<uint8_t> downloadedImage;
+
     // OurLibrary::StateSave / StateLoad, exactly like the client's single saved-state slot.
     std::vector<uint8_t> savedState;
     bool hasSavedState = false;
@@ -138,16 +147,39 @@ public:
     }
 
     bool ModuleUse(const uint8_t* id, const uint8_t* key) override {
-        (void)key;
+        if (!cachedBlob.empty() && cachedId == ToHex(id, 16) && cachedBlob.size() > 4 + 260) {
+            std::vector<uint8_t> blob = cachedBlob;
+            Rc4Crypt(key, 16, blob.data(), (uint32_t)blob.size());
+
+            uint32_t capacity = 0;
+            std::memcpy(&capacity, blob.data(), sizeof(capacity));
+            downloadedImage.resize(capacity);
+            uLongf imageSize = capacity;
+
+            if (uncompress(downloadedImage.data(), &imageSize, &blob[4], blob.size() - 4) != Z_OK) {
+                std::printf("MODULE USE id=%s -> downloaded module does not inflate\n", cachedId.c_str());
+                downloadedImage.clear();
+                return false;
+            }
+
+            downloadedImage.resize((size_t)imageSize);
+            std::printf("MODULE USE id=%s -> downloaded module (%u bytes image)\n", cachedId.c_str(),
+                (uint32_t)imageSize);
+            moduleRequested = true;
+            return true;
+        }
+
         std::printf("MODULE USE id=%s -> %s\n", ToHex(id, 16).c_str(),
-            canUseModule ? "server module image" : "no image");
+            canUseModule ? "server module image" : "cache miss");
         moduleRequested = canUseModule;
         return canUseModule;
     }
 
     void ModuleCache(const uint8_t* id, const void* data, uint32_t size) override {
-        (void)data;
         std::printf("MODULE CACHE id=%s size=%u\n", ToHex(id, 16).c_str(), size);
+        cachedId = ToHex(id, 16);
+        const uint8_t* bytes = static_cast<const uint8_t*>(data);
+        cachedBlob.assign(bytes, bytes + size);
     }
 
     void StateSave(const void* data, uint32_t size) override {
@@ -292,7 +324,10 @@ static int ReplaySession(const char* imagePath, const char* tracePath, const cha
 
     std::vector<std::vector<uint8_t>> packets;
     SmokeServices services;
-    services.canUseModule = true;
+    // WARDEN_REPLAY_COLD=1 replays a session whose client had no cached module: the module is
+    // downloaded through the trace instead of taken from <module.bin>.
+    const char* cold = std::getenv("WARDEN_REPLAY_COLD");
+    services.canUseModule = !(cold && cold[0] == '1');
     char line[16384];
 
     while (std::fgets(line, sizeof(line), trace)) {
@@ -351,7 +386,8 @@ static int ReplaySession(const char* imagePath, const char* tracePath, const cha
         services.moduleRequested = false;
         active->Shutdown();
         delete active;
-        active = StartModule(services, serverImage, key.data(), "server module");
+        active = StartModule(services, services.downloadedImage.empty() ? serverImage : services.downloadedImage,
+            key.data(), "server module");
         return active != nullptr;
     };
 
