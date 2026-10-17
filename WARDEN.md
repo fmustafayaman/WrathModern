@@ -73,3 +73,39 @@ Orijinal mac istemcisi de kendi binary'sini kanıtlardı; ama Warmane Windows ka
 DİKKAT: kanıt oyun klasöründeki DOSYALARDAN üretir. DivxDecoder.dll değiştirildiyse (mod loader — her iki
 klasörde de .bak var!) kanıt orijinal olmaz; Warmane reddedebilir. Çözüm: orijinal .bak dosyasını geri koy.
 
+
+## MODÜL IMPORT KATMANI (Grimfall blocker'ı) — 2026-10-17 (devam)
+
+Bulgu (gerçek Grimfall oturumunun warden.log'u): yerleşik modül sunucu modülünü
+parça parça (503B xN) alıp ModuleCache ile önbelleğe alıyor, sonra LoadModule
+çağrılıyor ama modül **import çözümlemesinde reddediliyordu** (LCMapStringA yok).
+Yeni "collect-all" davranışı tek oturumda TAM listeyi verdi: modül 33 fonksiyon
+import ediyor (retail 3.3.5a Warden modülü + MSVC CRT):
+  KERNEL32: Sleep, GetTickCount, LCMapStringA, lstr*, CharUpperBuffA, MulDiv,
+    VirtualAlloc/Free/Protect/Query, Read/WriteProcessMemory, GetProcessHeap,
+    HeapFree, GetCurrentProcess(Id)/ThreadId, TlsAlloc/Free/GetValue/SetValue,
+    GetSystemInfo, GetVersionExA, QueryPerformanceCounter, GetSystemTimeAsFileTime,
+    GetModuleHandleA, LoadLibraryA, FreeLibrary, GetProcAddress, QueryDosDeviceA,
+    CloseHandle, DuplicateHandle, RaiseException, RtlUnwind,
+    UnhandledExceptionFilter, SetUnhandledExceptionFilter, TerminateProcess
+  USER32: CharUpperBuffA, DestroyIcon, DrawTextA
+
+Yapılan (Engine/Source/Os/Mac/WardenEmu.cpp):
+- Load: importlar DLL'den BAĞIMSIZ isimle çözülür (kernel32+user32), case-insensitive;
+  bilinmeyenler toplanır ve TEK seferde "module load refused: N unknown import(s)".
+- Ayrı UC_HOOK_CODE aralığı (HEAP_EXT_BASE..+0x1000) → import stub çağrıları hook'a
+  düşer; stub zaten code-hook'ta yoktu (önceki hata: hiç çağrılmıyordu).
+- Gerçek implementasyonlar: TLS tablosu, heap (GuestAlloc), GetProcAddress→StubForName
+  (aynı stub'ları çözer), LoadLibraryA/GetModuleHandleA (sözde handle'lar),
+  GetSystemInfo/GetVersionExA (Win7 6.1.7601 — emüle ortamın sunduğu sürüm),
+  VirtualQuery (bölge tablosu), QueryPerformanceCounter/GetSystemTimeAsFileTime (gerçek saat),
+  MulDiv/CharUpperBuffA (birebir), process/handle kimliği.
+- RaiseException/RtlUnwind/TerminateProcess: misafir SEH unwind YOK → m_faulted=true +
+  uc_emu_stop; çağrı sahte başarıyla dönmez, dürüstçe başarısız olur.
+- MacWardenServices::ModuleCache: her sunucu modülünü Logs/warden-module-<id>.bin'e YAZAR
+  (offline import/kod analizi için). Sonraki oturumda bu dosya incelenecek.
+
+Durum: macos + grimfall derlendi, iki app güncellendi. Smoke yeşil. Sıradaki: kullanıcı
+Grimfall login → modül artık YÜKLENMELİ; log'da "import X was called but has no behavior"
+veya "RaiseException/RtlUnwind" satırları çıkarsa o çağrılar modülün gerçekten kullandığı
+yollardır → sırayla gerçek davranış eklenir.

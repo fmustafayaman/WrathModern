@@ -87,6 +87,32 @@ static void WardenLogHex(const char* what, const uint8_t* data, uint32_t size) {
     WardenClientLog("%s bytes=%u %s", what, size, hex);
 }
 
+// The full packet trace, byte for byte, in a format a tool can replay: one line per packet,
+// "SMSG <hex>" for what the server sent and "CMSG <hex>" for what the module answered. The
+// summary log above truncates packets; this one does not, so a single session is enough to
+// reproduce a whole warden conversation offline.
+static void WardenTrace(const char* tag, const uint8_t* data, uint32_t size) {
+    FILE* file = fopen("Logs/warden-traffic.log", "a");
+
+    if (!file) {
+        file = fopen("warden-traffic.log", "a");
+    }
+
+    if (!file) {
+        return;
+    }
+
+    fputs(tag, file);
+    fputc(' ', file);
+
+    for (uint32_t i = 0; i < size; i++) {
+        fprintf(file, "%02x", data[i]);
+    }
+
+    fputc('\n', file);
+    fclose(file);
+}
+
 // ---------------------------------------------------------------------
 // The client services handed to the emulated module
 // ---------------------------------------------------------------------
@@ -96,6 +122,7 @@ public:
     // WardenClient::OurLibrary::Data in the Win32 file.
     void ModuleOutput(const uint8_t* data, uint32_t size) override {
         WardenLogHex("CMSG_WARDEN_DATA payload", data, size);
+        WardenTrace("CMSG", data, size);
 
         WDataStore msg;
         msg.Put(static_cast<uint32_t>(CMSG_WARDEN_DATA));
@@ -348,6 +375,7 @@ int32_t ReceiveWardenData(void* param, NETMESSAGE msgId, uint32_t time, CDataSto
 
     WardenClientLog("SMSG_WARDEN_DATA %u bytes, active=%d", size, s_activeEmu != nullptr);
     WardenLogHex("SMSG payload", reinterpret_cast<const uint8_t*>(data), size);
+    WardenTrace("SMSG", reinterpret_cast<const uint8_t*>(data), size);
 
     uint32_t consumed = 0;
 
