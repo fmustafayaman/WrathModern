@@ -82,6 +82,13 @@ constexpr uint32_t MAX_HOST_TRANSFER_BYTES = 0x40000; // module-heap <-> host mo
 
 constexpr uint32_t LIB_SLOT_COUNT = 16;
 
+// Pseudo-handles handed to the module for the objects an emulated Windows process owns. The
+// values are arbitrary but stable and non-null, which is all the module ever relies on.
+constexpr uint32_t PSEUDO_CURRENT_PROCESS = 0xFFFFFFFF; // (HANDLE)-1, exactly as Windows returns
+constexpr uint32_t PSEUDO_PROCESS_HEAP = 0x00E00000;
+constexpr uint32_t PSEUDO_KERNEL32 = 0x00E10000;
+constexpr uint32_t PSEUDO_USER32 = 0x00E20000;
+
 // MSVC __thiscall callee-side semantics: the stub's own `ret n` cleans the arguments, the hook
 // only fills EAX (and lets the ret run). Sizes follow the OurLibrary signatures.
 struct LibSlotInfo {
@@ -170,6 +177,20 @@ struct WardenEmu::Impl {
     // Host-side staging for data moving between module memory and the services.
     std::vector<uint8_t> moduleTransferBuffer;
 
+    // Thread-local storage the module allocates through TlsAlloc. The emulation runs one
+    // emulated thread, so a flat table with an allocation bitmap is exact.
+    static const uint32_t TLS_SLOT_COUNT = 64;
+    uint32_t m_tlsValues[TLS_SLOT_COUNT] = { 0 };
+    bool m_tlsUsed[TLS_SLOT_COUNT] = { false };
+
+    // The unhandled-exception filter the module installs (SetUnhandledExceptionFilter).
+    uint32_t m_unhandledFilter = 0;
+
+    // Set when the module takes a path the emulator cannot continue from (RaiseException,
+    // TerminateProcess). The call that triggered it then reports failure instead of resuming
+    // with state the real process would never have reached.
+    bool m_faulted = false;
+
     // Guest stub addresses handed out for imports.
     struct ImportStub {
         uint32_t address = 0;
@@ -188,6 +209,7 @@ struct WardenEmu::Impl {
 
     // Import plumbing: which APIs have real implementations, and running one for a stub call.
     static uint32_t KnownImportArgumentBytes(const char* name);
+    uint32_t StubForName(const char* name);
     void HandleImport(const ImportStub& stub);
     uint32_t RunImport(const ImportStub& stub, uint32_t* arguments, uint32_t argumentCount);
 
@@ -491,19 +513,65 @@ uint32_t WardenEmu::Impl::KnownImportArgumentBytes(const char* name) {
     };
 
     static const KnownImport known[] = {
+        // Timing and string helpers the Warden checks call directly.
         { "Sleep", 4 },
         { "GetTickCount", 0 },
         { "LCMapStringA", 24 }, // locale, flags, src, cchSrc, dest, cchDest
         { "lstrlenA", 4 },
         { "lstrcpyA", 8 },
         { "lstrcatA", 8 },
+        { "CharUpperBuffA", 8 }, // string, count
+        { "MulDiv", 12 }, // a, b, c
+
+        // Memory.
         { "VirtualAlloc", 16 }, // address, size, allocationType, protect
         { "VirtualFree", 12 }, // address, size, freeType
         { "VirtualProtect", 16 }, // address, size, newProtect, &oldProtect
-        { "GetCurrentProcessId", 0 },
-        { "GetCurrentThreadId", 0 },
+        { "VirtualQuery", 12 }, // address, info, infoSize
         { "ReadProcessMemory", 20 }, // process, base, buffer, size, &read
         { "WriteProcessMemory", 20 }, // process, base, buffer, size, &written
+        { "GetProcessHeap", 0 },
+        { "HeapFree", 12 }, // heap, flags, pointer
+
+        // Process, thread and TLS.
+        { "GetCurrentProcessId", 0 },
+        { "GetCurrentThreadId", 0 },
+        { "GetCurrentProcess", 0 },
+        { "TlsAlloc", 0 },
+        { "TlsFree", 4 },
+        { "TlsGetValue", 4 },
+        { "TlsSetValue", 8 },
+
+        // Environment the module inspects.
+        { "GetSystemInfo", 4 }, // &SYSTEM_INFO
+        { "GetVersionExA", 4 }, // &OSVERSIONINFOA
+        { "QueryPerformanceCounter", 4 }, // &counter
+        { "GetSystemTimeAsFileTime", 4 }, // &filetime
+
+        // Dynamic linking.
+        { "GetModuleHandleA", 4 }, // name
+        { "LoadLibraryA", 4 }, // name
+        { "FreeLibrary", 4 }, // module
+        { "GetProcAddress", 8 }, // module, name
+        { "QueryDosDeviceA", 12 }, // name, buffer, size
+
+        // Handles.
+        { "CloseHandle", 4 },
+        { "DuplicateHandle", 28 }, // 7 arguments
+
+        // Exception machinery (MSVC CRT).
+        { "RaiseException", 16 }, // code, flags, count, arguments
+        { "RtlUnwind", 16 }, // frame, targetIp, exceptionRecord, returnValue
+        { "UnhandledExceptionFilter", 4 }, // exceptionInfo
+        { "SetUnhandledExceptionFilter", 4 }, // filter
+
+        // Process termination.
+        { "TerminateProcess", 8 }, // process, exitCode
+
+        // The module links USER32 but its reconciled uses are icon/theme helpers; they must
+        // still resolve, and each reports what it can or cannot do honestly.
+        { "DestroyIcon", 4 },
+        { "DrawTextA", 20 }, // dc, text, count, rect, format
     };
 
     for (const KnownImport& import : known) {
@@ -759,8 +827,370 @@ uint32_t WardenEmu::Impl::RunImport(const ImportStub& stub, uint32_t* arguments,
         return WriteWord(arguments[4], size) ? 1 : 0;
     }
 
+    if (strcasecmp(stub.name, "MulDiv") == 0 && argumentCount >= 3) {
+        int32_t a = (int32_t)arguments[0];
+        int32_t b = (int32_t)arguments[1];
+        int32_t c = (int32_t)arguments[2];
+
+        if (c == 0) {
+            return 0xFFFFFFFF; // the API's division-by-zero result
+        }
+
+        // Rounded to nearest, halves away from zero, exactly like the API.
+        int64_t product = (int64_t)a * (int64_t)b;
+        int64_t divisor = c;
+        int64_t result = product >= 0 ? (product + divisor / 2) / divisor : (product - divisor / 2) / divisor;
+        return (uint32_t)(int32_t)result;
+    }
+
+    if (strcasecmp(stub.name, "CharUpperBuffA") == 0 && argumentCount >= 2) {
+        uint32_t address = arguments[0];
+        uint32_t count = arguments[1];
+
+        if (count > 65536) {
+            WardenLog("CharUpperBuffA: implausible length %u", count);
+            return 0;
+        }
+
+        for (uint32_t i = 0; i < count; i++) {
+            uint8_t byte;
+
+            if (!ReadMemory(address + i, &byte, 1)) {
+                return i; // the API stops at the first character it cannot touch
+            }
+
+            if ((byte >= 'a' && byte <= 'z') || (byte >= 0xE0 && byte <= 0xFE && byte != 0xF7)) {
+                byte -= 0x20;
+            }
+
+            if (!WriteMemory(address + i, &byte, 1)) {
+                return i;
+            }
+        }
+
+        return count;
+    }
+
+    if (strcasecmp(stub.name, "GetCurrentProcess") == 0) {
+        return PSEUDO_CURRENT_PROCESS;
+    }
+
+    if (strcasecmp(stub.name, "GetProcessHeap") == 0) {
+        return PSEUDO_PROCESS_HEAP;
+    }
+
+    if (strcasecmp(stub.name, "HeapFree") == 0) {
+        // The module's heap is released with the module; freeing is a no-op that succeeds.
+        return 1;
+    }
+
+    if (strcasecmp(stub.name, "TlsAlloc") == 0) {
+        for (uint32_t i = 0; i < TLS_SLOT_COUNT; i++) {
+            if (!m_tlsUsed[i]) {
+                m_tlsUsed[i] = true;
+                m_tlsValues[i] = 0;
+                return i;
+            }
+        }
+
+        WardenLog("TlsAlloc: no free slots");
+        return 0xFFFFFFFF; // TLS_OUT_OF_INDEXES
+    }
+
+    if (strcasecmp(stub.name, "TlsFree") == 0) {
+        uint32_t index = arguments[0];
+
+        if (index >= TLS_SLOT_COUNT || !m_tlsUsed[index]) {
+            return 0;
+        }
+
+        m_tlsUsed[index] = false;
+        m_tlsValues[index] = 0;
+        return 1;
+    }
+
+    if (strcasecmp(stub.name, "TlsGetValue") == 0) {
+        uint32_t index = arguments[0];
+        return index < TLS_SLOT_COUNT ? m_tlsValues[index] : 0;
+    }
+
+    if (strcasecmp(stub.name, "TlsSetValue") == 0) {
+        uint32_t index = arguments[0];
+
+        if (index >= TLS_SLOT_COUNT) {
+            return 0;
+        }
+
+        m_tlsValues[index] = arguments[1];
+        return 1;
+    }
+
+    if (strcasecmp(stub.name, "QueryPerformanceCounter") == 0 && argumentCount >= 1) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        uint64_t counter = (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
+
+        if (!WriteWord(arguments[0], (uint32_t)counter) ||
+            !WriteWord(arguments[0] + 4, (uint32_t)(counter >> 32))) {
+            return 0;
+        }
+
+        return 1;
+    }
+
+    if (strcasecmp(stub.name, "GetSystemTimeAsFileTime") == 0 && argumentCount >= 1) {
+        // FILETIME counts 100 ns ticks since 1601-01-01; assembled from the real wall clock.
+        uint64_t seconds = (uint64_t)time(nullptr) + 11644473600ull;
+        uint64_t ticks = seconds * 10000000ull;
+
+        if (!WriteWord(arguments[0], (uint32_t)ticks) ||
+            !WriteWord(arguments[0] + 4, (uint32_t)(ticks >> 32))) {
+            return 0;
+        }
+
+        return 1;
+    }
+
+    if (strcasecmp(stub.name, "GetSystemInfo") == 0 && argumentCount >= 1) {
+        uint32_t info[9];
+        memset(info, 0, sizeof(info));
+
+        info[0] = 0;                    // PROCESSOR_ARCHITECTURE_INTEL
+        info[1] = 4096;                 // dwPageSize
+        info[2] = 0x00010000;           // lpMinimumApplicationAddress
+        info[3] = 0x7FFEFFFF;           // lpMaximumApplicationAddress
+        info[4] = 1;                    // dwActiveProcessorMask
+        info[5] = 1;                    // dwNumberOfProcessors
+        info[6] = 586;                  // dwProcessorType (Pentium)
+        info[7] = 65536;                // dwAllocationGranularity
+        info[8] = (uint32_t)6 | (0x3A09u << 16); // wProcessorLevel | wProcessorRevision
+
+        return WriteMemory(arguments[0], info, sizeof(info)) ? 1 : 0;
+    }
+
+    if (strcasecmp(stub.name, "GetVersionExA") == 0 && argumentCount >= 1) {
+        uint32_t out = arguments[0];
+        uint32_t declaredSize = 0;
+
+        if (!ReadWord(out, declaredSize) || declaredSize < 148) {
+            WardenLog("GetVersionExA: bad version info size %u", declaredSize);
+            return 0;
+        }
+
+        // The emulated environment presents the Windows release the 3.3.5a client was built
+        // against. The module reads these values back and reports them; there is no host OS
+        // version that would mean anything to it.
+        uint8_t info[148];
+        memset(info, 0, sizeof(info));
+
+        uint32_t major = 6;    // Windows 7
+        uint32_t minor = 1;
+        uint32_t build = 7601;
+        uint32_t platform = 2; // VER_PLATFORM_WIN32_NT
+        memcpy(info + 0, &declaredSize, 4);
+        memcpy(info + 4, &major, 4);
+        memcpy(info + 8, &minor, 4);
+        memcpy(info + 12, &build, 4);
+        memcpy(info + 16, &platform, 4);
+
+        return WriteMemory(out, info, sizeof(info)) ? 1 : 0;
+    }
+
+    if (strcasecmp(stub.name, "GetModuleHandleA") == 0) {
+        char name[128] = { 0 };
+
+        if (!arguments[0] || !ReadGuestString(arguments[0], name, sizeof(name))) {
+            return IMAGE_BASE; // the running module's own image
+        }
+
+        if (strcasecmp(name, "kernel32.dll") == 0 || strcasecmp(name, "kernel32") == 0) {
+            return PSEUDO_KERNEL32;
+        }
+
+        if (strcasecmp(name, "user32.dll") == 0 || strcasecmp(name, "user32") == 0) {
+            return PSEUDO_USER32;
+        }
+
+        WardenLog("GetModuleHandleA(%s): no such module loaded", name);
+        return 0;
+    }
+
+    if (strcasecmp(stub.name, "LoadLibraryA") == 0) {
+        char name[128] = { 0 };
+
+        if (!ReadGuestString(arguments[0], name, sizeof(name))) {
+            return 0;
+        }
+
+        if (strcasecmp(name, "kernel32.dll") == 0 || strcasecmp(name, "kernel32") == 0) {
+            return PSEUDO_KERNEL32;
+        }
+
+        if (strcasecmp(name, "user32.dll") == 0 || strcasecmp(name, "user32") == 0) {
+            return PSEUDO_USER32;
+        }
+
+        WardenLog("LoadLibraryA(%s): only the emulated system libraries are available", name);
+        return 0;
+    }
+
+    if (strcasecmp(stub.name, "FreeLibrary") == 0) {
+        return 1;
+    }
+
+    if (strcasecmp(stub.name, "GetProcAddress") == 0 && argumentCount >= 2) {
+        char name[128] = { 0 };
+
+        if (!ReadGuestString(arguments[1], name, sizeof(name))) {
+            return 0;
+        }
+
+        uint32_t stubAddress = StubForName(name);
+
+        if (!stubAddress) {
+            WardenLog("GetProcAddress(%s): not implemented by the emulator", name);
+        }
+
+        return stubAddress;
+    }
+
+    if (strcasecmp(stub.name, "QueryDosDeviceA") == 0 && argumentCount >= 3) {
+        char name[128] = { 0 };
+
+        if (!ReadGuestString(arguments[0], name, sizeof(name))) {
+            return 0;
+        }
+
+        // The emulated process has no Windows device namespace; an unknown device is what the
+        // API returns for a device that does not exist.
+        WardenLog("QueryDosDeviceA(%s): no device namespace in the emulated environment", name);
+        return 0;
+    }
+
+    if (strcasecmp(stub.name, "CloseHandle") == 0) {
+        return 1;
+    }
+
+    if (strcasecmp(stub.name, "DuplicateHandle") == 0 && argumentCount >= 7) {
+        // Handles here are stable values without a kernel table, so a duplicate is the same
+        // value; every later use keeps referring to the same emulated object.
+        return WriteWord(arguments[3], arguments[1]) ? 1 : 0;
+    }
+
+    if (strcasecmp(stub.name, "VirtualQuery") == 0 && argumentCount >= 3) {
+        uint32_t address = arguments[0];
+        uint32_t out = arguments[1];
+        uint32_t infoSize = arguments[2];
+
+        struct Region {
+            uint32_t base;
+            uint32_t size;
+        };
+
+        static const Region regions[] = {
+            { TEB_BASE, 0x1000 },
+            { GDT_BASE, 0x1000 },
+            { STACK_BASE, STACK_SIZE },
+            { MISC_BASE, MISC_SIZE },
+            { SCRATCH_BASE, SCRATCH_SIZE },
+            { HEAP_BASE, HEAP_SIZE },
+            { IMAGE_BASE, IMAGE_SIZE },
+            { HEAP_EXT_BASE, HEAP_EXT_SIZE },
+        };
+
+        uint32_t info[7];
+        memset(info, 0, sizeof(info));
+        uint32_t responseSize = 28; // sizeof(MEMORY_BASIC_INFORMATION) on 32-bit
+
+        for (const Region& region : regions) {
+            if (address >= region.base && address < region.base + region.size) {
+                info[0] = region.base; // BaseAddress
+                info[1] = region.base; // AllocationBase
+                info[2] = 0x40;        // AllocationProtect (PAGE_EXECUTE_READWRITE)
+                info[3] = region.size; // RegionSize
+                info[4] = 0x1000;      // MEM_COMMIT
+                info[5] = 0x40;        // PAGE_EXECUTE_READWRITE
+                info[6] = 0x20000;     // MEM_PRIVATE
+                break;
+            }
+        }
+
+        if (info[0] == 0) {
+            // Free address space, described the way the API describes unmapped space.
+            info[0] = address;
+            info[3] = 4096;
+            info[4] = 0x10000; // MEM_FREE
+        }
+
+        if (infoSize < responseSize) {
+            responseSize = infoSize;
+        }
+
+        return WriteMemory(out, info, responseSize) ? responseSize : 0;
+    }
+
+    if (strcasecmp(stub.name, "SetUnhandledExceptionFilter") == 0) {
+        uint32_t previous = m_unhandledFilter;
+        m_unhandledFilter = arguments[0];
+        return previous;
+    }
+
+    if (strcasecmp(stub.name, "UnhandledExceptionFilter") == 0) {
+        // The default filter terminates the process; report that decision.
+        return 1; // EXCEPTION_EXECUTE_HANDLER
+    }
+
+    if (strcasecmp(stub.name, "RaiseException") == 0) {
+        WardenLog("RaiseException(%08x): guest SEH unwinding is not available, the call aborts",
+            arguments[0]);
+        m_faulted = true;
+        uc_emu_stop(machine);
+        return 0;
+    }
+
+    if (strcasecmp(stub.name, "RtlUnwind") == 0) {
+        WardenLog("RtlUnwind: guest SEH unwinding is not available, the call aborts");
+        m_faulted = true;
+        uc_emu_stop(machine);
+        return 0;
+    }
+
+    if (strcasecmp(stub.name, "TerminateProcess") == 0) {
+        WardenLog("TerminateProcess(%u): the module asked to end the process", arguments[1]);
+        m_faulted = true;
+        uc_emu_stop(machine);
+        return 1;
+    }
+
+    if (strcasecmp(stub.name, "DestroyIcon") == 0) {
+        return 1;
+    }
+
+    if (strcasecmp(stub.name, "DrawTextA") == 0) {
+        WardenLog("DrawTextA: the emulated environment has no device context");
+        return 0;
+    }
+
     WardenLog("import %s!%s was called but has no behavior; returning 0", stub.dll, stub.name);
     return 0;
+}
+
+// A function address for GetProcAddress-style dynamic lookups: an already-created import stub
+// when one exists, otherwise a fresh stub for a name the emulator implements.
+uint32_t WardenEmu::Impl::StubForName(const char* name) {
+    for (uint32_t i = 0; i < importCount; i++) {
+        if (strcasecmp(imports[i].name, name) == 0) {
+            return imports[i].address;
+        }
+    }
+
+    uint32_t argumentBytes = KnownImportArgumentBytes(name);
+
+    if (argumentBytes == UINT32_MAX) {
+        return 0;
+    }
+
+    return NewImportStub("kernel32.dll", name, argumentBytes);
 }
 
 // The OurLibrary stubs: one code stub per vtable slot. The hooks perform the work and the stub
@@ -799,9 +1229,15 @@ bool WardenEmu::Impl::CallGuest(uint32_t address, const uint32_t* stackArguments
     uc_reg_write(machine, UC_X86_REG_EBP, &ebp);
     uc_reg_write(machine, UC_X86_REG_ECX, &ecx);
 
+    m_faulted = false;
     uc_err error = uc_emu_start(machine, address, STOP_ADDRESS, 0, 50000000);
 
     uc_reg_read(machine, UC_X86_REG_EAX, &(eax = 0));
+
+    if (m_faulted) {
+        WardenLog("%s at %08x: the module faulted (RaiseException/TerminateProcess)", what, address);
+        return false;
+    }
 
     if (error != UC_ERR_OK) {
         WardenLog("%s at %08x: emu error %s", what, address, uc_strerror(error));
@@ -1102,11 +1538,13 @@ bool WardenEmu::Load(const void* data, uint32_t size) {
 
             uint32_t stub = 0;
 
-            if (!byOrdinal && strcasecmp(dll, "kernel32.dll") == 0) {
+            if (!byOrdinal) {
                 // Only imports with a real implementation below resolve; everything else is
                 // collected and reported once, so one failed load lists every missing API.
                 // Module DLL names vary in case between shipped modules ("KERNEL32.dll" is a
                 // real example), and Windows resolution is case-insensitive, hence strcasecmp.
+                // The emulator implements functions by name, so the DLL the thunk names does
+                // not restrict resolution (the real module imports from kernel32 and user32).
                 uint32_t argumentBytes = Impl::KnownImportArgumentBytes(name);
 
                 if (argumentBytes != UINT32_MAX) {
