@@ -57,13 +57,18 @@ constexpr uint32_t MISC_SIZE = 0x00001000;
 constexpr uint32_t SCRATCH_BASE = 0x00210000; // larger buffers handed across the boundary
 constexpr uint32_t SCRATCH_SIZE = 0x00010000;
 
-constexpr uint32_t HEAP_BASE = 0x00300000;
+// 0x00400000 up to HEAP_BASE belongs to the client executable, as in the real process: Wow.exe
+// maps at its preferred base 0x00400000 (up to 0x00DFD000 for 12340), and server requests
+// resolve client functions as offsets into it. Everything the emulator owns stays clear of it.
+constexpr uint32_t CLIENT_DEFAULT_BASE = 0x00400000;
+
+constexpr uint32_t HEAP_BASE = 0x01000000;
 constexpr uint32_t HEAP_SIZE = 0x00400000; // mapped heap, bump allocated for the module
 
-constexpr uint32_t IMAGE_BASE = 0x00700000;
+constexpr uint32_t IMAGE_BASE = 0x01800000;
 constexpr uint32_t IMAGE_SIZE = 0x00800000; // 8 MiB, covers every known module comfortably
 
-constexpr uint32_t HEAP_EXT_BASE = 0x00F00000;
+constexpr uint32_t HEAP_EXT_BASE = 0x02000000;
 constexpr uint32_t HEAP_EXT_SIZE = 0x00200000; // relief block if the first heap fills up
 
 // Honest ceiling for bytes crossing the bridge: buffers handed to the module live in the
@@ -88,9 +93,34 @@ constexpr uint32_t LIB_SLOT_COUNT = 16;
 // Pseudo-handles handed to the module for the objects an emulated Windows process owns. The
 // values are arbitrary but stable and non-null, which is all the module ever relies on.
 constexpr uint32_t PSEUDO_CURRENT_PROCESS = 0xFFFFFFFF; // (HANDLE)-1, exactly as Windows returns
-constexpr uint32_t PSEUDO_PROCESS_HEAP = 0x00E00000;
-constexpr uint32_t PSEUDO_KERNEL32 = 0x00E10000;
-constexpr uint32_t PSEUDO_USER32 = 0x00E20000;
+constexpr uint32_t PSEUDO_PROCESS_HEAP = 0x03000000;
+constexpr uint32_t PSEUDO_KERNEL32 = 0x03010000;
+constexpr uint32_t PSEUDO_USER32 = 0x03020000;
+
+// Client functions a module can reach inside the client image, bridged to this client's own
+// implementation of the same function. The addresses are the 12340 Wow.exe entry points; the
+// leading bytes confirm the mapped executable really has that function there before a bridge is
+// armed. Anything else executed inside the client image stops the call (see HandleClientCode).
+enum ClientFunctionId {
+    CLIENT_OS_GET_ASYNC_TIME_MS,
+    CLIENT_OS_LOAD_LIBRARY,
+};
+
+struct ClientFunction {
+    ClientFunctionId id;
+    const char* name;
+    uint32_t address;
+    uint8_t prologue[6];
+};
+
+constexpr ClientFunction s_clientFunctions[] = {
+    // uint32_t __cdecl OsGetAsyncTimeMs(): mov ecx, [s_OsTimeMgr]; jmp OsTimeManager::Snapshot
+    { CLIENT_OS_GET_ASYNC_TIME_MS, "OsGetAsyncTimeMs", 0x0086AE20, { 0x8B, 0x0D, 0x9C, 0x15, 0xD4, 0x00 } },
+    // void* __cdecl OsLoadLibrary(const char* fileName): push ebp; mov ebp, esp; mov eax, [ebp+8]
+    { CLIENT_OS_LOAD_LIBRARY, "OsLoadLibrary", 0x0086C4E0, { 0x55, 0x8B, 0xEC, 0x8B, 0x45, 0x08 } },
+};
+
+constexpr uint32_t CLIENT_FUNCTION_COUNT = sizeof(s_clientFunctions) / sizeof(s_clientFunctions[0]);
 
 // MSVC __thiscall callee-side semantics: the stub's own `ret n` cleans the arguments, the hook
 // only fills EAX (and lets the ret run). Sizes follow the OurLibrary signatures.
@@ -189,6 +219,13 @@ struct WardenEmu::Impl {
     // The unhandled-exception filter the module installs (SetUnhandledExceptionFilter).
     uint32_t m_unhandledFilter = 0;
 
+    // The client executable inside the guest (see CLIENT_DEFAULT_BASE). Size zero when the
+    // services have no Windows executable: the base is still what GetModuleHandle(NULL) names,
+    // and anything reaching into it faults and is logged rather than answered.
+    uint32_t m_clientBase = CLIENT_DEFAULT_BASE;
+    uint32_t m_clientSize = 0;
+    bool m_clientBridged[CLIENT_FUNCTION_COUNT] = { false };
+
     // Set when the module takes a path the emulator cannot continue from (RaiseException,
     // TerminateProcess). The call that triggered it then reports failure instead of resuming
     // with state the real process would never have reached.
@@ -212,7 +249,9 @@ struct WardenEmu::Impl {
     static const uint32_t TRACE_LENGTH = 256;
     uint32_t m_traceAddress[TRACE_LENGTH] = { 0 };
     uint32_t m_traceStack[TRACE_LENGTH] = { 0 };
+    uint32_t m_traceRepeat[TRACE_LENGTH] = { 0 };
     uint32_t m_traceNext = 0;
+    void RecordBlock(uint32_t address, uint32_t esp);
     uint32_t m_traceDumps = 0;
 
     // The machine as it stood at the start of the current entry call. A failing call writes it
@@ -238,6 +277,7 @@ struct WardenEmu::Impl {
     bool m_replaying = false;
 
     bool Boot();
+    void MapClientImage();
     void SetupEnvironment();
     void Teardown();
     void SetupStubs();
@@ -270,6 +310,7 @@ struct WardenEmu::Impl {
     bool ReadSnapshot(const char* path);
 
     // Hook handlers.
+    void HandleClientCode(uint32_t address);
     void HandleCodeHook(uint64_t address);
     bool HandleInvalidMemory(uc_mem_type type, uint64_t address, int size, int64_t value);
 };
@@ -342,6 +383,7 @@ bool WardenEmu::Impl::Boot() {
     selector = 0x18;
     uc_reg_write(machine, UC_X86_REG_FS, &selector);
 
+    MapClientImage();
     SetupEnvironment();
 
     // The stop sentinel and the stubs are code; a plain ret is enough because the hooks take
@@ -404,9 +446,7 @@ bool WardenEmu::Impl::Boot() {
             WardenEmu::Impl* impl = static_cast<WardenEmu::Impl*>(user);
             uint32_t esp = 0;
             uc_reg_read(machine, UC_X86_REG_ESP, &esp);
-            uint32_t slot = impl->m_traceNext++ % WardenEmu::Impl::TRACE_LENGTH;
-            impl->m_traceAddress[slot] = (uint32_t)address;
-            impl->m_traceStack[slot] = esp;
+            impl->RecordBlock((uint32_t)address, esp);
         }),
         this, 1, 0);
 
@@ -438,7 +478,7 @@ void WardenEmu::Impl::SetupEnvironment() {
     WriteWord(TEB_BASE + 0x30, PEB_BASE); // ProcessEnvironmentBlock
 
     WriteWord(PEB_BASE + 0x02, 0); // BeingDebugged: this is not a debugged process
-    WriteWord(PEB_BASE + 0x08, IMAGE_BASE); // ImageBaseAddress
+    WriteWord(PEB_BASE + 0x08, m_clientBase); // ImageBaseAddress: the client executable
     WriteWord(PEB_BASE + 0x0C, ENV_BASE); // Ldr
     WriteWord(PEB_BASE + 0x18, PSEUDO_PROCESS_HEAP); // ProcessHeap
     WriteWord(PEB_BASE + 0x60, 1); // NumberOfProcessors
@@ -449,11 +489,14 @@ void WardenEmu::Impl::SetupEnvironment() {
     // A one-entry process heap list, so the list walk the CRT does finds what it expects.
     WriteWord(ENV_BASE + 0xA0, PSEUDO_PROCESS_HEAP);
 
-    // PEB_LDR_DATA with a single module: this image.
+    // PEB_LDR_DATA with a single module: the client executable. Warden modules are loaded by
+    // the client's own BLL loader and never appear in the loader lists on Windows either.
     const uint32_t ldr = ENV_BASE + 0x00;
     const uint32_t entry = ENV_BASE + 0x40;
     const uint32_t nameBuffer = ENV_BASE + 0xE0;
-    const uint32_t nameLength = 15 * 2; // "wrathmodern.exe" as UTF-16
+    const char* moduleName = "Wow.exe";
+    const uint32_t nameCharacters = (uint32_t)strlen(moduleName);
+    const uint32_t nameLength = nameCharacters * 2; // UTF-16
 
     WriteWord(ldr + 0x00, 0x30); // Length
     WriteWord(ldr + 0x04, 1); // Initialized
@@ -470,9 +513,9 @@ void WardenEmu::Impl::SetupEnvironment() {
     WriteWord(entry + 0x0C, entry + 0x08); // InMemoryOrderLinks.Blink
     WriteWord(entry + 0x10, entry + 0x10); // InInitializationOrderLinks.Flink
     WriteWord(entry + 0x14, entry + 0x10); // InInitializationOrderLinks.Blink
-    WriteWord(entry + 0x18, IMAGE_BASE); // DllBase
+    WriteWord(entry + 0x18, m_clientBase); // DllBase
     WriteWord(entry + 0x1C, 0); // EntryPoint
-    WriteWord(entry + 0x20, imageSize ? imageSize : IMAGE_SIZE); // SizeOfImage
+    WriteWord(entry + 0x20, m_clientSize); // SizeOfImage
     WriteWord(entry + 0x24, nameLength); // FullDllName.Length
     WriteWord(entry + 0x26, nameLength); // FullDllName.MaximumLength
     WriteWord(entry + 0x28, nameBuffer); // FullDllName.Buffer
@@ -480,15 +523,72 @@ void WardenEmu::Impl::SetupEnvironment() {
     WriteWord(entry + 0x2E, nameLength); // BaseDllName.MaximumLength
     WriteWord(entry + 0x30, nameBuffer); // BaseDllName.Buffer
 
-    const char* moduleName = "wrathmodern.exe";
-    uint8_t nameText[30];
+    uint8_t nameText[64] = { 0 };
 
-    for (uint32_t i = 0; i < 15; i++) {
+    for (uint32_t i = 0; i < nameCharacters; i++) {
         nameText[i * 2] = (uint8_t)moduleName[i];
-        nameText[i * 2 + 1] = 0;
     }
 
-    WriteMemory(nameBuffer, nameText, sizeof(nameText));
+    WriteMemory(nameBuffer, nameText, nameLength + 2);
+}
+
+// The client executable inside the guest, at the base the services report (0x00400000 for the
+// 12340 Wow.exe), with a bridge for each client function the module may call. The executable's
+// bytes are what the module reads when it inspects the client; its x86 code never runs here.
+void WardenEmu::Impl::MapClientImage() {
+    const uint8_t* data = nullptr;
+    uint32_t size = 0;
+    uint32_t base = 0;
+
+    m_clientBase = CLIENT_DEFAULT_BASE;
+    m_clientSize = 0;
+    memset(m_clientBridged, 0, sizeof(m_clientBridged));
+
+    if (!services || !services->ClientImage(data, size, base) || !data || !size) {
+        WardenLog("no client executable available; GetModuleHandle(NULL) names unmapped memory at %08x",
+            m_clientBase);
+        return;
+    }
+
+    uint32_t mappedSize = (size + 0xFFF) & ~0xFFFu;
+
+    if ((base & 0xFFF) || base < SCRATCH_BASE + SCRATCH_SIZE || base + mappedSize > HEAP_BASE) {
+        WardenLog("client executable at %08x (+%08x) does not fit the guest layout; not mapped", base, size);
+        return;
+    }
+
+    if (uc_mem_map(machine, base, mappedSize, UC_PROT_ALL) != UC_ERR_OK || !WriteMemory(base, data, size)) {
+        WardenLog("client executable could not be mapped at %08x", base);
+        return;
+    }
+
+    m_clientBase = base;
+    m_clientSize = size;
+
+    for (uint32_t i = 0; i < CLIENT_FUNCTION_COUNT; i++) {
+        const ClientFunction& function = s_clientFunctions[i];
+        uint32_t offset = function.address - base;
+
+        m_clientBridged[i] = function.address >= base && offset + sizeof(function.prologue) <= size
+            && memcmp(data + offset, function.prologue, sizeof(function.prologue)) == 0;
+
+        if (!m_clientBridged[i]) {
+            WardenLog("client function %s is not at %08x in this executable; not bridged", function.name,
+                function.address);
+        }
+    }
+
+    // Block granularity is enough: a module can only enter client code by branching to it.
+    uc_hook clientHook;
+    uc_hook_add(machine, &clientHook, UC_HOOK_BLOCK,
+        reinterpret_cast<void*>(+[](uc_engine* machine, uint64_t address, uint32_t size, void* user) {
+            (void)machine;
+            (void)size;
+            static_cast<WardenEmu::Impl*>(user)->HandleClientCode((uint32_t)address);
+        }),
+        this, base, base + mappedSize - 1);
+
+    WardenLog("client executable mapped at %08x (%u bytes)", base, size);
 }
 
 void WardenEmu::Impl::Teardown() {
@@ -1147,8 +1247,14 @@ uint32_t WardenEmu::Impl::RunImport(const ImportStub& stub, uint32_t* arguments,
     if (strcasecmp(stub.name, "GetModuleHandleA") == 0) {
         char name[128] = { 0 };
 
+        // NULL names the process executable, which is the client, not the Warden module: the
+        // module is loaded by the client's BLL loader and is no loader-registered image.
         if (!arguments[0] || !ReadGuestString(arguments[0], name, sizeof(name))) {
-            return IMAGE_BASE; // the running module's own image
+            return m_clientBase;
+        }
+
+        if (strcasecmp(name, "wow.exe") == 0 || strcasecmp(name, "wow") == 0) {
+            return m_clientBase;
         }
 
         if (strcasecmp(name, "kernel32.dll") == 0 || strcasecmp(name, "kernel32") == 0) {
@@ -1253,7 +1359,21 @@ uint32_t WardenEmu::Impl::RunImport(const ImportStub& stub, uint32_t* arguments,
         memset(info, 0, sizeof(info));
         uint32_t responseSize = 28; // sizeof(MEMORY_BASIC_INFORMATION) on 32-bit
 
+        if (m_clientSize && address >= m_clientBase && address < m_clientBase + m_clientSize) {
+            info[0] = address & ~0xFFFu; // BaseAddress
+            info[1] = m_clientBase; // AllocationBase
+            info[2] = 0x80; // AllocationProtect (PAGE_EXECUTE_WRITECOPY, an image mapping)
+            info[3] = m_clientBase + ((m_clientSize + 0xFFF) & ~0xFFFu) - info[0]; // RegionSize
+            info[4] = 0x1000; // MEM_COMMIT
+            info[5] = 0x20; // PAGE_EXECUTE_READ
+            info[6] = 0x1000000; // MEM_IMAGE
+        }
+
         for (const Region& region : regions) {
+            if (info[0]) {
+                break;
+            }
+
             if (address >= region.base && address < region.base + region.size) {
                 info[0] = region.base; // BaseAddress
                 info[1] = region.base; // AllocationBase
@@ -1396,7 +1516,7 @@ bool WardenEmu::Impl::CallGuest(uint32_t address, const uint32_t* stackArguments
     char reason[160];
 
     if (m_faulted) {
-        snprintf(reason, sizeof(reason), "%s at %08x: the module faulted (RaiseException/TerminateProcess)",
+        snprintf(reason, sizeof(reason), "%s at %08x: the module took a path the emulator cannot follow (see above)",
             what, address);
     } else {
         // The entry address alone does not say where it went wrong; read the faulting
@@ -1421,6 +1541,68 @@ bool WardenEmu::Impl::CallGuest(uint32_t address, const uint32_t* stackArguments
 // =====================================================================
 // Hook handlers
 // =====================================================================
+
+// The module branched into the client executable. A bridged client function runs as this
+// client's own implementation and returns to the caller exactly like the __cdecl original
+// (EAX holds the result, the caller pops its arguments). Any other client address would need
+// the Windows client's x86 code, which is not this client: the call stops and is logged.
+void WardenEmu::Impl::HandleClientCode(uint32_t address) {
+    uint32_t esp = 0;
+    uc_reg_read(machine, UC_X86_REG_ESP, &esp);
+
+    uint32_t frame[4] = { 0 }; // return address, then the first stack arguments
+    uc_mem_read(machine, esp, frame, sizeof(frame));
+
+    for (uint32_t i = 0; i < CLIENT_FUNCTION_COUNT; i++) {
+        const ClientFunction& function = s_clientFunctions[i];
+
+        if (function.address != address || !m_clientBridged[i]) {
+            continue;
+        }
+
+        uint32_t result = 0;
+
+        switch (function.id) {
+            case CLIENT_OS_GET_ASYNC_TIME_MS: {
+                result = services->ClientTimeMs();
+                break;
+            }
+            case CLIENT_OS_LOAD_LIBRARY: {
+                // OsLoadLibrary is LoadLibraryA on the given name; the emulated LoadLibraryA is
+                // the process's only loader.
+                uint32_t stubAddress = StubForName("LoadLibraryA");
+
+                for (uint32_t j = 0; j < importCount; j++) {
+                    if (imports[j].address == stubAddress) {
+                        result = RunImport(imports[j], &frame[1], 1);
+                        break;
+                    }
+                }
+
+                char name[128] = { 0 };
+                ReadGuestString(frame[1], name, sizeof(name));
+                WardenLog("client %s(%s) -> %08x", function.name, name, result);
+                break;
+            }
+        }
+
+        uint32_t returnAddress = frame[0];
+        esp += 4;
+        uc_reg_write(machine, UC_X86_REG_EAX, &result);
+        uc_reg_write(machine, UC_X86_REG_ESP, &esp);
+        uc_reg_write(machine, UC_X86_REG_EIP, &returnAddress);
+        return;
+    }
+
+    char reason[192];
+    snprintf(reason, sizeof(reason),
+        "module called client code at %08x (client RVA %06x) with no native bridge; stack %08x %08x %08x %08x",
+        address, address - m_clientBase, frame[0], frame[1], frame[2], frame[3]);
+    WardenLog("%s", reason);
+    DumpTrace(reason);
+    m_faulted = true;
+    uc_emu_stop(machine);
+}
 
 void WardenEmu::Impl::HandleCodeHook(uint64_t address) {
     if (address < LIB_STUBS || address >= LIB_STUBS + LIB_SLOT_COUNT * 8) {
@@ -1561,6 +1743,29 @@ bool WardenEmu::Impl::HandleInvalidMemory(uc_mem_type type, uint64_t address, in
 // Diagnostics: branch trace and replayable snapshots
 // =====================================================================
 
+// One ring entry per block, except that a run of blocks outside the image (code sliding through
+// unused memory after a wild branch) folds into the entry where the run began: the branch that
+// left the image stays in the history however long the run is.
+void WardenEmu::Impl::RecordBlock(uint32_t address, uint32_t esp) {
+    bool inImage = address >= IMAGE_BASE && address < IMAGE_BASE + imageSize;
+
+    if (!inImage && m_traceNext) {
+        uint32_t last = (m_traceNext - 1) % TRACE_LENGTH;
+        uint32_t lastAddress = m_traceAddress[last];
+        bool lastInImage = lastAddress >= IMAGE_BASE && lastAddress < IMAGE_BASE + imageSize;
+
+        if (!lastInImage && esp == m_traceStack[last]) {
+            ++m_traceRepeat[last];
+            return;
+        }
+    }
+
+    uint32_t slot = m_traceNext++ % TRACE_LENGTH;
+    m_traceAddress[slot] = address;
+    m_traceStack[slot] = esp;
+    m_traceRepeat[slot] = 0;
+}
+
 void WardenEmu::Impl::DumpTrace(const char* reason) {
     // A module stuck in a failing loop would otherwise repeat the same dump every frame; the
     // first few carry everything, and a replay always gets its own.
@@ -1602,6 +1807,9 @@ void WardenEmu::Impl::DumpTrace(const char* reason) {
         if (imageSize && blockAddress >= IMAGE_BASE && blockAddress < IMAGE_BASE + imageSize) {
             WardenLog("trace:   %08x rva %04x esp %08x", blockAddress, blockAddress - IMAGE_BASE,
                 m_traceStack[slot]);
+        } else if (m_traceRepeat[slot]) {
+            WardenLog("trace:   %08x          esp %08x  (+%u more blocks outside the image)", blockAddress,
+                m_traceStack[slot], m_traceRepeat[slot]);
         } else {
             WardenLog("trace:   %08x          esp %08x", blockAddress, m_traceStack[slot]);
         }
@@ -1882,8 +2090,14 @@ bool WardenEmu::Load(const void* data, uint32_t size) {
     impl.imageSize = finalSize;
     impl.imageLoaded = true;
 
-    // Keep the loader entry's image size in step with the image that actually loaded.
-    impl.WriteWord(ENV_BASE + 0x40 + 0x20, finalSize);
+    // The rest of the image area is not part of the module. A branch into it is a wild branch,
+    // and it has to fault on the spot: zero bytes decode as instructions, so executable
+    // padding lets a wild branch slide through megabytes of them before anything stops it.
+    uint32_t imageEnd = (finalSize + 0xFFF) & ~0xFFFu;
+
+    if (imageEnd < IMAGE_SIZE) {
+        uc_mem_protect(impl.machine, IMAGE_BASE + imageEnd, IMAGE_SIZE - imageEnd, UC_PROT_READ | UC_PROT_WRITE);
+    }
 
     // Offline analysis hook: WARDEN_IMAGE_DUMP=<path> writes the relocated-free image (RVAs
     // match Load's addresses) so it can be disassembled without a live session.

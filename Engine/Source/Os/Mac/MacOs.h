@@ -9,6 +9,7 @@
 #define ENGINE_SOURCE_OS_MAC_MACOS_H
 
 #include <cstdint>
+#include <vector>
 
 struct OsMacWindowParams {
     int32_t m_width;
@@ -47,5 +48,11 @@ void OsMacRefreshGameCursor();
 // Hands queued Cocoa events to the application without blocking. Returns false when the application
 // was asked to quit.
 bool OsMacPumpEvents();
+
+// Maps a Windows PE file the way the loader lays it out at its preferred base (headers, sections at
+// their RVAs, zero padding, relocations not applied: none are needed at the preferred base) and
+// reports that base. The version proof hashes this layout; the Warden emulation places the client's
+// Wow.exe in its guest process with it.
+bool OsMacMapPeImage(const char* path, std::vector<uint8_t>& image, uint32_t& preferredBase);
 
 #endif

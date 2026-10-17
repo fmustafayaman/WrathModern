@@ -16,6 +16,8 @@
 #include "WoW/Source/Game/GameClient/WardenClient.h"
 #include "Engine/Source/Os/WardenEmu.h"
 #include "Engine/Source/Os/TimeManager.h"
+#include "Engine/Source/Os/Mac/MacOs.h"
+#include "Platform/Mac/Paths.h"
 #include "Engine/Source/Storm/H/storm.h"
 #include "Engine/Source/Storm/Source/SLock.h"
 #include "WoW/Source/Net/NetClient/NetClient.h"
@@ -30,6 +32,7 @@
 #include <cstdio>
 #include <cstring>
 #include <new>
+#include <vector>
 
 namespace {
 
@@ -240,6 +243,43 @@ public:
         s_savedState = nullptr;
         s_savedStateSize = 0;
         return true;
+    }
+
+    // The emulated process's executable: the client directory's Wow.exe, mapped once and kept for
+    // every module of the session. Without it the module still runs, but any reach into the
+    // client image faults (and is logged) instead of reading the executable.
+    bool ClientImage(const uint8_t*& data, uint32_t& size, uint32_t& base) override {
+        static std::vector<uint8_t> s_clientImage;
+        static uint32_t s_clientBase;
+        static bool s_attempted;
+
+        if (!s_attempted) {
+            s_attempted = true;
+            char path[4096];
+
+            if (MacPaths::FindInClientDirectory("Wow.exe", path, sizeof(path))
+                && OsMacMapPeImage(path, s_clientImage, s_clientBase)) {
+                WardenClientLog("client image: %s mapped (%u bytes at %08x)", path,
+                    (uint32_t)s_clientImage.size(), s_clientBase);
+            } else {
+                WardenClientLog("client image: no Wow.exe in the client directory");
+                s_clientImage.clear();
+            }
+        }
+
+        if (s_clientImage.empty()) {
+            return false;
+        }
+
+        data = s_clientImage.data();
+        size = (uint32_t)s_clientImage.size();
+        base = s_clientBase;
+        return true;
+    }
+
+    // The same clock the Windows client's OsGetAsyncTimeMs reads.
+    uint32_t ClientTimeMs() override {
+        return OsGetAsyncTimeMs();
     }
 
     static void UnloadPendingModule() {

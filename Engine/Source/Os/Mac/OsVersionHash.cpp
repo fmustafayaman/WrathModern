@@ -4,6 +4,7 @@
 #include <vector>
 #include "Engine/Source/Os/OsFile.h"
 #include "Engine/Source/Os/OsVersionHash.h"
+#include "Engine/Source/Os/Mac/MacOs.h"
 #include "Engine/Source/Storm/H/storm.h"
 #include "Platform/Mac/Paths.h"
 #include "Platform/Mac/PEResources.h"
@@ -674,6 +675,36 @@ static bool HashLoadedFileImage(IOsVersionHashCallback& callback, const char* pa
 }
 
 } // namespace
+
+bool OsMacMapPeImage(const char* path, std::vector<uint8_t>& image, uint32_t& preferredBase) {
+    HOSFILE file = OsCreateFile(path, OS_GENERIC_READ, 1, OS_OPEN_EXISTING, OS_FILE_ATTRIBUTE_NORMAL, OS_FILE_TYPE_ANY);
+
+    if (file == OS_INVALID_FILE) {
+        return false;
+    }
+
+    bool result = false;
+    uint64_t size = OsGetFileSize(file);
+
+    if (size && size == static_cast<uint32_t>(size) && size <= 0x10000000) {
+        std::vector<uint8_t> data(static_cast<size_t>(size));
+        uint32_t bytesRead;
+        MappedImage mapped;
+
+        if (OsReadFile(file, data.data(), static_cast<uint32_t>(size), &bytesRead) && bytesRead == size
+            && mapped.Build(data.data(), bytesRead) && mapped.m_is32Bit) {
+            // ImageBase sits at optional header + 28 in PE32; Build validated the headers.
+            uint32_t ntOffset;
+            memcpy(&ntOffset, mapped.m_data.data() + 0x3C, sizeof(ntOffset));
+            memcpy(&preferredBase, mapped.m_data.data() + ntOffset + 4 + 20 + 28, sizeof(preferredBase));
+            image.swap(mapped.m_data);
+            result = true;
+        }
+    }
+
+    OsCloseFile(file);
+    return result;
+}
 
 int32_t IOsVersionChecksum(IOsVersionHashCallback& callback, const char* path, int32_t loaded) {
     if (!path && !loaded) {

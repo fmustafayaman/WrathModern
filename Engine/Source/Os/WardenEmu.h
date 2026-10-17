@@ -36,6 +36,15 @@ public:
     virtual void StateSave(const void* data, uint32_t size) = 0;
     virtual bool StateLoad(void* data, uint32_t& size) = 0;
 
+    // The client's own executable, laid out the way the Windows loader maps it, and its base.
+    // On Windows the module runs inside the client process: GetModuleHandle(NULL) names this
+    // image and server requests resolve client functions as offsets into it. The data must stay
+    // valid for the services' lifetime. False when no Windows executable is available.
+    virtual bool ClientImage(const uint8_t*& data, uint32_t& size, uint32_t& base) = 0;
+
+    // OsGetAsyncTimeMs: the client clock, which modules call directly inside the client image.
+    virtual uint32_t ClientTimeMs() = 0;
+
     virtual ~WardenEmuServices() {}
 };
 

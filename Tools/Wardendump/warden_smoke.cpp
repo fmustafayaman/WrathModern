@@ -22,18 +22,23 @@
  *   WardenSmoke --snapshot <warden-snapshot.bin>
  *       rerun the entry call a live session failed in, from the machine state captured just
  *       before it; the full branch trace lands in Logs/warden.log (or ./warden.log).
+ *
+ * WARDEN_CLIENT_EXE=<path to Wow.exe> gives the module the client executable, as the client
+ * does from its own directory; replays need it to match a live session.
  */
 
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <string>
 #include <vector>
 
 #include <zlib.h>
 
 #include "Engine/Source/Os/WardenEmu.h"
+#include "Engine/Source/Os/Mac/MacOs.h"
 #include "WoW/Source/Game/GameClient/WardenModuleData.h"
 
 static void Rc4Crypt(const uint8_t* key, uint32_t keyLength, uint8_t* buffer, uint32_t size) {
@@ -150,6 +155,39 @@ public:
         const uint8_t* bytes = static_cast<const uint8_t*>(data);
         savedState.assign(bytes, bytes + size);
         hasSavedState = true;
+    }
+
+    bool ClientImage(const uint8_t*& data, uint32_t& size, uint32_t& base) override {
+        static std::vector<uint8_t> s_image;
+        static uint32_t s_base;
+        static bool s_attempted;
+
+        if (!s_attempted) {
+            s_attempted = true;
+            const char* path = std::getenv("WARDEN_CLIENT_EXE");
+
+            if (!path || !OsMacMapPeImage(path, s_image, s_base)) {
+                std::printf("NOTE: no client executable (set WARDEN_CLIENT_EXE to the game's Wow.exe)\n");
+                s_image.clear();
+            } else {
+                std::printf(".client executable %s: %u bytes at %08x\n", path, (uint32_t)s_image.size(), s_base);
+            }
+        }
+
+        if (s_image.empty()) {
+            return false;
+        }
+
+        data = s_image.data();
+        size = (uint32_t)s_image.size();
+        base = s_base;
+        return true;
+    }
+
+    uint32_t ClientTimeMs() override {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        return (uint32_t)((uint64_t)now.tv_sec * 1000u + (uint32_t)(now.tv_nsec / 1000000u));
     }
 
     bool StateLoad(void* data, uint32_t& size) override {
