@@ -119,9 +119,9 @@ void OsGetVersionString(char* buffer, int32_t size) {
 }
 
 // The platform and operating system the client reports to the server, as four-character codes:
-// "x86" and "Win". Grimfall's world server drops clients that report "OSX", so this branch reports
-// what the Windows client does. The server then sends Windows Warden modules, which this client
-// cannot run and leaves unanswered.
+// "x86" and "Win". Private servers (Grimfall, Warmane) drop clients that report "OSX", so this
+// build reports what the Windows client does. The servers then send Windows Warden modules,
+// which the emulated Warden client runs in a 32-bit machine (Engine/Source/Os/WardenEmu.h).
 uint32_t OsGetProcessorId() {
     return 0x783836;
 }
