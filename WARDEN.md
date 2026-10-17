@@ -3,7 +3,7 @@
 Amaç: native macOS/arm64 WrathModern istemcisinin Warden etkin sunucularda (Grimfall, Warmane) tam değerli istemci gibi davranması.
 Yol: istemci tarafı Warden'ı emülasyonla çalıştırmak. Hile/sahte cevap YOK — sunucunun modülü gerçek kod olarak çalışıyor; "honest-compat".
 
-> **GÜNCEL DURUM (2026-10-17 akşam):** Sunucu modülü artık **yükleniyor, oluşturuluyor, initialize oluyor, sunucu paketlerini tüketiyor ve cevap üretiyor** — ama modülün `Process`'i okunamayan belleğe erişip fault veriyor ve `LCMapStringA` anlamsız argümanlarla çağrılıyor. El sıkışma tamamlanmadığı için karakter listesi gelmiyor.
+> **GÜNCEL DURUM (2026-10-17 öğle, en altta güncelleme var):** Sunucu modülü artık **yükleniyor, oluşturuluyor, initialize oluyor, sunucu paketlerini tüketiyor ve cevap üretiyor** — ama modülün `Process`'i okunamayan belleğe erişip fault veriyor ve `LCMapStringA` anlamsız argümanlarla çağrılıyor. El sıkışma tamamlanmadığı için karakter listesi gelmiyor.
 > **Takıldığım yer:** Gerçek oturum olmadan (doğru oturum anahtarı) bu iki hatayı offline çoğaltamıyorum. Bu yüzden tanı dump'ları eklendi; **bir kez daha login** gerekiyor — sonrası tamamen offline. Ayrıntı: en alttaki "NEREDE TAKILDIK" bölümü.
 
 
@@ -211,3 +211,37 @@ Notlar:
 - `GetProcAddress(AddVectoredExceptionHandler/CreateToolhelp32Snapshot/wine_get_unix_file_name)`
   bizde gerçekten yok → 0 dönüyoruz (Win32 istemci de VEH/Toolhelp kurmaz; Wine tespiti doğru: değiliz).
 
+
+---
+
+## GÜNCELLEME (2026-10-17 öğle) — yem importlar, dal izi, snapshot
+
+### Bulgu: `LCMapStringA` çağrısı gerçek bir API çağrısı değil
+- `image_raw.bin` üzerinde ham bayt taraması: `0x7AEC` (LCMapStringA), `0x7AF2` (MulDiv) ve
+  `0x7AF8` (DrawTextA) thunk'larına giden **hiçbir** `E8/E9/Jcc` yok. Relocation tablosunda da
+  bu thunk'ları gösteren bir pointer yok. Yani bu üç import modülde **ölü** (yem).
+- Sonuç: log'daki `LCMapStringA` girişleri, bozuk bir fonksiyon pointer'ı ya da bozuk bir dönüş
+  adresi üzerinden stub'a (0x00F00000) **vahşi sıçrama**. "Argümanlar" yalnızca o anki yığın içeriği:
+  `[esp]` = nesne (0x300000), `[esp+4]` = nesne+0x64C. Bu, `Process`'in 0x7063DD–0x7063E2'de
+  `call 0x702CFD` öncesi yaptığı push'larla birebir uyuşuyor.
+- `obj+0x7B0` = modülün coroutine devam pointer'ı (ör. 0x702E73: `mov eax, 0x11E4` → `[ebx+0x7B0]`),
+  `0x702D77: call eax` ile çağrılıyor. Relocation'lar doğru (0x2E74 reloc listesinde).
+  Şüpheli: o devam zincirindeki bir çağrı ya da `[ecx]` vtable'ı yanlış değer okuyor.
+
+### Eklenen tanı (commit 08a8eda)
+- **Dal izi:** `UC_HOOK_BLOCK` halkası (son 256 blok, adres + ESP). Başarısız giriş çağrısında ve
+  dönüş adresi image dışında olan her import girişinde `trace:` satırları yazılır: registerlar,
+  yığının ilk 12 kelimesi, son 64 blok (RVA ile).
+- **Snapshot:** Her giriş çağrısından önce guest durumu alınır. Bir emülatörün ilk hatasında durum
+  `Logs/warden-snapshot.bin`'e yazılır. `WardenSmoke --snapshot <dosya>` aynı çağrıyı offline birebir
+  tekrarlar; yamalı test görüntüsüyle doğrulandı (aynı EIP ve aynı registerlar).
+- **Doğru oturum replay'i:** `WardenSmoke <image> <traffic> <session-key>` artık istemci gibi çalışıyor:
+  önce yerleşik modül, `ModuleUse` sonrası sunucu modülü, `StateSave`/`StateLoad` ile RC4 durumu
+  aktarılır ve çıktılar trace'teki CMSG'lerle karşılaştırılır. Eski replay bu aktarımı yapmadığı için
+  doğru anahtarla da çalışamazdı. İstemci her girişte trafik loguna `SESSION` satırı yazar; replay
+  son oturumu oynatır.
+
+### Sıradaki adım
+1. Kullanıcı Grimfall'a **bir kez** giriş yapar (karakter listesine kadar beklemesi yeterli).
+2. `Logs/warden.log` → `trace:` satırları vahşi sıçramanın yerini doğrudan gösterir.
+3. `Logs/warden-snapshot.bin` + `warden-session-key.bin` ile tüm iterasyon offline yürür; yeni giriş gerekmez.
