@@ -346,6 +346,8 @@ bool WardenEmu::Impl::Boot() {
         }),
         this, HEAP_EXT_BASE, HEAP_EXT_BASE + 0x1000 - 1);
 
+    // begin=1, end=0 is Unicorn's "every address" range: the earlier (0, 0) only covered address
+    // zero, so genuine unmapped accesses were missed and surfaced only as a bare emu error.
     uc_hook invalidHook;
     uc_hook_add(machine, &invalidHook, UC_HOOK_MEM_INVALID,
         reinterpret_cast<void*>(+[](uc_engine* machine, uc_mem_type type, uint64_t address, int size,
@@ -353,7 +355,7 @@ bool WardenEmu::Impl::Boot() {
             (void)machine;
             return static_cast<WardenEmu::Impl*>(user)->HandleInvalidMemory(type, address, size, value);
         }),
-        this, 0, 0);
+        this, 1, 0);
 
     uc_hook intrHook;
     uc_hook_add(machine, &intrHook, UC_HOOK_INTR,
@@ -675,6 +677,15 @@ void WardenEmu::Impl::HandleImport(const ImportStub& stub) {
 
     for (uint32_t i = 0; i < argumentCount; i++) {
         ReadWord(esp + 4 + i * 4, arguments[i]);
+    }
+
+    // Logging the return address names the module instruction that called the import, which is
+    // how a call site is located when its arguments look wrong.
+    if (strcasecmp(stub.name, "LCMapStringA") == 0) {
+        uint32_t caller = 0;
+        ReadWord(esp, caller);
+        WardenLog("LCMapStringA called from %08x (module RVA %s)", caller,
+            (caller >= IMAGE_BASE && caller < IMAGE_BASE + IMAGE_SIZE) ? "in image" : "outside image");
     }
 
     uint32_t returnEax = RunImport(stub, arguments, argumentCount);
@@ -1323,7 +1334,12 @@ bool WardenEmu::Impl::CallGuest(uint32_t address, const uint32_t* stackArguments
     }
 
     if (error != UC_ERR_OK) {
-        WardenLog("%s at %08x: emu error %s", what, address, uc_strerror(error));
+        // The entry address alone does not say where it went wrong; read the faulting
+        // instruction pointer and the address it touched so the site can be disassembled.
+        uint32_t eip = 0;
+        uc_reg_read(machine, UC_X86_REG_EIP, &eip);
+        WardenLog("%s at %08x: emu error %s (faulting EIP %08x)", what, address, uc_strerror(error),
+            eip);
         return false;
     }
 
@@ -1553,6 +1569,22 @@ bool WardenEmu::Load(const void* data, uint32_t size) {
 
     // Keep the loader entry's image size in step with the image that actually loaded.
     impl.WriteWord(ENV_BASE + 0x40 + 0x20, finalSize);
+
+    // Offline analysis hook: WARDEN_IMAGE_DUMP=<path> writes the relocated-free image (RVAs
+    // match Load's addresses) so it can be disassembled without a live session.
+    if (const char* dumpPath = getenv("WARDEN_IMAGE_DUMP")) {
+        std::vector<uint8_t> raw(finalSize);
+
+        if (impl.ReadMemory(IMAGE_BASE, raw.data(), finalSize)) {
+            FILE* dumpFile = fopen(dumpPath, "wb");
+
+            if (dumpFile) {
+                fwrite(raw.data(), 1, finalSize, dumpFile);
+                fclose(dumpFile);
+                WardenLog("image dumped to %s (%u bytes)", dumpPath, finalSize);
+            }
+        }
+    }
 
     // Relocations, big-endian control words exactly like the original loader.
     uint32_t relOffset = header[2];

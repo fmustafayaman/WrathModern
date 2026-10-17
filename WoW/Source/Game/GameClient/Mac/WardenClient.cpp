@@ -376,6 +376,20 @@ bool ActivateNextModule() {
     bool ok = s_pendingEmu->Initialize(ClientServices::Connection()->GetSessionKey(),
         sizeof(LoginData::m_sessionKey));
 
+    // Offline replay needs the session key: the module decrypts every server packet with it, so
+    // a trace replayed without the key leaves Data() rejecting every packet. Written alongside
+    // the other captures for WardenSmoke.
+    {
+        FILE* keyFile = fopen("Logs/warden-session-key.bin", "wb");
+
+        if (keyFile) {
+            fwrite(ClientServices::Connection()->GetSessionKey(), 1, sizeof(LoginData::m_sessionKey), keyFile);
+            fclose(keyFile);
+            WardenClientLog("ActivateNextModule: wrote Logs/warden-session-key.bin (%u bytes)",
+                (uint32_t)sizeof(LoginData::m_sessionKey));
+        }
+    }
+
     if (!ok) {
         WardenClientLog("ActivateNextModule: module Initialize failed");
         MacWardenServices::UnloadPendingModule();

@@ -13,6 +13,7 @@
  * Two optional arguments:
  *   WardenSmoke <module.bin>            load a dumped server module instead of the built-in one
  *   WardenSmoke <module.bin> <trace.log>  replay the trace's "SMSG <hex>" lines through Data()
+ *   WardenSmoke <module.bin> <trace.log> <session-key.bin>  also use the captured session key
  */
 
 #include <cstdint>
@@ -164,10 +165,33 @@ int main(int argc, char** argv) {
 
     std::printf(".create ok\n");
 
-    // 5. Initialize with a dummy session key (40 bytes, like the login packet).
+    // 5. Initialize with the session key. The module RC4-decrypts every server packet with this
+    // key, so a replayed trace only makes progress with the real one: pass it as the third
+    // argument (Logs/warden-session-key.bin). Without it a dummy key keeps the lifecycle running.
     uint8_t sessionKey[40];
-    for (uint32_t i = 0; i < sizeof(sessionKey); i++) {
-        sessionKey[i] = static_cast<uint8_t>(i * 7 + 0x21);
+
+    if (argc >= 4) {
+        FILE* keyFile = std::fopen(argv[3], "rb");
+
+        if (!keyFile) {
+            std::printf("FAIL: cannot open session key %s\n", argv[3]);
+            return 1;
+        }
+
+        size_t read = std::fread(sessionKey, 1, sizeof(sessionKey), keyFile);
+        std::fclose(keyFile);
+
+        if (read != sizeof(sessionKey)) {
+            std::printf("FAIL: session key is %u bytes, expected %u\n", (uint32_t)read,
+                (uint32_t)sizeof(sessionKey));
+            return 1;
+        }
+
+        std::printf(".session key %s\n", argv[3]);
+    } else {
+        for (uint32_t i = 0; i < sizeof(sessionKey); i++) {
+            sessionKey[i] = static_cast<uint8_t>(i * 7 + 0x21);
+        }
     }
 
     if (!module.Initialize(sessionKey, sizeof(sessionKey))) {

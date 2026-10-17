@@ -3,6 +3,10 @@
 Amaç: native macOS/arm64 WrathModern istemcisinin Warden etkin sunucularda (Grimfall, Warmane) tam değerli istemci gibi davranması.
 Yol: istemci tarafı Warden'ı emülasyonla çalıştırmak. Hile/sahte cevap YOK — sunucunun modülü gerçek kod olarak çalışıyor; "honest-compat".
 
+> **GÜNCEL DURUM (2026-10-17 akşam):** Sunucu modülü artık **yükleniyor, oluşturuluyor, initialize oluyor, sunucu paketlerini tüketiyor ve cevap üretiyor** — ama modülün `Process`'i okunamayan belleğe erişip fault veriyor ve `LCMapStringA` anlamsız argümanlarla çağrılıyor. El sıkışma tamamlanmadığı için karakter listesi gelmiyor.
+> **Takıldığım yer:** Gerçek oturum olmadan (doğru oturum anahtarı) bu iki hatayı offline çoğaltamıyorum. Bu yüzden tanı dump'ları eklendi; **bir kez daha login** gerekiyor — sonrası tamamen offline. Ayrıntı: en alttaki "NEREDE TAKILDIK" bölümü.
+
+
 ## YAPILDI (2026-10-17)
 
 ### Köprü (Engine/Source/Os/WardenEmu.h + Mac/WardenEmu.cpp)
@@ -33,11 +37,15 @@ Derleme: `c++ -O2 -std=c++17 -arch arm64 -I. -I/opt/homebrew/include -DWOWDECOMP
 Sonuç: .load ok → .create ok → .initialize ok (result 1) → .processed → .done → .shutdown ok; StateLoad(520)/StateSave(520) modülün kendi state akışı köprüden düzgün geçiyor. Bu, BMC GÖNDERDRAW Handshake yok duman testinde bekleniris (sunucu verisi olmadan modül el sıkışma üretmez); gerçek test Grimfall'a karşı.
 
 ## KALAN — SIRADAKİ ADIMLAR
-1. Commit (macos branch) → grimfall merge → grimfall worktree'de derle. (Kullanıcı GRIMFALL.md'deki klasöre app atıp test eder; login: loradona)
-2. `warden.log` (CWD'de) uzunluğu: module created / Initialize / SMSG_WARDEN_DATA n bytes / module consumed n lines — tüm akışı gösterir. SMSG_WARDEN_DATA geldiğinde "module consumed" satırı ve CMSG çıkmıyorsa log'da fault/import satırlarına bak.
-3. Warmane ayrı: "oyun sürümü farklı" — versiyon gate muhtemelen SMSG_AUTH_RESPONSE öncesi platform/versiyon denetimi; Warden bitince bakılır.
-4. Custom modüllerde import gelirse: log'daki `import xxx!yyy has no emulator implementation` satırına göre köprüde o fonksiyon için gerçek GuestAlloc-tabanlı implementasyon eklenir (kernel32 VirtualAlloc/HeapAlloc vb. zaten hazır kalıpta).
-5. NOT: module Data'nın guest arg'ı SCRATCH'in dışında olabilir (modül kendi heap'ini kullanır) — okuma pointer'ından bağımsız; yalnız kidemli sınır 32K cap.
+1. Kullanıcı Grimfall login (loradona) → `Logs/` altında `warden-module-image.bin` (şifresiz görüntü), `warden-session-key.bin`, `warden-traffic.log`, `warden-module-key.bin` oluşur → **tam offline replay**.
+2. `WardenSmoke <image> <traffic> <session-key>` ile hatayı offline çoğalt; `Logs/warden.log`'da:
+   - `LCMapStringA called from XXXX` → çağıran komutu disassemble et (RVA = XXXX-0x700000).
+   - `... emu error ... (faulting EIP XXXX)` ve `guest read/write fault at ...` → gerçek fault adresi.
+3. Fault'ı gider (muhtemel: modülün beklediği bir host yapısı eksik ya da bir import yanlış değer döndürüyor).
+4. `LCMapStringA` bayraklarını gerçek anlamıyla ele al (bkz. alttaki analiz).
+5. Donma ("authentication successful" anında): modülün `Process`'i ana iş parçacığında senkron çalışıyor; adım bütçesi/log sonrası bak.
+6. Warmane ayrı: "oyun sürümü farklı" → `DivxDecoder.dll.bak` orijinali geri koy + Wow.exe orijinal mi doğrula.
+
 
 ## RİSK / HATIRLATMA
 - Unicorn hook'ları uc_emu_start içinde çalışır; içeride uc_mem_map çağrısı GuestAlloc uzatması HARİÇ YAPILMAMALI (heap uzatması hook içinde uc_mem_map yapiyorsa sorun çıkarabilir — şimdilik ext heap mapesi yalnız NewImportStub ve heap taşmasında; test edilirse!).
@@ -109,3 +117,97 @@ Durum: macos + grimfall derlendi, iki app güncellendi. Smoke yeşil. Sıradaki:
 Grimfall login → modül artık YÜKLENMELİ; log'da "import X was called but has no behavior"
 veya "RaiseException/RtlUnwind" satırları çıkarsa o çağrılar modülün gerçekten kullandığı
 yollardır → sırayla gerçek davranış eklenir.
+
+---
+
+## NEREDE TAKILDIK — Grimfall el sıkışması (2026-10-17 akşam, güncel)
+
+### Ne ÇALIŞIYOR (kanıtlanmış)
+Gerçek Grimfall oturumunun `Logs/warden.log`'u (2. oturum, 11:22):
+```
+[1] module loaded: imageSize=24576 ...          <- yerleşik modül
+[3] Initialize done (client key length 40, result 00000001)
+SMSG_WARDEN_DATA 37 bytes, active=1             <- MODULE_USE
+[37] module loaded: imageSize=45056 exports=1 imports=2 export=007012f1   <- SUNUCU MODÜLÜ YÜKLENDİ
+[38..42] GetProcAddress(AddVectoredExceptionHandler / RemoveVectoredExceptionHandler /
+         CreateToolhelp32Snapshot / wine_get_unix_file_name) + LoadLibraryA(psapi.dll)
+         -> hepsi dürüstçe "yok" (modül bunları yokluyor; bizde Wine da yok)
+[43] module created, object 00300000 vtable 00708168
+[44] Initialize done (client key length 40, result 00000001)
+module consumed 37 bytes / 17 / 57 / 39 / 288 bytes    <- PAKETLERİ TÜKETİYOR
+CMSG: 1, 21, 13 bayt gönderiliyor (warden-traffic.log: SMSG/CMSG dizesi)
+```
+Yani: import katmanı tamam, modül yükleniyor/çalışıyor, sunucuyla bayt alışverişi var.
+Karakter listesi **yine de gelmiyor** (`COP_GET_CHARACTERS` → 30 sn sonra RESPONSE_CANCELLED).
+
+### İki hata, modülün gerçek `Process`'ini kırıyor
+```
+[45] LCMapStringA args: locale=0030064c flags=00300000 src=00000000 cchSrc=0 dest=00000000 cchDest=0
+[46] WardenModule::Process at 007063b8: emu error Invalid memory read (UC_ERR_READ_UNMAPPED)
+[47] LCMapStringA: bad source length 3147340        (= 0x30028C)
+[48] LCMapStringA args: locale=0017fdc0 flags=00000000 src=00000000 cchSrc=3147340 dest=00300000 cchDest=1572591
+[49] ...
+[51] LCMapStringA args: locale=0030064c flags=00300000 src=0017feef cchSrc=0 dest=00000000 cchDest=0
+[52..55] WardenModule::Process ... READ_UNMAPPED (tekrar tekrar)
+```
+Notlar:
+- `[45]` ve `[51]` AYNI argümanlarla geliyor → deterministik bir çağrı, çöp değil.
+- `locale=0x0030064C`, `flags=0x00300000` = modül nesnesinin HEAP adresi (nesne 0x00300000'de,
+  `0x30064C = nesne + 0x64C`). Yani elimizde okuduğumuz "argümanlar" aslında modülün kendi
+  nesne alanlarına işaret eden **pointer'lar** — API'ye giden gerçek değerler değil.
+- `0x00300000 = LCMAP_HIRAGANA(0x100000) | LCMAP_KATAKANA(0x200000)`. Bu kombinasyon Windows'ta
+  anlamsız/geçersiz; yani bayrağın kendisi zaten şüpheli → çağrı yeri yanlış çözülüyor olabilir.
+
+### Statik analiz (capstone + import tablosu; `Tools/Wardendump/dump/image_raw.bin` = 45056 B görüntü)
+- Import thunk'ları: KERNEL32 thunkRVA=0x8000 (LCMapStringA ilk sırada), USER32 thunkRVA=0x807C; 33 giriş.
+- Modül nesnesi = `0x00300000`; `Process` fonksiyonu RVA **0x63B8** (`vtable+12`); `esi`=nesne.
+  0x63C3: `cmp dword ptr [esi+0x42c], 0` → iş kuyruğu; 0x63D0: `lea edi,[esi+0x64c]`.
+- Sadece ÜÇ import `jmp dword ptr [slot]` **thunk**'ına sahip: 0x7AEC=LCMapStringA, 0x7AF2=MulDiv,
+  0x7AF8=DrawTextA. (Diğerleri doğrudan `call [slot]`.) Modül LCMapStringA'yı bu thunk üzerinden
+  çağırıyor gibi; ama 0x7AEC'ye giden bir `E8` call bulunamadı → çağrı bir **fonksiyon pointer
+  tablosu/indirection** üzerinden olabilir. Bu yüzden log'a **çağıran adresi** ekledik.
+
+### Bu round yapılanlar (kod)
+1. **Gerçek Windows process ortamı** (asıl muhtemel kök neden): `Boot()` artık TEB'i dolduruyor
+   (SEH zinciri sonu, StackBase/Limit, `fs:[0x18]` self, `fs:[0x2C]` static-TLS dizi, `fs:[0x30]` PEB)
+   ve bir **PEB** yaratıyor (ImageBaseAddress, Ldr + tek girdili loader listesi, ProcessHeap,
+   processor/heap sayıları). Öncesinde TEB haritalı ama bomboştu, PEB hiç yoktu → modülün MSVC
+   runtime'ı `fs:[0x30]`/`fs:[0x2C]` okurken 0'a erişip fault veriyordu. Sayfalar: PEB 0x000FD000,
+   TLS dizisi 0x000F8000, ENV (Ldr/listeler/isim) 0x000F7000. VirtualQuery bölge tablosuna eklendi.
+2. **Tanı logging'i:** `CallGuest` artık hatada **faulting EIP**'i basıyor; `UC_HOOK_MEM_INVALID`
+   aralığı (0,0)→(1,0) düzeltildi (öncesi sadece adres 0'ı kapsıyordu, gerçek fault hook'a düşmüyordu);
+   `HandleImport` **`LCMapStringA called from XXXX`** (çağıran adres) basıyor.
+3. **Offline replay için veri dump'ları:**
+   - `LoadModule` → `Logs/warden-module-image.bin` (şifresiz, inflate edilmiş 45056 B görüntü).
+   - `ActivateNextModule` → `Logs/warden-session-key.bin` (40 B oturum anahtarı).
+   - `ModuleUse` → `Logs/warden-module-key.bin` (16 B, modül RC4 anahtarı) + id/key log satırı.
+   - (Önceden) `ModuleCache` → `Logs/warden-module-<id>.bin` (şifreli BLL blobu); `WardenTrace` → tam trafik.
+4. **WardenSmoke 3. argüman:** `WardenSmoke <module.bin> <trace.log> <session-key.bin>`.
+   Ayrıca `WARDEN_IMAGE_DUMP=<path>` env değişkeni genişletilmiş görüntüyü disassembly için yazar.
+5. Smoke yeşil kaldı (builtin modül lifecycle bozulmadı).
+
+### Tam olarak TAKILDIĞIM yer
+- **Offline replay şu an modülü tüketmiyor (`consumed=0`)**: modül her sunucu paketini oturum
+  anahtarıyla RC4 çözüyor; smoke'ta sahte anahtar kullandığım için `Data()` paketi reddediyor ve
+  modül hiç iş yapmıyor → fault (Process) ve yanlış `LCMapStringA` çağrısı **offline tekrarlanmıyor**.
+- Yani: hatayı düzeltmek için **gerçek oturum anahtarı** gerekiyor. Artık dump ediliyor;
+  bir sonraki login'den sonra `WardenSmoke <image> <traffic> <session-key>` ile tam offline iterasyon
+  mümkün — kullanıcıdan başka login gerekmez.
+- İkinci takıldığım nokta: `LCMapStringA`'nın gerçek argümanlarını okuduğumuzdan emin olamıyorum
+  (yukarıdaki pointer'lar API değerlerine benzemiyor). Çağıran adresi + fault EIP geldiğinde
+  çağrı yeri disassemble edilip kesinleştirilecek.
+
+### Sıradaki somut adım
+1. Kullanıcı **bir kez** login → yeni log + `warden-session-key.bin` + `warden-module-image.bin`.
+2. `WardenSmoke <image> <traffic> <session-key>` ile offline çoğalt.
+3. Log'daki `LCMapStringA called from` / `faulting EIP` / `guest ... fault at` satırlarına göre:
+   - Fault adresi modülün hangi yapıyı okuduğunu söyler → o yapıyı (veya import değerini) düzelt.
+   - `LCMapStringA` bayrakları: gerçek `LCMAP_*` bitleri çıkarılıp birebir ele alınır
+     (LOWERCASE/UPPERCASE zaten var; gerekirse HALFWIDTH/FULLWIDTH/KATAKANA tabloları eklenir).
+4. Sonra donma ("authentication successful" anı) ve karakter listesi.
+
+### Hile YOK / dürüstlük ilkesi (yine)
+- `Process` fault verdiğinde modül **başarısız** sayılıyor; sahte "check geçti" üretilmiyor.
+- `GetProcAddress(AddVectoredExceptionHandler/CreateToolhelp32Snapshot/wine_get_unix_file_name)`
+  bizde gerçekten yok → 0 dönüyoruz (Win32 istemci de VEH/Toolhelp kurmaz; Wine tespiti doğru: değiliz).
+
