@@ -9,6 +9,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 /*
  * Emulated BLL loader and Warden module runner (macOS, arm64).
@@ -71,8 +72,8 @@ constexpr uint32_t SCRATCH_OUTPUT = SCRATCH_BASE + 0x9000; // out-parameters
 // Honest ceiling for bytes crossing the bridge. Buffers handed to the module live in the
 // scratch area below the out-parameter block, which caps the delivered packet size; everything
 // else moves between the module's own memory and host buffers under the same generous bound.
-constexpr uint32_t MAX_TRANSFER_BYTES = SCRATCH_OUTPUT - SCRATCH_DATA;
 constexpr uint32_t MAX_DELIVER_BYTES = SCRATCH_OUTPUT - SCRATCH_DATA;
+constexpr uint32_t MAX_HOST_TRANSFER_BYTES = 0x40000; // module-heap <-> host moves; far beyond every real module
 
 constexpr uint32_t LIB_SLOT_COUNT = 16;
 
@@ -160,6 +161,9 @@ struct WardenEmu::Impl {
     uint32_t m_heapNext[2] = { HEAP_BASE, HEAP_EXT_BASE + 0x1000 };
     uint32_t m_heapLimit[2] = { HEAP_BASE + HEAP_SIZE, HEAP_EXT_BASE + HEAP_EXT_SIZE };
     uint32_t heapRegion = 0;
+
+    // Host-side staging for data moving between module memory and the services.
+    std::vector<uint8_t> moduleTransferBuffer;
 
     // Guest stub addresses handed out for imports.
     struct ImportStub {
@@ -511,14 +515,14 @@ void WardenEmu::Impl::HandleCodeHook(uint64_t address) {
         case 0: { // Data(data, size)
             uint32_t size = arguments[1];
 
-            if (size > MAX_TRANSFER_BYTES) {
+            if (size > MAX_HOST_TRANSFER_BYTES) {
                 WardenLog("module Data too large: %u", size);
                 break;
             }
 
-            uint8_t buffer[MAX_TRANSFER_BYTES];
-            ReadMemory(arguments[0], buffer, size);
-            services->ModuleOutput(buffer, size);
+            moduleTransferBuffer.resize(size);
+            ReadMemory(arguments[0], moduleTransferBuffer.data(), size);
+            services->ModuleOutput(moduleTransferBuffer.data(), size);
             break;
         }
         case 1: { // ModuleUse(id, key)
@@ -534,14 +538,14 @@ void WardenEmu::Impl::HandleCodeHook(uint64_t address) {
             uint32_t size = arguments[2];
             ReadMemory(arguments[0], id, sizeof(id));
 
-            if (size > MAX_TRANSFER_BYTES) {
+            if (size > MAX_HOST_TRANSFER_BYTES) {
                 WardenLog("module cache data too large: %u", size);
                 break;
             }
 
-            uint8_t buffer[MAX_TRANSFER_BYTES];
-            ReadMemory(arguments[1], buffer, size);
-            services->ModuleCache(id, buffer, size);
+            moduleTransferBuffer.resize(size);
+            ReadMemory(arguments[1], moduleTransferBuffer.data(), size);
+            services->ModuleCache(id, moduleTransferBuffer.data(), size);
             break;
         }
         case 3: { // MemoryAlloc(size)
@@ -557,14 +561,14 @@ void WardenEmu::Impl::HandleCodeHook(uint64_t address) {
         case 5: { // StateSave(data, size)
             uint32_t size = arguments[1];
 
-            if (size > MAX_TRANSFER_BYTES) {
+            if (size > MAX_HOST_TRANSFER_BYTES) {
                 WardenLog("state save too large: %u", size);
                 break;
             }
 
-            uint8_t buffer[MAX_TRANSFER_BYTES];
-            ReadMemory(arguments[0], buffer, size);
-            services->StateSave(buffer, size);
+            moduleTransferBuffer.resize(size);
+            ReadMemory(arguments[0], moduleTransferBuffer.data(), size);
+            services->StateSave(moduleTransferBuffer.data(), size);
             break;
         }
         case 6: { // StateLoad(data, &size)
@@ -573,18 +577,18 @@ void WardenEmu::Impl::HandleCodeHook(uint64_t address) {
             uint32_t wanted = 0;
             ReadWord(sizeAddress, wanted);
 
-            if (wanted > MAX_TRANSFER_BYTES) {
+            if (wanted > MAX_HOST_TRANSFER_BYTES) {
                 WardenLog("state load too large: %u", wanted);
                 WriteWord(sizeAddress, 0);
                 break;
             }
 
-            uint8_t buffer[MAX_TRANSFER_BYTES];
+            moduleTransferBuffer.resize(wanted);
             uint32_t sizeInOut = wanted;
-            bool result = services->StateLoad(buffer, sizeInOut);
+            bool result = services->StateLoad(moduleTransferBuffer.data(), sizeInOut);
 
             if (result && sizeInOut) {
-                WriteMemory(dataAddress, buffer, sizeInOut);
+                WriteMemory(dataAddress, moduleTransferBuffer.data(), sizeInOut);
             }
 
             WriteWord(sizeAddress, sizeInOut);
