@@ -32,3 +32,9 @@ if (WOWDECOMP_PLATFORM_MAC)
             "-framework Security"
     )
 endif ()
+
+# The Warden emulation (mac only) runs inside the Os module and links Unicorn.
+if (WOWDECOMP_PLATFORM_MAC AND WRATHMODERN_WARDEN_EMULATION)
+    target_include_directories(Os PUBLIC ${UNICORN_INCLUDE_DIR})
+    target_link_libraries(Os PUBLIC ${UNICORN_LIBRARY})
+endif ()

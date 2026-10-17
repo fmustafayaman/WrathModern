@@ -36,7 +36,14 @@ function(wowdecomp_platform_sources var)
     if (WOWDECOMP_PLATFORM_MAC)
         set(shared "")
 
-        foreach (pattern ${WOWDECOMP_MAC_SHARED_WIN64})
+        # The emulated Warden client replaces the Win64 stub, so do not pull the stub in. The
+        # list entries are themselves regexes, so match the entry text, not its tail.
+        set(wardenShared ${WOWDECOMP_MAC_SHARED_WIN64})
+        if (WRATHMODERN_WARDEN_EMULATION)
+            list(FILTER wardenShared EXCLUDE REGEX "WardenClient")
+        endif ()
+
+        foreach (pattern ${wardenShared})
             set(matches ${sources})
             list(FILTER matches INCLUDE REGEX "${pattern}")
             list(APPEND shared ${matches})

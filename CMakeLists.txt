@@ -112,6 +112,25 @@ if (WRATHMODERN_MODS AND WOWDECOMP_PLATFORM_MAC)
     add_compile_definitions(WRATHMODERN_MODS=1)
 endif ()
 
+# Warden emulation (macOS): the Warden modules are 32-bit Windows images, so the native macOS
+# client runs them in a Unicorn machine instead. Without a Unicorn library around the build
+# falls back to the stub Warden client, which only matters for servers that run Warden.
+if (WOWDECOMP_PLATFORM_MAC)
+    option(WRATHMODERN_WARDEN_EMULATION "Run Warden modules in an emulated 32-bit machine" ON)
+
+    if (WRATHMODERN_WARDEN_EMULATION)
+        find_library(UNICORN_LIBRARY NAMES unicorn PATHS /opt/homebrew/lib /usr/local/lib)
+        find_path(UNICORN_INCLUDE_DIR NAMES unicorn/unicorn.h PATHS /opt/homebrew/include /usr/local/include)
+
+        if (NOT UNICORN_LIBRARY OR NOT UNICORN_INCLUDE_DIR)
+            message(STATUS "Unicorn not found; turning Warden emulation off (brew install unicorn to enable it)")
+            set(WRATHMODERN_WARDEN_EMULATION OFF)
+        else ()
+            add_compile_definitions(WRATHMODERN_WARDEN_EMULATION=1)
+        endif ()
+    endif ()
+endif ()
+
 # macOS platform support, linked into every module so Mac/ implementations can use it.
 if (WOWDECOMP_PLATFORM_MAC)
     add_subdirectory(Platform/Mac)

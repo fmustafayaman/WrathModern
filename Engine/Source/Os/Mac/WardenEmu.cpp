@@ -1,0 +1,939 @@
+#include <cstddef>
+
+#if defined(WOWDECOMP_PLATFORM_MAC) && defined(WRATHMODERN_WARDEN_EMULATION)
+
+#include "Engine/Source/Os/WardenEmu.h"
+
+#include <unicorn/unicorn.h>
+
+#include <cstdarg>
+#include <cstdio>
+#include <cstring>
+
+/*
+ * Emulated BLL loader and Warden module runner (macOS, arm64).
+ *
+ * The 3.3.5a client loads Warden modules with Engine/Source/Os/Win32/BLLLoader.cpp: a custom
+ * Blizzard image format loaded in-process. The module image is 32-bit Windows code, so an arm64
+ * host cannot run it natively; this bridge runs it in a Unicorn x86 machine instead.
+ *
+ * Everything here reproduces what the original loader does:
+ *  - the BLL image layout (40-byte header, run-length copy, relocations, section protections),
+ *  - imports resolved to emulator stubs for the few system functions the emulator knows,
+ *  - the module export and the four module entry points (WardenModule vtable),
+ *  - the client's OurLibrary interface exposed to the module as a guest vtable whose slots are
+ *    hooked back to WardenEmuServices.
+ *
+ * The emulation is faithful: the module's own code reads server data and decides what to send
+ * back. Nothing fakes or filters responses; keeping the memory areas untouched is as important
+ * here as running the code untouched.
+ */
+
+namespace {
+
+// =====================================================================
+// Guest memory layout
+// =====================================================================
+
+constexpr uint32_t TEB_BASE = 0x000FE000;
+constexpr uint32_t GDT_BASE = 0x000FF000;
+
+constexpr uint32_t STACK_BASE = 0x00100000;
+constexpr uint32_t STACK_SIZE = 0x00080000; // 512 KiB
+constexpr uint32_t STACK_TOP = STACK_BASE + STACK_SIZE - 0x100;
+
+constexpr uint32_t MISC_BASE = 0x00200000; // stop sentinel, objects, stubs, small copies
+constexpr uint32_t MISC_SIZE = 0x00001000;
+
+constexpr uint32_t SCRATCH_BASE = 0x00210000; // larger buffers handed across the boundary
+constexpr uint32_t SCRATCH_SIZE = 0x00010000;
+
+constexpr uint32_t HEAP_BASE = 0x00300000;
+constexpr uint32_t HEAP_SIZE = 0x00400000; // mapped heap, bump allocated for the module
+
+constexpr uint32_t IMAGE_BASE = 0x00700000;
+constexpr uint32_t IMAGE_SIZE = 0x00800000; // 8 MiB, covers every known module comfortably
+
+constexpr uint32_t HEAP_EXT_BASE = 0x00F00000;
+constexpr uint32_t HEAP_EXT_SIZE = 0x00200000; // relief block if the first heap fills up
+
+constexpr uint32_t MAX_TRANSFER_BYTES = 0x8000; // honest ceiling for bytes crossing the bridge
+
+// Objects inside MISC_BASE / SCRATCH_BASE.
+constexpr uint32_t STOP_ADDRESS = MISC_BASE + 0x10; // emu runs stop when EIP lands here
+constexpr uint32_t LIB_OBJECT = MISC_BASE + 0x80; // the guest OurLibrary object
+constexpr uint32_t LIB_VTABLE = MISC_BASE + 0xC0; // 16 slots
+constexpr uint32_t LIB_STUBS = MISC_BASE + 0x100; // 16 stubs, 8 bytes each
+constexpr uint32_t SCRATCH_KEY = SCRATCH_BASE + 0x0000; // session key copy
+constexpr uint32_t SCRATCH_DATA = SCRATCH_BASE + 0x0100; // bytes delivered to the module
+constexpr uint32_t SCRATCH_OUTPUT = SCRATCH_BASE + 0x9000; // out-parameters
+
+constexpr uint32_t LIB_SLOT_COUNT = 16;
+
+// MSVC __thiscall callee-side semantics: the stub's own `ret n` cleans the arguments, the hook
+// only fills EAX (and lets the ret run). Sizes follow the OurLibrary signatures.
+struct LibSlotInfo {
+    const char* name;
+    uint16_t argumentBytes;
+    bool implemented;
+};
+
+constexpr LibSlotInfo s_libSlots[LIB_SLOT_COUNT] = {
+    // Slots 0-6 follow the original declaration order of OurLibrary.
+    { "Data", 8, true },
+    { "ModuleUse", 8, true },
+    { "ModuleCache", 12, true },
+    { "MemoryAlloc", 4, true },
+    { "MemoryFree", 4, true },
+    { "StateSave", 8, true },
+    { "StateLoad", 8, true },
+    // Anything the decompiled client does not expose gets logged with a zero result, so newer
+    // custom modules surface what they need instead of silently doing nothing.
+    { "Unimplemented8", 8, false },
+    { "Unimplemented8", 8, false },
+    { "Unimplemented12", 12, false },
+    { "Unimplemented8", 8, false },
+    { "Unimplemented12", 12, false },
+    { "Unimplemented8", 8, false },
+    { "Unimplemented12", 12, false },
+    { "Unimplemented8", 8, false },
+    { "Unimplemented12", 12, false },
+};
+
+}
+
+// =====================================================================
+// Logging
+// =====================================================================
+
+static void WardenLog(const char* format, ...) {
+    FILE* file = fopen("warden.log", "a");
+
+    if (!file) {
+        return;
+    }
+
+    static uint64_t s_logCounter;
+    uint64_t stamp = ++s_logCounter;
+
+    fprintf(file, "[%llu] ", (unsigned long long)stamp);
+
+    va_list args;
+    va_start(args, format);
+    vfprintf(file, format, args);
+    va_end(args);
+
+    fputc('\n', file);
+    fclose(file);
+}
+
+// =====================================================================
+// The bridge state
+// =====================================================================
+
+struct WardenEmu::Impl {
+    WardenEmuServices* services = nullptr;
+    uc_engine* machine = nullptr;
+    bool booted = false;
+
+    // Module state.
+    bool imageLoaded = false;
+    bool moduleCreated = false;
+    uint32_t imageSize = 0;
+    uint32_t exportAddress = 0;
+    uint32_t moduleObject = 0;
+
+    // Guest heap bump allocator.
+    uint32_t heapNext = HEAP_BASE;
+    uint32_t heapLimit = HEAP_BASE + HEAP_SIZE;
+    bool heapExtended = false;
+
+    // Guest stub addresses handed out for imports.
+    struct ImportStub {
+        uint32_t address = 0;
+        uint32_t argumentBytes = 0;
+        char dll[64];
+        char name[192];
+    };
+
+    ImportStub imports[64];
+    uint32_t importCount = 0;
+    uint32_t nextImportStub = 0;
+
+    bool Boot();
+    void Teardown();
+    void SetupStubs();
+
+    bool ReadMemory(uint32_t address, void* out, uint32_t size) const;
+    bool WriteMemory(uint32_t address, const void* in, uint32_t size);
+    bool ReadWord(uint32_t address, uint32_t& value) const;
+    bool WriteWord(uint32_t address, uint32_t value);
+
+    uint32_t GuestAlloc(uint32_t size);
+    uint32_t NewImportStub(const char* dll, const char* name, uint32_t argumentBytes);
+
+    bool CallGuest(uint32_t address, const uint32_t* stackArguments, uint32_t argumentCount,
+        uint32_t ecx, const char* what, uint32_t& eax);
+
+    // Hook handlers.
+    void HandleCodeHook(uint64_t address);
+    bool HandleInvalidMemory(uc_mem_type type, uint64_t address, int size, int64_t value);
+};
+
+// =====================================================================
+// Boot / teardown
+// =====================================================================
+
+bool WardenEmu::Impl::Boot() {
+    if (booted) {
+        return true;
+    }
+
+    uc_err error = uc_open(UC_ARCH_X86, UC_MODE_32, &machine);
+
+    if (error != UC_ERR_OK) {
+        WardenLog("uc_open failed: %s", uc_strerror(error));
+        return false;
+    }
+
+    uc_mem_map(machine, STACK_BASE, STACK_SIZE, UC_PROT_ALL);
+    uc_mem_map(machine, MISC_BASE, MISC_SIZE, UC_PROT_ALL);
+    uc_mem_map(machine, SCRATCH_BASE, SCRATCH_SIZE, UC_PROT_ALL);
+    uc_mem_map(machine, HEAP_BASE, HEAP_SIZE, UC_PROT_ALL);
+    uc_mem_map(machine, IMAGE_BASE, IMAGE_SIZE, UC_PROT_ALL);
+    uc_mem_map(machine, TEB_BASE, 0x1000, UC_PROT_READ | UC_PROT_WRITE);
+    uc_mem_map(machine, GDT_BASE, 0x1000, UC_PROT_READ);
+
+    // Flat 32-bit segments, fs pointing at the TEB page for code that touches it.
+    uint8_t descriptors[4][8];
+    memset(descriptors, 0, sizeof(descriptors));
+
+    auto putDescriptor = [&](uint32_t index, uint32_t limit, uint32_t base, uint8_t access, uint8_t flags) {
+        descriptors[index][0] = limit & 0xFF;
+        descriptors[index][1] = (limit >> 8) & 0xFF;
+        descriptors[index][2] = base & 0xFF;
+        descriptors[index][3] = (base >> 8) & 0xFF;
+        descriptors[index][4] = (base >> 16) & 0xFF;
+        descriptors[index][5] = access;
+        descriptors[index][6] = flags;
+        descriptors[index][7] = (base >> 24) & 0xFF;
+    };
+
+    putDescriptor(1, 0xFFFF, 0, 0x9A, 0xCF); // 0x08 code, 4 GiB
+    putDescriptor(2, 0xFFFF, 0, 0x92, 0xCF); // 0x10 data, 4 GiB
+    putDescriptor(3, 0x0FFF, TEB_BASE, 0x92, 0x00); // 0x18 fs, TEB area
+
+    WriteMemory(GDT_BASE, descriptors, sizeof(descriptors));
+
+    uc_x86_mmr gdtr;
+    memset(&gdtr, 0, sizeof(gdtr));
+    gdtr.base = GDT_BASE;
+    gdtr.limit = 0x20;
+    uc_reg_write(machine, UC_X86_REG_GDTR, &gdtr);
+
+    uint32_t selector;
+    selector = 0x08;
+    uc_reg_write(machine, UC_X86_REG_CS, &selector);
+    selector = 0x10;
+    uc_reg_write(machine, UC_X86_REG_DS, &selector);
+    uc_reg_write(machine, UC_X86_REG_ES, &selector);
+    uc_reg_write(machine, UC_X86_REG_SS, &selector);
+    uc_reg_write(machine, UC_X86_REG_GS, &selector);
+    selector = 0x18;
+    uc_reg_write(machine, UC_X86_REG_FS, &selector);
+
+    // The stop sentinel and the stubs are code; a plain ret is enough because the hooks take
+    // care of the work (and the argument cleanup rides on the stub's own ret n).
+    uint8_t stopBytes[16];
+    memset(stopBytes, 0xC3, sizeof(stopBytes));
+    WriteMemory(STOP_ADDRESS, stopBytes, sizeof(stopBytes));
+
+    SetupStubs();
+
+    uint32_t vtableValue;
+    for (uint32_t i = 0; i < LIB_SLOT_COUNT; i++) {
+        vtableValue = LIB_STUBS + i * 8;
+        WriteWord(LIB_VTABLE + i * 4, vtableValue);
+    }
+
+    // The OurLibrary object only needs its vtable pointer; the hooks ignore the object identity
+    // since the emulation runs one module at a time from the client side.
+    WriteWord(LIB_OBJECT, LIB_VTABLE);
+
+    // Unicorn's C API takes hooks as plain function pointers; the lambdas decay to pointers
+    // and keep C++ happy while dispatching back into the bridge.
+    uc_hook codeHook;
+    uc_hook_add(machine, &codeHook, UC_HOOK_CODE,
+        reinterpret_cast<void*>(+[](uc_engine* machine, uint64_t address, uint32_t size, void* user) {
+            (void)machine;
+            (void)size;
+            static_cast<WardenEmu::Impl*>(user)->HandleCodeHook(address);
+        }),
+        this, LIB_STUBS, LIB_STUBS + LIB_SLOT_COUNT * 8 - 1);
+
+    uc_hook invalidHook;
+    uc_hook_add(machine, &invalidHook, UC_HOOK_MEM_INVALID,
+        reinterpret_cast<void*>(+[](uc_engine* machine, uc_mem_type type, uint64_t address, int size,
+            int64_t value, void* user) -> bool {
+            (void)machine;
+            return static_cast<WardenEmu::Impl*>(user)->HandleInvalidMemory(type, address, size, value);
+        }),
+        this, 0, 0);
+
+    uc_hook intrHook;
+    uc_hook_add(machine, &intrHook, UC_HOOK_INTR,
+        reinterpret_cast<void*>(+[](uc_engine* machine, int intno, void* user) {
+            (void)machine;
+            (void)user;
+            WardenLog("guest raised interrupt %d", intno);
+        }),
+        this, 0, 0);
+
+    booted = true;
+    return true;
+}
+
+void WardenEmu::Impl::Teardown() {
+    if (machine) {
+        uc_close(machine);
+        machine = nullptr;
+    }
+
+    booted = false;
+    heapNext = HEAP_BASE;
+    heapLimit = HEAP_BASE + HEAP_SIZE;
+    heapExtended = false;
+    importCount = 0;
+    nextImportStub = 0;
+    imageLoaded = false;
+    moduleCreated = false;
+    moduleObject = 0;
+    exportAddress = 0;
+    imageSize = 0;
+}
+
+// =====================================================================
+// Memory helpers
+// =====================================================================
+
+bool WardenEmu::Impl::ReadMemory(uint32_t address, void* out, uint32_t size) const {
+    if (uc_mem_read(machine, address, out, size) != UC_ERR_OK) {
+        WardenLog("read failed at %08x size %u", address, size);
+        return false;
+    }
+
+    return true;
+}
+
+bool WardenEmu::Impl::WriteMemory(uint32_t address, const void* in, uint32_t size) {
+    if (uc_mem_write(machine, address, in, size) != UC_ERR_OK) {
+        WardenLog("write failed at %08x size %u", address, size);
+        return false;
+    }
+
+    return true;
+}
+
+bool WardenEmu::Impl::ReadWord(uint32_t address, uint32_t& value) const {
+    if (uc_mem_read(machine, address, &value, sizeof(value)) != UC_ERR_OK) {
+        WardenLog("read failed at %08x size 4", address);
+        return false;
+    }
+
+    return true;
+}
+
+bool WardenEmu::Impl::WriteWord(uint32_t address, uint32_t value) {
+    if (uc_mem_write(machine, address, &value, sizeof(value)) != UC_ERR_OK) {
+        WardenLog("write failed at %08x size 4", address);
+        return false;
+    }
+
+    return true;
+}
+
+// =====================================================================
+// Guest allocation and stub housekeeping
+// =====================================================================
+
+uint32_t WardenEmu::Impl::GuestAlloc(uint32_t size) {
+    size = (size + 7) & ~7u;
+
+    if (heapNext + size > heapLimit) {
+        if (!heapExtended) {
+            uc_mem_map(machine, HEAP_EXT_BASE, HEAP_EXT_SIZE, UC_PROT_ALL);
+            heapExtended = true;
+            heapNext = HEAP_EXT_BASE + 0x1000; // keep room, import stubs claim the first page
+            heapLimit = HEAP_EXT_BASE + HEAP_EXT_SIZE;
+            WardenLog("guest heap exhausted, extended to %08x", HEAP_EXT_BASE);
+        }
+
+        if (heapNext + size > heapLimit) {
+            WardenLog("guest heap still exhausted after %u bytes", (uint32_t)(heapNext - HEAP_BASE));
+            return 0;
+        }
+    }
+
+    uint32_t address = heapNext;
+    heapNext += size;
+    return address;
+}
+
+uint32_t WardenEmu::Impl::NewImportStub(const char* dll, const char* name, uint32_t argumentBytes) {
+    if (importCount >= sizeof(imports) / sizeof(imports[0])) {
+        return 0;
+    }
+
+    // Import stubs live above the heap so the module's sections do not interfere: only the
+    // code page range gets hooks, and the heap stays data.
+    uint32_t address = HEAP_EXT_BASE + nextImportStub * 8;
+
+    if (!heapExtended) {
+        uc_mem_map(machine, HEAP_EXT_BASE, HEAP_EXT_SIZE, UC_PROT_ALL);
+        heapExtended = true;
+        // No GuestAlloc side effect yet; bump changes when the module really asks for memory.
+        if (heapNext < HEAP_BASE || heapNext + HEAP_EXT_SIZE > HEAP_EXT_BASE) {
+            // keep bump as-is: imports occupy the first page of the extended area.
+        }
+    }
+
+    // __stdcall by construction: the stub itself cleans the arguments, which is what the
+    // patched thunk callers expect from a LoadLibraryA-resolved address.
+    uint8_t code[8] = { 0xC2, (uint8_t)(argumentBytes & 0xFF),
+        (uint8_t)((argumentBytes >> 8) & 0xFF), 0xC3, 0xC3, 0xC3, 0xC3, 0xC3 };
+    WriteMemory(address, code, sizeof(code));
+
+    ImportStub& stub = imports[importCount++];
+    memset(&stub, 0, sizeof(stub));
+    stub.address = address;
+    stub.argumentBytes = argumentBytes;
+    snprintf(stub.dll, sizeof(stub.dll), "%s", dll);
+    snprintf(stub.name, sizeof(stub.name), "%s", name ? name : "<ordinal>");
+    ++nextImportStub;
+    return address;
+}
+
+// The OurLibrary stubs: one code stub per vtable slot. The hooks perform the work and the stub
+// itself performs the `ret n` (callee-style, matching MSVC __thiscall).
+void WardenEmu::Impl::SetupStubs() {
+    for (uint32_t i = 0; i < LIB_SLOT_COUNT; i++) {
+        uint8_t code[8] = { 0xC2, (uint8_t)(s_libSlots[i].argumentBytes & 0xFF),
+            (uint8_t)((s_libSlots[i].argumentBytes >> 8) & 0xFF), 0xC3, 0xC3, 0xC3, 0xC3, 0xC3 };
+        WriteMemory(LIB_STUBS + i * 8, code, sizeof(code));
+    }
+}
+
+// =====================================================================
+// Calling into guest code
+// =====================================================================
+
+bool WardenEmu::Impl::CallGuest(uint32_t address, const uint32_t* stackArguments, uint32_t argumentCount,
+    uint32_t ecx, const char* what, uint32_t& eax) {
+    if (argumentCount > 16) {
+        WardenLog("%s: too many arguments (%u)", what, argumentCount);
+        return false;
+    }
+
+    uint32_t block[17];
+    block[0] = STOP_ADDRESS;
+
+    for (uint32_t i = 0; i < argumentCount; i++) {
+        block[i + 1] = stackArguments[i];
+    }
+
+    uint32_t esp = STACK_TOP - 4 * (argumentCount + 1);
+    WriteMemory(esp, block, (argumentCount + 1) * 4);
+
+    uc_reg_write(machine, UC_X86_REG_ESP, &esp);
+    uint32_t ebp = esp + 4;
+    uc_reg_write(machine, UC_X86_REG_EBP, &ebp);
+    uc_reg_write(machine, UC_X86_REG_ECX, &ecx);
+
+    uc_err error = uc_emu_start(machine, address, STOP_ADDRESS, 0, 50000000);
+
+    uc_reg_read(machine, UC_X86_REG_EAX, &(eax = 0));
+
+    if (error != UC_ERR_OK) {
+        WardenLog("%s at %08x: emu error %s", what, address, uc_strerror(error));
+        return false;
+    }
+
+    return true;
+}
+
+// =====================================================================
+// Hook handlers
+// =====================================================================
+
+void WardenEmu::Impl::HandleCodeHook(uint64_t address) {
+    if (address < LIB_STUBS || address >= LIB_STUBS + LIB_SLOT_COUNT * 8) {
+        return;
+    }
+
+    uint32_t slot = (uint32_t)((address - LIB_STUBS) / 8);
+    const LibSlotInfo& slotInfo = s_libSlots[slot];
+
+    // Arguments in MSVC __thiscall order: ECX = this, then the arguments. The stub's own
+    // `ret n` takes care of stack cleanup once the hook returns.
+    uint32_t esp;
+    uc_reg_read(machine, UC_X86_REG_ESP, &esp);
+
+    uint32_t arguments[4];
+    uint32_t argumentCount = slotInfo.argumentBytes / 4;
+
+    for (uint32_t i = 0; i < argumentCount; i++) {
+        ReadWord(esp + 4 + i * 4, arguments[i]);
+    }
+
+    uint32_t returnEax = 0;
+
+    switch (slot) {
+        case 0: { // Data(data, size)
+            uint32_t size = arguments[1];
+
+            if (size > MAX_TRANSFER_BYTES) {
+                WardenLog("module Data too large: %u", size);
+                break;
+            }
+
+            uint8_t buffer[MAX_TRANSFER_BYTES];
+            ReadMemory(arguments[0], buffer, size);
+            services->ModuleOutput(buffer, size);
+            break;
+        }
+        case 1: { // ModuleUse(id, key)
+            uint8_t id[16];
+            uint8_t key[16];
+            ReadMemory(arguments[0], id, sizeof(id));
+            ReadMemory(arguments[1], key, sizeof(key));
+            returnEax = services->ModuleUse(id, key) ? 1 : 0;
+            break;
+        }
+        case 2: { // ModuleCache(id, data, size)
+            uint8_t id[16];
+            uint32_t size = arguments[2];
+            ReadMemory(arguments[0], id, sizeof(id));
+
+            if (size > MAX_TRANSFER_BYTES) {
+                WardenLog("module cache data too large: %u", size);
+                break;
+            }
+
+            uint8_t buffer[MAX_TRANSFER_BYTES];
+            ReadMemory(arguments[1], buffer, size);
+            services->ModuleCache(id, buffer, size);
+            break;
+        }
+        case 3: { // MemoryAlloc(size)
+            returnEax = GuestAlloc(arguments[0]);
+            break;
+        }
+        case 4: { // MemoryFree: the bump allocator releases everything with the module. The
+            // running module is the only user of that memory, so handing back the same address
+            // keeps its own observations consistent.
+            returnEax = arguments[0];
+            break;
+        }
+        case 5: { // StateSave(data, size)
+            uint32_t size = arguments[1];
+
+            if (size > MAX_TRANSFER_BYTES) {
+                WardenLog("state save too large: %u", size);
+                break;
+            }
+
+            uint8_t buffer[MAX_TRANSFER_BYTES];
+            ReadMemory(arguments[0], buffer, size);
+            services->StateSave(buffer, size);
+            break;
+        }
+        case 6: { // StateLoad(data, &size)
+            uint32_t dataAddress = arguments[0];
+            uint32_t sizeAddress = arguments[1];
+            uint32_t wanted = 0;
+            ReadWord(sizeAddress, wanted);
+
+            if (wanted > MAX_TRANSFER_BYTES) {
+                WardenLog("state load too large: %u", wanted);
+                WriteWord(sizeAddress, 0);
+                break;
+            }
+
+            uint8_t buffer[MAX_TRANSFER_BYTES];
+            uint32_t sizeInOut = wanted;
+            bool result = services->StateLoad(buffer, sizeInOut);
+
+            if (result && sizeInOut) {
+                WriteMemory(dataAddress, buffer, sizeInOut);
+            }
+
+            WriteWord(sizeAddress, sizeInOut);
+            returnEax = result ? 1 : 0;
+            break;
+        }
+        default: {
+            WardenLog("our library slot %u (%s) is called but not implemented", slot, slotInfo.name);
+            break;
+        }
+    }
+
+    uc_reg_write(machine, UC_X86_REG_EAX, &returnEax);
+}
+
+bool WardenEmu::Impl::HandleInvalidMemory(uc_mem_type type, uint64_t address, int size, int64_t value) {
+    const char* kinds[] = { "read", "write", "fetch", "read unchanged", "write unchanged" };
+    const char* kind = type < UC_MEM_READ_UNMAPPED || type > UC_MEM_WRITE_PROT ? "access" : kinds[type - UC_MEM_READ_UNMAPPED];
+
+    WardenLog("guest %s fault at %016llx size %d value %lld", kind, (unsigned long long)address, size,
+        (long long)value);
+    return false;
+}
+
+// =====================================================================
+// Loading the BLL image
+// =====================================================================
+
+bool WardenEmu::Load(const void* data, uint32_t size) {
+    Impl& impl = *m_impl;
+
+    if (impl.imageLoaded) {
+        WardenLog("Load called twice on the same emulator instance");
+        return false;
+    }
+
+    if (!impl.booted && !impl.Boot()) {
+        return false;
+    }
+
+    const uint8_t* bytes = static_cast<const uint8_t*>(data);
+    uint32_t header[12];
+
+    if (size < 40) {
+        WardenLog("image too small: %u", size);
+        return false;
+    }
+
+    memcpy(header, bytes, sizeof(header));
+
+    uint32_t finalSize = header[0];
+
+    if (finalSize == 0 || finalSize > IMAGE_SIZE) {
+        WardenLog("image size out of range: %u", finalSize);
+        return false;
+    }
+
+    // Run-length fill, mirroring the original loader: write the raw 40-byte header, then copy
+    // chunks from the compressed tail into the section destinations.
+    uint8_t zero[4096];
+    memset(zero, 0, sizeof(zero));
+
+    for (uint32_t off = 0; off < finalSize; off += sizeof(zero)) {
+        uint32_t chunk = finalSize - off < sizeof(zero) ? finalSize - off : sizeof(zero);
+        impl.WriteMemory(IMAGE_BASE + off, zero, chunk);
+    }
+    impl.WriteMemory(IMAGE_BASE, bytes, 40);
+
+    uint32_t chunkOffset = 4 * (3 * header[9] + 10);
+    uint32_t dest = header[10];
+    bool copy = true;
+    uint32_t guard = 0;
+
+    while (dest < finalSize && guard++ < 1000000) {
+        uint16_t length;
+
+        if (chunkOffset + 2 > size) {
+            WardenLog("run-length stream overruns the image");
+            return false;
+        }
+
+        memcpy(&length, bytes + chunkOffset, sizeof(length));
+        chunkOffset += 2;
+
+        if (copy) {
+            if (chunkOffset + length > size || dest + length > finalSize) {
+                WardenLog("run-length chunk overruns the image");
+                return false;
+            }
+
+            impl.WriteMemory(IMAGE_BASE + dest, bytes + chunkOffset, length);
+            chunkOffset += length;
+        }
+
+        copy = !copy;
+        dest += length;
+    }
+
+    if (dest != finalSize) {
+        WardenLog("run-length fill ended at %08x instead of %08x", dest, finalSize);
+        return false;
+    }
+
+    impl.imageSize = finalSize;
+    impl.imageLoaded = true;
+
+    // Relocations, big-endian control words exactly like the original loader.
+    uint32_t relOffset = header[2];
+    uint32_t relCount = header[3];
+    uint32_t offset = 0;
+
+    for (uint32_t i = 0; i < relCount && relOffset < finalSize; i++) {
+        uint8_t words[4];
+        impl.ReadMemory(IMAGE_BASE + relOffset, words, 4);
+
+        if (words[0] & 0x80) {
+            offset = words[3] + ((words[2] + ((words[1] + ((words[0] & 0x7F) << 8)) << 8)) << 8);
+            relOffset += 4;
+        } else {
+            offset += words[1] + (words[0] << 8);
+            relOffset += 2;
+        }
+
+        if (offset + 4 > finalSize) {
+            WardenLog("relocation points past the image: %u", offset);
+            return false;
+        }
+
+        uint32_t value;
+        impl.ReadWord(IMAGE_BASE + offset, value);
+        impl.WriteWord(IMAGE_BASE + offset, value + IMAGE_BASE);
+    }
+
+    // Imports. The built-in module has none; custom modules resolve to stubs for the few
+    // system functions the emulator knows, and anything unknown blocks the load. That is the
+    // honest path: pretending to answer unknown imports would fake the module's behaviour.
+    uint32_t importOffset = header[7];
+    uint32_t importCount = header[8];
+
+    for (uint32_t i = 0; i < importCount; i++) {
+        uint32_t dllPointer;
+        uint32_t thunkPointer;
+        impl.ReadWord(IMAGE_BASE + importOffset + i * 8, dllPointer);
+        impl.ReadWord(IMAGE_BASE + importOffset + i * 8 + 4, thunkPointer);
+
+        char dll[64];
+        impl.ReadMemory(IMAGE_BASE + dllPointer, dll, sizeof(dll) - 1);
+        dll[sizeof(dll) - 1] = '\0';
+        dll[strcspn(dll, "\r\n")] = '\0';
+
+        uint32_t thunk = thunkPointer;
+
+        while (true) {
+            uint32_t entry;
+            impl.ReadWord(IMAGE_BASE + thunk, entry);
+
+            if (!entry) {
+                break;
+            }
+
+            char name[192];
+            bool byOrdinal = (entry & 0x80000000) != 0;
+
+            if (byOrdinal) {
+                snprintf(name, sizeof(name), "ordinal %u", entry & 0x7FFFFFFF);
+            } else {
+                impl.ReadMemory(IMAGE_BASE + entry, name, sizeof(name) - 1);
+                name[sizeof(name) - 1] = '\0';
+                name[strcspn(name, "\r\n")] = '\0';
+            }
+
+            WardenLog("import %s!%s", dll, name);
+
+            uint32_t stub = 0;
+
+            if (!byOrdinal && strcmp(dll, "kernel32.dll") == 0 && strcmp(name, "Sleep") == 0) {
+                stub = impl.NewImportStub(dll, name, 4);
+            } else if (!byOrdinal && strcmp(dll, "kernel32.dll") == 0 &&
+                       strcmp(name, "GetTickCount") == 0) {
+                stub = impl.NewImportStub(dll, name, 0);
+            }
+
+            if (!stub) {
+                WardenLog("import %s!%s has no emulator implementation", dll, name);
+                return false;
+            }
+
+            impl.WriteWord(IMAGE_BASE + thunk, stub);
+            thunk += 4;
+        }
+    }
+
+    // Exports. The stored values stay unrelocated at load time (the builtin module's table is
+    // outside the relocation stream) and GetExport adds the image base, mirroring the original
+    // loader's pointer arithmetic.
+    if (header[5] == 0) {
+        WardenLog("image exports nothing");
+        return false;
+    }
+
+    uint32_t exportRva;
+    impl.ReadWord(IMAGE_BASE + header[4], exportRva);
+    impl.exportAddress = IMAGE_BASE + exportRva;
+
+    WardenLog("module loaded: imageSize=%u exports=%u imports=%u export=%08x", finalSize, header[5],
+        importCount, impl.exportAddress);
+    return true;
+}
+
+// =====================================================================
+// Public API
+// =====================================================================
+
+WardenEmu::WardenEmu(WardenEmuServices* services) : m_impl(new Impl) {
+    m_impl->services = services;
+}
+
+WardenEmu::~WardenEmu() {
+    m_impl->services = nullptr;
+    m_impl->Teardown();
+    delete m_impl;
+}
+
+bool WardenEmu::CreateModule() {
+    Impl& impl = *m_impl;
+
+    if (!impl.imageLoaded) {
+        WardenLog("CreateModule called before Load");
+        return false;
+    }
+
+    if (impl.moduleCreated) {
+        return true;
+    }
+
+    uint32_t eax = 0;
+
+    // The export is a __fastcall function; its one argument (OurLibrary*) travels in ECX.
+    if (!impl.CallGuest(impl.exportAddress, nullptr, 0, LIB_OBJECT, "CreateWardenModule", eax)) {
+        return false;
+    }
+
+    // The module allocates its object through OurLibrary::MemoryAlloc, so the pointer lives
+    // on the guest heap rather than inside the image; only the vtable must point into the
+    // module image.
+    if (!eax) {
+        WardenLog("CreateWardenModule returned %08x", eax);
+        return false;
+    }
+
+    uint32_t vtable;
+    impl.ReadWord(eax, vtable);
+
+    if (vtable < IMAGE_BASE || vtable >= IMAGE_BASE + IMAGE_SIZE) {
+        WardenLog("module vtable pointer invalid: %08x", vtable);
+        return false;
+    }
+
+    impl.moduleObject = eax;
+    impl.moduleCreated = true;
+    WardenLog("module created, object %08x vtable %08x", eax, vtable);
+    return true;
+}
+
+bool WardenEmu::Initialize(const uint8_t* sessionKey, uint32_t keyLength) {
+    Impl& impl = *m_impl;
+
+    if (!impl.moduleCreated || keyLength > 0x100) {
+        WardenLog("Initialize precondition failed (created=%d keylen=%u)", (int)impl.moduleCreated,
+            keyLength);
+        return false;
+    }
+
+    impl.WriteMemory(SCRATCH_KEY, sessionKey, keyLength);
+
+    uint32_t vtable;
+    impl.ReadWord(impl.moduleObject, vtable);
+
+    uint32_t functionAddress;
+    impl.ReadWord(vtable, functionAddress);
+
+    uint32_t arguments[2] = { SCRATCH_KEY, keyLength };
+    uint32_t eax = 0;
+
+    if (!impl.CallGuest(functionAddress, arguments, 2, impl.moduleObject,
+            "WardenModule::Initialize", eax)) {
+        return false;
+    }
+
+    WardenLog("Initialize done (client key length %u, result %08x)", keyLength, eax);
+    return true;
+}
+
+void WardenEmu::Shutdown() {
+    Impl& impl = *m_impl;
+
+    if (!impl.moduleCreated) {
+        return;
+    }
+
+    uint32_t vtable;
+    impl.ReadWord(impl.moduleObject, vtable);
+
+    uint32_t functionAddress;
+    impl.ReadWord(vtable + 4, functionAddress);
+
+    uint32_t eax = 0;
+    impl.CallGuest(functionAddress, nullptr, 0, impl.moduleObject, "WardenModule::Shutdown", eax);
+}
+
+void WardenEmu::Data(const void* data, uint32_t size, uint32_t& consumed) {
+    Impl& impl = *m_impl;
+    consumed = 0;
+
+    if (!impl.moduleCreated) {
+        WardenLog("Data called without a created module");
+        return;
+    }
+
+    if (size > MAX_TRANSFER_BYTES) {
+        WardenLog("Data delivered too large: %u", size);
+        return;
+    }
+
+    impl.WriteMemory(SCRATCH_DATA, data, size);
+
+    uint32_t vtable;
+    impl.ReadWord(impl.moduleObject, vtable);
+
+    uint32_t functionAddress;
+    impl.ReadWord(vtable + 8, functionAddress);
+
+    impl.WriteWord(SCRATCH_OUTPUT, 0);
+
+    uint32_t arguments[3] = { SCRATCH_DATA, size, SCRATCH_OUTPUT };
+    uint32_t eax = 0;
+
+    if (!impl.CallGuest(functionAddress, arguments, 3, impl.moduleObject, "WardenModule::Data",
+            eax)) {
+        return;
+    }
+
+    impl.ReadWord(SCRATCH_OUTPUT, consumed);
+}
+
+void WardenEmu::Process(uint32_t elapsedMs) {
+    Impl& impl = *m_impl;
+
+    if (!impl.moduleCreated) {
+        return;
+    }
+
+    uint32_t vtable;
+    impl.ReadWord(impl.moduleObject, vtable);
+
+    uint32_t functionAddress;
+    impl.ReadWord(vtable + 12, functionAddress);
+
+    uint32_t arguments[1] = { elapsedMs };
+    uint32_t eax = 0;
+    impl.CallGuest(functionAddress, arguments, 1, impl.moduleObject, "WardenModule::Process", eax);
+}
+
+bool WardenEmu::ImageLoaded() const {
+    return m_impl->imageLoaded;
+}
+
+bool WardenEmu::ModuleCreated() const {
+    return m_impl->moduleCreated;
+}
+
+#endif
