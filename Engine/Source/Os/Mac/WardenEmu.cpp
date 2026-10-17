@@ -43,6 +43,9 @@ namespace {
 
 constexpr uint32_t TEB_BASE = 0x000FE000;
 constexpr uint32_t GDT_BASE = 0x000FF000;
+constexpr uint32_t PEB_BASE = 0x000FD000; // process environment block
+constexpr uint32_t TLS_ARRAY_BASE = 0x000F8000; // static-TLS slot array (fs:[0x2C])
+constexpr uint32_t ENV_BASE = 0x000F7000; // loader data, module list, heap list
 
 constexpr uint32_t STACK_BASE = 0x00100000;
 constexpr uint32_t STACK_SIZE = 0x00080000; // 512 KiB
@@ -204,6 +207,7 @@ struct WardenEmu::Impl {
     uint32_t nextImportStub = 0;
 
     bool Boot();
+    void SetupEnvironment();
     void Teardown();
     void SetupStubs();
 
@@ -258,6 +262,9 @@ bool WardenEmu::Impl::Boot() {
     uc_mem_map(machine, HEAP_EXT_BASE, HEAP_EXT_SIZE, UC_PROT_ALL);
     uc_mem_map(machine, TEB_BASE, 0x1000, UC_PROT_READ | UC_PROT_WRITE);
     uc_mem_map(machine, GDT_BASE, 0x1000, UC_PROT_READ);
+    uc_mem_map(machine, PEB_BASE, 0x1000, UC_PROT_READ | UC_PROT_WRITE);
+    uc_mem_map(machine, TLS_ARRAY_BASE, 0x1000, UC_PROT_READ | UC_PROT_WRITE);
+    uc_mem_map(machine, ENV_BASE, 0x1000, UC_PROT_READ | UC_PROT_WRITE);
 
     // Flat 32-bit segments, fs pointing at the TEB page for code that touches it.
     uint8_t descriptors[4][8];
@@ -296,6 +303,8 @@ bool WardenEmu::Impl::Boot() {
     uc_reg_write(machine, UC_X86_REG_GS, &selector);
     selector = 0x18;
     uc_reg_write(machine, UC_X86_REG_FS, &selector);
+
+    SetupEnvironment();
 
     // The stop sentinel and the stubs are code; a plain ret is enough because the hooks take
     // care of the work (and the argument cleanup rides on the stub's own ret n).
@@ -357,6 +366,74 @@ bool WardenEmu::Impl::Boot() {
 
     booted = true;
     return true;
+}
+
+// A Windows process environment: the TEB the CRT reads through fs: and the PEB behind it,
+// plus a minimal loader list and heap list. Server modules are MSVC-built and their runtime
+// walks these structures (fs:[0x18] self, fs:[0x2C] static-TLS array, fs:[0x30] PEB); leaving
+// them zero makes the first such dereference fault at address zero.
+void WardenEmu::Impl::SetupEnvironment() {
+    WriteWord(TEB_BASE + 0x00, 0xFFFFFFFF); // ExceptionList: end of the SEH chain
+    WriteWord(TEB_BASE + 0x04, STACK_TOP); // StackBase
+    WriteWord(TEB_BASE + 0x08, STACK_BASE); // StackLimit
+    WriteWord(TEB_BASE + 0x18, TEB_BASE); // Self
+    WriteWord(TEB_BASE + 0x20, (uint32_t)getpid()); // ClientId.UniqueProcess
+    WriteWord(TEB_BASE + 0x24, (uint32_t)(uintptr_t)pthread_self()); // ClientId.UniqueThread
+    WriteWord(TEB_BASE + 0x2C, TLS_ARRAY_BASE); // static-TLS slot array
+    WriteWord(TEB_BASE + 0x30, PEB_BASE); // ProcessEnvironmentBlock
+
+    WriteWord(PEB_BASE + 0x02, 0); // BeingDebugged: this is not a debugged process
+    WriteWord(PEB_BASE + 0x08, IMAGE_BASE); // ImageBaseAddress
+    WriteWord(PEB_BASE + 0x0C, ENV_BASE); // Ldr
+    WriteWord(PEB_BASE + 0x18, PSEUDO_PROCESS_HEAP); // ProcessHeap
+    WriteWord(PEB_BASE + 0x60, 1); // NumberOfProcessors
+    WriteWord(PEB_BASE + 0x80, 1); // NumberOfHeaps
+    WriteWord(PEB_BASE + 0x84, 16); // MaximumNumberOfHeaps
+    WriteWord(PEB_BASE + 0x88, ENV_BASE + 0xA0); // ProcessHeaps
+
+    // A one-entry process heap list, so the list walk the CRT does finds what it expects.
+    WriteWord(ENV_BASE + 0xA0, PSEUDO_PROCESS_HEAP);
+
+    // PEB_LDR_DATA with a single module: this image.
+    const uint32_t ldr = ENV_BASE + 0x00;
+    const uint32_t entry = ENV_BASE + 0x40;
+    const uint32_t nameBuffer = ENV_BASE + 0xE0;
+    const uint32_t nameLength = 15 * 2; // "wrathmodern.exe" as UTF-16
+
+    WriteWord(ldr + 0x00, 0x30); // Length
+    WriteWord(ldr + 0x04, 1); // Initialized
+    WriteWord(ldr + 0x0C, entry); // InLoadOrderModuleList.Flink
+    WriteWord(ldr + 0x10, entry); // InLoadOrderModuleList.Blink
+    WriteWord(ldr + 0x14, entry + 0x08); // InMemoryOrderModuleList.Flink
+    WriteWord(ldr + 0x18, entry + 0x08); // InMemoryOrderModuleList.Blink
+    WriteWord(ldr + 0x1C, entry + 0x10); // InInitializationOrderModuleList.Flink
+    WriteWord(ldr + 0x20, entry + 0x10); // InInitializationOrderModuleList.Blink
+
+    WriteWord(entry + 0x00, entry); // InLoadOrderLinks.Flink
+    WriteWord(entry + 0x04, entry); // InLoadOrderLinks.Blink
+    WriteWord(entry + 0x08, entry + 0x08); // InMemoryOrderLinks.Flink
+    WriteWord(entry + 0x0C, entry + 0x08); // InMemoryOrderLinks.Blink
+    WriteWord(entry + 0x10, entry + 0x10); // InInitializationOrderLinks.Flink
+    WriteWord(entry + 0x14, entry + 0x10); // InInitializationOrderLinks.Blink
+    WriteWord(entry + 0x18, IMAGE_BASE); // DllBase
+    WriteWord(entry + 0x1C, 0); // EntryPoint
+    WriteWord(entry + 0x20, imageSize ? imageSize : IMAGE_SIZE); // SizeOfImage
+    WriteWord(entry + 0x24, nameLength); // FullDllName.Length
+    WriteWord(entry + 0x26, nameLength); // FullDllName.MaximumLength
+    WriteWord(entry + 0x28, nameBuffer); // FullDllName.Buffer
+    WriteWord(entry + 0x2C, nameLength); // BaseDllName.Length
+    WriteWord(entry + 0x2E, nameLength); // BaseDllName.MaximumLength
+    WriteWord(entry + 0x30, nameBuffer); // BaseDllName.Buffer
+
+    const char* moduleName = "wrathmodern.exe";
+    uint8_t nameText[30];
+
+    for (uint32_t i = 0; i < 15; i++) {
+        nameText[i * 2] = (uint8_t)moduleName[i];
+        nameText[i * 2 + 1] = 0;
+    }
+
+    WriteMemory(nameBuffer, nameText, sizeof(nameText));
 }
 
 void WardenEmu::Impl::Teardown() {
@@ -626,6 +703,9 @@ uint32_t WardenEmu::Impl::RunImport(const ImportStub& stub, uint32_t* arguments,
         int32_t cchSrc = (int32_t)arguments[3];
         uint32_t destAddress = arguments[4];
         int32_t cchDest = (int32_t)arguments[5];
+
+        WardenLog("LCMapStringA args: locale=%08x flags=%08x src=%08x cchSrc=%d dest=%08x cchDest=%d",
+            arguments[0], arguments[1], srcAddress, cchSrc, destAddress, cchDest);
 
         const bool uppercase = (arguments[1] & 0x200) != 0; // LCMAP_UPPERCASE
         const bool lowercase = (arguments[1] & 0x100) != 0; // LCMAP_LOWERCASE
@@ -1090,6 +1170,9 @@ uint32_t WardenEmu::Impl::RunImport(const ImportStub& stub, uint32_t* arguments,
         static const Region regions[] = {
             { TEB_BASE, 0x1000 },
             { GDT_BASE, 0x1000 },
+            { PEB_BASE, 0x1000 },
+            { TLS_ARRAY_BASE, 0x1000 },
+            { ENV_BASE, 0x1000 },
             { STACK_BASE, STACK_SIZE },
             { MISC_BASE, MISC_SIZE },
             { SCRATCH_BASE, SCRATCH_SIZE },
@@ -1467,6 +1550,9 @@ bool WardenEmu::Load(const void* data, uint32_t size) {
 
     impl.imageSize = finalSize;
     impl.imageLoaded = true;
+
+    // Keep the loader entry's image size in step with the image that actually loaded.
+    impl.WriteWord(ENV_BASE + 0x40 + 0x20, finalSize);
 
     // Relocations, big-endian control words exactly like the original loader.
     uint32_t relOffset = header[2];

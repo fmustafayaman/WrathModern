@@ -140,6 +140,12 @@ public:
         WOWGUID guid = { 0 };
         const CWardenKey& cacheKey = *reinterpret_cast<const CWardenKey*>(id);
 
+        WardenClientLog("ModuleUse id=%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x "
+                        "key=%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
+            id[0], id[1], id[2], id[3], id[4], id[5], id[6], id[7], id[8], id[9], id[10], id[11], id[12], id[13],
+            id[14], id[15], key[0], key[1], key[2], key[3], key[4], key[5], key[6], key[7], key[8], key[9],
+            key[10], key[11], key[12], key[13], key[14], key[15]);
+
         WardenCachedModule* cached = g_wardenCache.GetRecord(cacheKey, guid, nullptr, nullptr, false);
 
         if (!cached) {
@@ -147,6 +153,17 @@ public:
                 id[0], id[1], id[2], id[3], id[4], id[5], id[6], id[7], id[8], id[9], id[10], id[11],
                 id[12], id[13], id[14], id[15]);
             return false;
+        }
+
+        // The loader decrypts the cached module with this key; keeping it lets the same blob be
+        // decrypted offline too.
+        {
+            FILE* keyFile = fopen("Logs/warden-module-key.bin", "wb");
+
+            if (keyFile) {
+                fwrite(key, 1, 16, keyFile);
+                fclose(keyFile);
+            }
         }
 
         UnloadPendingModule();
@@ -298,6 +315,18 @@ public:
         }
 
         SMemFree(buffer, __FILE__, __LINE__, 0);
+
+        // Keep the exact image handed to the loader: WardenSmoke takes it directly, so a whole
+        // session can be replayed offline without the encryption key.
+        {
+            FILE* dump = fopen("Logs/warden-module-image.bin", "wb");
+
+            if (dump) {
+                fwrite(image, 1, imageSize, dump);
+                fclose(dump);
+                WardenClientLog("LoadModule: wrote Logs/warden-module-image.bin (%u bytes)", (uint32_t)imageSize);
+            }
+        }
 
         WardenEmu* module = new WardenEmu(&macServices);
 
