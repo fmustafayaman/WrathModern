@@ -64,6 +64,11 @@ public:
     bool ImageLoaded() const;
     bool ModuleCreated() const;
 
+    // Diagnostics: when an entry call fails, the machine state captured just before it is
+    // written to Logs/warden-snapshot.bin. This reruns that exact call on a fresh machine, so
+    // a failure seen once in a live session can be studied offline as often as needed.
+    bool ReplaySnapshot(const char* path);
+
 private:
     struct Impl;
     Impl* m_impl;

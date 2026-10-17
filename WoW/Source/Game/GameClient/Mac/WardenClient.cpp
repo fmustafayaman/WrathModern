@@ -463,6 +463,9 @@ bool WardenClient_Initialize() {
 
     WardenClient_Destroy();
 
+    // The trace file accumulates across logins; the marker lets a replay pick out one session.
+    WardenTrace("SESSION", nullptr, 0);
+
     s_pendingEmu = MacWardenServices::LoadModule(s_builtinModule, s_builtinModuleKey,
         sizeof(s_builtinModule));
 

@@ -206,6 +206,37 @@ struct WardenEmu::Impl {
     uint32_t importCount = 0;
     uint32_t nextImportStub = 0;
 
+    // Diagnostics. The last basic blocks the guest entered (address and ESP on entry): when a
+    // call goes wrong, the path that led there names the site that went astray, which neither
+    // the entry address nor the faulting EIP alone can do for a wild branch.
+    static const uint32_t TRACE_LENGTH = 256;
+    uint32_t m_traceAddress[TRACE_LENGTH] = { 0 };
+    uint32_t m_traceStack[TRACE_LENGTH] = { 0 };
+    uint32_t m_traceNext = 0;
+    uint32_t m_traceDumps = 0;
+
+    // The machine as it stood at the start of the current entry call. A failing call writes it
+    // to Logs/warden-snapshot.bin once per emulator, and ReplaySnapshot reruns the same call
+    // from it; the session key and packet history that led there are then no longer needed.
+    struct SnapshotRegion {
+        uint32_t base;
+        std::vector<uint8_t> bytes;
+    };
+
+    struct Snapshot {
+        uint32_t entry = 0;
+        uint32_t ecx = 0;
+        uint32_t argumentCount = 0;
+        uint32_t arguments[16] = { 0 };
+        char what[64] = { 0 };
+        uint32_t registers[9] = { 0 }; // eax ebx ecx edx esi edi ebp esp eflags
+        std::vector<SnapshotRegion> regions;
+    };
+
+    Snapshot m_snapshot;
+    bool m_snapshotWritten = false;
+    bool m_replaying = false;
+
     bool Boot();
     void SetupEnvironment();
     void Teardown();
@@ -230,6 +261,13 @@ struct WardenEmu::Impl {
 
     bool CallGuest(uint32_t address, const uint32_t* stackArguments, uint32_t argumentCount,
         uint32_t ecx, const char* what, uint32_t& eax);
+
+    // Diagnostics.
+    void DumpTrace(const char* reason);
+    void CaptureSnapshot(uint32_t address, const uint32_t* stackArguments, uint32_t argumentCount,
+        uint32_t ecx, const char* what);
+    bool WriteSnapshot(const char* path) const;
+    bool ReadSnapshot(const char* path);
 
     // Hook handlers.
     void HandleCodeHook(uint64_t address);
@@ -354,6 +392,21 @@ bool WardenEmu::Impl::Boot() {
             int64_t value, void* user) -> bool {
             (void)machine;
             return static_cast<WardenEmu::Impl*>(user)->HandleInvalidMemory(type, address, size, value);
+        }),
+        this, 1, 0);
+
+    // Branch history for the diagnostics: one ring entry per basic block, cheap next to the
+    // per-instruction hooks and enough to reconstruct how a wild call was reached.
+    uc_hook blockHook;
+    uc_hook_add(machine, &blockHook, UC_HOOK_BLOCK,
+        reinterpret_cast<void*>(+[](uc_engine* machine, uint64_t address, uint32_t size, void* user) {
+            (void)size;
+            WardenEmu::Impl* impl = static_cast<WardenEmu::Impl*>(user);
+            uint32_t esp = 0;
+            uc_reg_read(machine, UC_X86_REG_ESP, &esp);
+            uint32_t slot = impl->m_traceNext++ % WardenEmu::Impl::TRACE_LENGTH;
+            impl->m_traceAddress[slot] = (uint32_t)address;
+            impl->m_traceStack[slot] = esp;
         }),
         this, 1, 0);
 
@@ -679,13 +732,17 @@ void WardenEmu::Impl::HandleImport(const ImportStub& stub) {
         ReadWord(esp + 4 + i * 4, arguments[i]);
     }
 
-    // Logging the return address names the module instruction that called the import, which is
-    // how a call site is located when its arguments look wrong.
-    if (strcasecmp(stub.name, "LCMapStringA") == 0) {
-        uint32_t caller = 0;
-        ReadWord(esp, caller);
-        WardenLog("LCMapStringA called from %08x (module RVA %s)", caller,
-            (caller >= IMAGE_BASE && caller < IMAGE_BASE + IMAGE_SIZE) ? "in image" : "outside image");
+    // Every genuine import call returns into the module image. A return address anywhere else
+    // means the stub was reached by a wild branch (a bad function pointer, a corrupted return),
+    // so the arguments read here are not API arguments at all: record the path that led here.
+    uint32_t caller = 0;
+    ReadWord(esp, caller);
+
+    if (caller < IMAGE_BASE || caller >= IMAGE_BASE + imageSize) {
+        char reason[256];
+        snprintf(reason, sizeof(reason), "%s entered with return address %08x outside the image",
+            stub.name, caller);
+        DumpTrace(reason);
     }
 
     uint32_t returnEax = RunImport(stub, arguments, argumentCount);
@@ -1308,6 +1365,10 @@ bool WardenEmu::Impl::CallGuest(uint32_t address, const uint32_t* stackArguments
         return false;
     }
 
+    if (!m_replaying) {
+        CaptureSnapshot(address, stackArguments, argumentCount, ecx, what);
+    }
+
     uint32_t block[17];
     block[0] = STOP_ADDRESS;
 
@@ -1328,22 +1389,33 @@ bool WardenEmu::Impl::CallGuest(uint32_t address, const uint32_t* stackArguments
 
     uc_reg_read(machine, UC_X86_REG_EAX, &(eax = 0));
 
-    if (m_faulted) {
-        WardenLog("%s at %08x: the module faulted (RaiseException/TerminateProcess)", what, address);
-        return false;
+    if (!m_faulted && error == UC_ERR_OK) {
+        return true;
     }
 
-    if (error != UC_ERR_OK) {
+    char reason[160];
+
+    if (m_faulted) {
+        snprintf(reason, sizeof(reason), "%s at %08x: the module faulted (RaiseException/TerminateProcess)",
+            what, address);
+    } else {
         // The entry address alone does not say where it went wrong; read the faulting
         // instruction pointer and the address it touched so the site can be disassembled.
         uint32_t eip = 0;
         uc_reg_read(machine, UC_X86_REG_EIP, &eip);
-        WardenLog("%s at %08x: emu error %s (faulting EIP %08x)", what, address, uc_strerror(error),
-            eip);
-        return false;
+        snprintf(reason, sizeof(reason), "%s at %08x: emu error %s (faulting EIP %08x)", what, address,
+            uc_strerror(error), eip);
     }
 
-    return true;
+    WardenLog("%s", reason);
+    DumpTrace(reason);
+
+    // The first failure of each emulator keeps the state it started from, for ReplaySnapshot.
+    if (!m_replaying && !m_snapshotWritten) {
+        m_snapshotWritten = WriteSnapshot("Logs/warden-snapshot.bin") || WriteSnapshot("warden-snapshot.bin");
+    }
+
+    return false;
 }
 
 // =====================================================================
@@ -1483,6 +1555,249 @@ bool WardenEmu::Impl::HandleInvalidMemory(uc_mem_type type, uint64_t address, in
     WardenLog("guest %s fault at %016llx size %d value %lld", kind, (unsigned long long)address, size,
         (long long)value);
     return false;
+}
+
+// =====================================================================
+// Diagnostics: branch trace and replayable snapshots
+// =====================================================================
+
+void WardenEmu::Impl::DumpTrace(const char* reason) {
+    // A module stuck in a failing loop would otherwise repeat the same dump every frame; the
+    // first few carry everything, and a replay always gets its own.
+    if (!m_replaying && m_traceDumps >= 4) {
+        return;
+    }
+
+    ++m_traceDumps;
+
+    uint32_t registers[9];
+    const int ids[9] = { UC_X86_REG_EAX, UC_X86_REG_EBX, UC_X86_REG_ECX, UC_X86_REG_EDX, UC_X86_REG_ESI,
+        UC_X86_REG_EDI, UC_X86_REG_EBP, UC_X86_REG_ESP, UC_X86_REG_EIP };
+
+    for (uint32_t i = 0; i < 9; i++) {
+        registers[i] = 0;
+        uc_reg_read(machine, ids[i], &registers[i]);
+    }
+
+    WardenLog("trace: %s", reason);
+    WardenLog("trace: eax=%08x ebx=%08x ecx=%08x edx=%08x esi=%08x edi=%08x ebp=%08x esp=%08x eip=%08x",
+        registers[0], registers[1], registers[2], registers[3], registers[4], registers[5], registers[6],
+        registers[7], registers[8]);
+
+    uint32_t stackWords[12] = { 0 };
+    uc_mem_read(machine, registers[7], stackWords, sizeof(stackWords));
+    WardenLog("trace: [esp] %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x", stackWords[0],
+        stackWords[1], stackWords[2], stackWords[3], stackWords[4], stackWords[5], stackWords[6],
+        stackWords[7], stackWords[8], stackWords[9], stackWords[10], stackWords[11]);
+
+    // Oldest first, so the log reads in execution order; image addresses also carry the RVA
+    // that a disassembly of the module image uses.
+    uint32_t count = m_traceNext < TRACE_LENGTH ? m_traceNext : TRACE_LENGTH;
+    uint32_t shown = m_replaying ? count : (count < 64 ? count : 64);
+
+    for (uint32_t i = count - shown; i < count; i++) {
+        uint32_t slot = (m_traceNext - count + i) % TRACE_LENGTH;
+        uint32_t blockAddress = m_traceAddress[slot];
+
+        if (imageSize && blockAddress >= IMAGE_BASE && blockAddress < IMAGE_BASE + imageSize) {
+            WardenLog("trace:   %08x rva %04x esp %08x", blockAddress, blockAddress - IMAGE_BASE,
+                m_traceStack[slot]);
+        } else {
+            WardenLog("trace:   %08x          esp %08x", blockAddress, m_traceStack[slot]);
+        }
+    }
+}
+
+void WardenEmu::Impl::CaptureSnapshot(uint32_t address, const uint32_t* stackArguments,
+    uint32_t argumentCount, uint32_t ecx, const char* what) {
+    Snapshot& snapshot = m_snapshot;
+    snapshot.entry = address;
+    snapshot.ecx = ecx;
+    snapshot.argumentCount = argumentCount;
+
+    for (uint32_t i = 0; i < 16; i++) {
+        snapshot.arguments[i] = i < argumentCount ? stackArguments[i] : 0;
+    }
+
+    snprintf(snapshot.what, sizeof(snapshot.what), "%s", what);
+
+    const int ids[9] = { UC_X86_REG_EAX, UC_X86_REG_EBX, UC_X86_REG_ECX, UC_X86_REG_EDX, UC_X86_REG_ESI,
+        UC_X86_REG_EDI, UC_X86_REG_EBP, UC_X86_REG_ESP, UC_X86_REG_EFLAGS };
+
+    for (uint32_t i = 0; i < 9; i++) {
+        snapshot.registers[i] = 0;
+        uc_reg_read(machine, ids[i], &snapshot.registers[i]);
+    }
+
+    // Every byte the guest can observe: the environment pages, the whole stack (uninitialised
+    // locals included, so a replay sees the same garbage), the bridge areas, and the used part
+    // of the image and both heaps.
+    const struct {
+        uint32_t base;
+        uint32_t size;
+    } regions[] = {
+        { ENV_BASE, 0x1000 },
+        { TLS_ARRAY_BASE, 0x1000 },
+        { PEB_BASE, 0x1000 },
+        { TEB_BASE, 0x1000 },
+        { GDT_BASE, 0x1000 },
+        { STACK_BASE, STACK_SIZE },
+        { MISC_BASE, MISC_SIZE },
+        { SCRATCH_BASE, SCRATCH_SIZE },
+        { HEAP_BASE, m_heapNext[0] - HEAP_BASE },
+        { IMAGE_BASE, imageSize },
+        { HEAP_EXT_BASE, m_heapNext[1] - HEAP_EXT_BASE },
+    };
+
+    const uint32_t regionCount = sizeof(regions) / sizeof(regions[0]);
+    snapshot.regions.resize(regionCount);
+
+    for (uint32_t i = 0; i < regionCount; i++) {
+        snapshot.regions[i].base = regions[i].base;
+        snapshot.regions[i].bytes.resize(regions[i].size);
+
+        if (regions[i].size) {
+            uc_mem_read(machine, regions[i].base, snapshot.regions[i].bytes.data(), regions[i].size);
+        }
+    }
+}
+
+namespace {
+
+const char SNAPSHOT_MAGIC[8] = { 'W', 'E', 'M', 'U', 'S', 'N', 'P', '1' };
+
+}
+
+bool WardenEmu::Impl::WriteSnapshot(const char* path) const {
+    const Snapshot& snapshot = m_snapshot;
+
+    if (snapshot.regions.empty()) {
+        return false;
+    }
+
+    FILE* file = fopen(path, "wb");
+
+    if (!file) {
+        return false;
+    }
+
+    uint32_t scalars[13] = { imageLoaded ? 1u : 0u, moduleCreated ? 1u : 0u, imageSize, exportAddress,
+        moduleObject, m_heapNext[0], m_heapNext[1], m_heapLimit[0], m_heapLimit[1], heapRegion,
+        m_unhandledFilter, importCount, nextImportStub };
+
+    fwrite(SNAPSHOT_MAGIC, 1, sizeof(SNAPSHOT_MAGIC), file);
+    fwrite(&snapshot.entry, 4, 1, file);
+    fwrite(&snapshot.ecx, 4, 1, file);
+    fwrite(&snapshot.argumentCount, 4, 1, file);
+    fwrite(snapshot.arguments, 4, 16, file);
+    fwrite(snapshot.what, 1, sizeof(snapshot.what), file);
+    fwrite(snapshot.registers, 4, 9, file);
+    fwrite(scalars, 4, 13, file);
+    fwrite(m_tlsValues, 4, TLS_SLOT_COUNT, file);
+    fwrite(m_tlsUsed, 1, TLS_SLOT_COUNT, file);
+    fwrite(imports, sizeof(ImportStub), importCount, file);
+
+    uint32_t regionCount = (uint32_t)snapshot.regions.size();
+    fwrite(&regionCount, 4, 1, file);
+
+    for (const SnapshotRegion& region : snapshot.regions) {
+        uint32_t size = (uint32_t)region.bytes.size();
+        fwrite(&region.base, 4, 1, file);
+        fwrite(&size, 4, 1, file);
+        fwrite(region.bytes.data(), 1, size, file);
+    }
+
+    bool ok = ferror(file) == 0;
+    fclose(file);
+
+    if (ok) {
+        WardenLog("snapshot of the failing %s call written to %s", snapshot.what, path);
+    }
+
+    return ok;
+}
+
+bool WardenEmu::Impl::ReadSnapshot(const char* path) {
+    FILE* file = fopen(path, "rb");
+
+    if (!file) {
+        WardenLog("snapshot %s: cannot open", path);
+        return false;
+    }
+
+    Snapshot& snapshot = m_snapshot;
+    char magic[8];
+    uint32_t scalars[13];
+    bool ok = fread(magic, 1, sizeof(magic), file) == sizeof(magic)
+        && memcmp(magic, SNAPSHOT_MAGIC, sizeof(magic)) == 0
+        && fread(&snapshot.entry, 4, 1, file) == 1
+        && fread(&snapshot.ecx, 4, 1, file) == 1
+        && fread(&snapshot.argumentCount, 4, 1, file) == 1
+        && snapshot.argumentCount <= 16
+        && fread(snapshot.arguments, 4, 16, file) == 16
+        && fread(snapshot.what, 1, sizeof(snapshot.what), file) == sizeof(snapshot.what)
+        && fread(snapshot.registers, 4, 9, file) == 9
+        && fread(scalars, 4, 13, file) == 13
+        && fread(m_tlsValues, 4, TLS_SLOT_COUNT, file) == TLS_SLOT_COUNT
+        && fread(m_tlsUsed, 1, TLS_SLOT_COUNT, file) == TLS_SLOT_COUNT
+        && scalars[11] <= sizeof(imports) / sizeof(imports[0])
+        && fread(imports, sizeof(ImportStub), scalars[11], file) == scalars[11];
+
+    snapshot.what[sizeof(snapshot.what) - 1] = '\0';
+    uint32_t regionCount = 0;
+    ok = ok && fread(&regionCount, 4, 1, file) == 1 && regionCount <= 32;
+    snapshot.regions.clear();
+
+    for (uint32_t i = 0; ok && i < regionCount; i++) {
+        SnapshotRegion region;
+        uint32_t size = 0;
+        ok = fread(&region.base, 4, 1, file) == 1 && fread(&size, 4, 1, file) == 1 && size <= IMAGE_SIZE;
+
+        if (ok) {
+            region.bytes.resize(size);
+            ok = fread(region.bytes.data(), 1, size, file) == size;
+        }
+
+        if (ok) {
+            snapshot.regions.push_back(std::move(region));
+        }
+    }
+
+    fclose(file);
+
+    if (!ok) {
+        WardenLog("snapshot %s: truncated or not a snapshot", path);
+        return false;
+    }
+
+    imageLoaded = scalars[0] != 0;
+    moduleCreated = scalars[1] != 0;
+    imageSize = scalars[2];
+    exportAddress = scalars[3];
+    moduleObject = scalars[4];
+    m_heapNext[0] = scalars[5];
+    m_heapNext[1] = scalars[6];
+    m_heapLimit[0] = scalars[7];
+    m_heapLimit[1] = scalars[8];
+    heapRegion = scalars[9];
+    m_unhandledFilter = scalars[10];
+    importCount = scalars[11];
+    nextImportStub = scalars[12];
+
+    for (const SnapshotRegion& region : snapshot.regions) {
+        if (!region.bytes.empty() && !WriteMemory(region.base, region.bytes.data(), (uint32_t)region.bytes.size())) {
+            return false;
+        }
+    }
+
+    const int ids[9] = { UC_X86_REG_EAX, UC_X86_REG_EBX, UC_X86_REG_ECX, UC_X86_REG_EDX, UC_X86_REG_ESI,
+        UC_X86_REG_EDI, UC_X86_REG_EBP, UC_X86_REG_ESP, UC_X86_REG_EFLAGS };
+
+    for (uint32_t i = 0; i < 9; i++) {
+        uc_reg_write(machine, ids[i], &snapshot.registers[i]);
+    }
+
+    return true;
 }
 
 // =====================================================================
@@ -1864,6 +2179,37 @@ void WardenEmu::Process(uint32_t elapsedMs) {
     uint32_t arguments[1] = { elapsedMs };
     uint32_t eax = 0;
     impl.CallGuest(functionAddress, arguments, 1, impl.moduleObject, "WardenModule::Process", eax);
+}
+
+bool WardenEmu::ReplaySnapshot(const char* path) {
+    Impl& impl = *m_impl;
+
+    if (impl.imageLoaded) {
+        WardenLog("ReplaySnapshot needs a fresh emulator instance");
+        return false;
+    }
+
+    if (!impl.booted && !impl.Boot()) {
+        return false;
+    }
+
+    if (!impl.ReadSnapshot(path)) {
+        return false;
+    }
+
+    // The replay keeps the full branch history and never overwrites the snapshot it came from.
+    impl.m_replaying = true;
+
+    const Impl::Snapshot& snapshot = impl.m_snapshot;
+    WardenLog("replaying %s at %08x (ecx %08x, %u argument(s)) from %s", snapshot.what, snapshot.entry,
+        snapshot.ecx, snapshot.argumentCount, path);
+
+    uint32_t eax = 0;
+    bool ok = impl.CallGuest(snapshot.entry, snapshot.arguments, snapshot.argumentCount, snapshot.ecx,
+        snapshot.what, eax);
+
+    WardenLog("replay %s: eax %08x", ok ? "completed" : "failed", eax);
+    return ok;
 }
 
 bool WardenEmu::ImageLoaded() const {
