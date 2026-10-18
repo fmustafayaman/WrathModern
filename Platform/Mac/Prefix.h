@@ -23,6 +23,7 @@
 #include <errno.h>
 #include <float.h>
 #include <math.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -58,8 +59,6 @@
 
 #define _stricmp strcasecmp
 #define _strnicmp strncasecmp
-#define _snprintf snprintf
-#define _vsnprintf vsnprintf
 #define _alloca alloca
 #define _finite isfinite
 #define _isnan isnan
@@ -89,6 +88,122 @@ static inline char* _strlwr(char* string) {
 
     return string;
 }
+
+// MSVC's rand() is a per-thread linear congruential generator returning 15 bits (RAND_MAX 32767).
+// The client scales and compares its results against that range (cloud noise, animation variation
+// frequencies, sequence repeats), so libc's 31-bit rand() must not reach it. The state lives in an
+// inline function so every translation unit shares it and srand() seeds what rand() returns.
+inline uint32_t& MsvcRandState() {
+    thread_local uint32_t state = 1;
+    return state;
+}
+
+inline int MsvcRand() {
+    uint32_t& state = MsvcRandState();
+    state = state * 214013u + 2531011u;
+    return static_cast<int>((state >> 16) & 0x7FFF);
+}
+
+inline void MsvcSrand(unsigned int seed) {
+    MsvcRandState() = seed;
+}
+
+#define rand MsvcRand
+#define srand MsvcSrand
+#undef RAND_MAX
+#define RAND_MAX 0x7FFF
+
+// MSVC's printf and scanf families take the I64 and I32 length modifiers ("%I64d", "%I64X"), and
+// Storm's ordered printf rewrites "%lld" to "%I64d" before every call. libc does not know them: it
+// prints "I64d" and leaves the argument unread, and sscanf stops matching. Formats are translated to
+// the libc spelling here. A format longer than the buffer is passed through unchanged.
+inline const char* MsvcTranslateFormat(const char* format, char* buffer, size_t size) {
+    if (!strstr(format, "I64") && !strstr(format, "I32")) {
+        return format;
+    }
+
+    size_t out = 0;
+
+    for (const char* c = format; *c; c++) {
+        if (out + 3 >= size) {
+            return format;
+        }
+
+        buffer[out++] = *c;
+
+        if (*c != '%') {
+            continue;
+        }
+
+        if (c[1] == '%') {
+            buffer[out++] = *++c;
+            continue;
+        }
+
+        // Flags, argument index, width and precision
+        while (c[1] && strchr("-+ #0123456789.*$'", c[1])) {
+            if (out + 3 >= size) {
+                return format;
+            }
+            buffer[out++] = *++c;
+        }
+
+        if (c[1] == 'I' && c[2] == '6' && c[3] == '4') {
+            buffer[out++] = 'l';
+            buffer[out++] = 'l';
+            c += 3;
+        } else if (c[1] == 'I' && c[2] == '3' && c[3] == '2') {
+            c += 3;
+        }
+    }
+
+    buffer[out] = '\0';
+    return buffer;
+}
+
+// MSVC's _vsnprintf fills all count characters without a terminator when the output does not fit
+// below count, returning count on an exact fit and -1 when it truncates. Storm relies on both.
+inline int MsvcVsnprintf(char* dest, size_t count, const char* format, va_list args) {
+    char translated[512];
+    format = MsvcTranslateFormat(format, translated, sizeof(translated));
+
+    va_list copy;
+    va_copy(copy, args);
+    int length = vsnprintf(dest, count, format, copy);
+    va_end(copy);
+
+    if (length < 0 || static_cast<size_t>(length) < count) {
+        return length;
+    }
+
+    char* full = static_cast<char*>(malloc(static_cast<size_t>(length) + 1));
+    vsnprintf(full, static_cast<size_t>(length) + 1, format, args);
+    memcpy(dest, full, count);
+    free(full);
+
+    return static_cast<size_t>(length) == count ? length : -1;
+}
+
+inline int MsvcSnprintf(char* dest, size_t count, const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    int result = MsvcVsnprintf(dest, count, format, args);
+    va_end(args);
+    return result;
+}
+
+inline int MsvcSscanf(const char* string, const char* format, ...) {
+    char translated[512];
+    va_list args;
+    va_start(args, format);
+    int result = vsscanf(string, MsvcTranslateFormat(format, translated, sizeof(translated)), args);
+    va_end(args);
+    return result;
+}
+
+#define _snprintf MsvcSnprintf
+#define _vsnprintf MsvcVsnprintf
+#define sscanf MsvcSscanf
 
 // Win32 storage types that shared headers declare members and parameters with. Only the Mac/
 // platform implementations look inside them; shared code treats them as opaque. Win32 LONG and DWORD
