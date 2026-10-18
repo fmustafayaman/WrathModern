@@ -8421,6 +8421,24 @@ void CGUnit_C::UpdateSelectionRadius() {
     }
 }
 
+// Units take no part in world collision; their own shapes are handled by the movement code
+// OFFSET: 0x004899F0
+int32_t CGUnit_C::IsCollidable(int32_t flags) const {
+    return 0;
+}
+
+// Every unit can carry passengers: the movement code only boards a unit's seats (vehicles,
+// multi-seat mounts) when this says it is a transport
+// OFFSET: 0x008A1420
+bool CGUnit_C::IsTransport() const {
+    return true;
+}
+
+// OFFSET: 0x00959DE0
+int32_t CGUnit_C::IsPointInside(const C3Vector& point) const {
+    return 1;
+}
+
 // VERIFY: 9da62ce8 auto
 // OFFSET: 0x0074B810
 int32_t CGUnit_C::AddPassenger(CPassenger* passenger, int32_t a2) {
@@ -21439,6 +21457,17 @@ void CGUnit_C::CreateUnitMount(int32_t a2, int32_t a3) {
     }
 
     this->UpdateObjectEffectAnimationStates();
+}
+
+// VERIFY: 5d485eba manual
+// OFFSET: 0x0073C1D0
+void CGUnit_C::OnSpellEffectClear(CEffect* effect) {
+    bool updateAnimation = effect->m_kitRec && effect->m_kitRec->m_animID > 0 && (effect->m_flags & 0x1000);
+    CGObject_C::OnSpellEffectClear(effect);
+
+    if (updateAnimation) {
+        this->UpdateBaseAnimation(0, -1);
+    }
 }
 
 // VERIFY: e8fc52d0 manual

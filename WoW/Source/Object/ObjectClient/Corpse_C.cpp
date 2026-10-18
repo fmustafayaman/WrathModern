@@ -254,6 +254,27 @@ float CGCorpse_C::GetDisplayScale() const {
     return 1.0f;
 }
 
+// Shared with CGDynamicObject_C, which keeps its CPassenger at the same offset
+// OFFSET: 0x007064E0
+C3Vector CGCorpse_C::GetPosition() const {
+    return this->m_passenger.GetPosition(this->m_passenger.m_position);
+}
+
+// OFFSET: 0x00706500
+C3Vector CGCorpse_C::GetRawPosition() const {
+    return this->m_passenger.m_position;
+}
+
+// OFFSET: 0x00706550
+float CGCorpse_C::GetRawFacing() const {
+    return this->m_passenger.m_facing;
+}
+
+// OFFSET: 0x00706560
+uint64_t CGCorpse_C::GetTransportGUID() const {
+    return this->m_passenger.m_transportGuid.m_guid;
+}
+
 // VERIFY: 242bdafd auto
 // OFFSET: 0x00706570
 float CGCorpse_C::GetTrueScale() const {

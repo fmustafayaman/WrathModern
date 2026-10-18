@@ -13732,17 +13732,6 @@ uint32_t CGPlayer_C::GetVirtualItemDisplayID(uint32_t slot) const {
     return item ? item->GetDisplayID() : 0;
 }
 
-// VERIFY: 5d485eba manual
-// OFFSET: 0x0073C1D0
-void CGPlayer_C::OnSpellEffectClear(CEffect* effect) {
-    bool updateAnimation = effect->m_kitRec && effect->m_kitRec->m_animID > 0 && (effect->m_flags & 0x1000);
-    CGObject_C::OnSpellEffectClear(effect);
-
-    if (updateAnimation) {
-        this->UpdateBaseAnimation(0, -1);
-    }
-}
-
 // STATIC: 0x00ADBA74
 static const uint32_t s_playerSoundChance[14] = { 35, 100, 30, 100, 100, 40, 100, 100, 100, 100, 100, 100, 100, 0 };
 
