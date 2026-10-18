@@ -758,6 +758,12 @@ TalentGroupTier_C::~TalentGroupTier_C() {
 TalentGroupTab_C::TalentGroupTab_C() : m_tabId(0), m_pointsSpent(0), m_previewPointsSpent(0) {
 }
 
+// INLINED
+// Ranks are 0-based with -1 for none: an item made for a preview point on an unlearned talent
+// starts at -1, so the first point previews rank 1 (TSHashTable::InternalNew at 0x005C85D0)
+TalentGroupItem_C::TalentGroupItem_C() : m_talentId(0), m_rank(-1), m_previewRank(-1) {
+}
+
 // VERIFY: 6fcfa30a manual
 // OFFSET: 0x005C8F90
 TalentGroupTab_C::~TalentGroupTab_C() {
