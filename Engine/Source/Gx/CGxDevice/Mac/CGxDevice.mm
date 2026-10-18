@@ -184,6 +184,27 @@ int32_t CGxDevice::AdapterMonitorModes(TSGrowableArray<CGxMonitorMode>& modes) {
         CGDisplayModeRelease(current);
     }
 
+    // The standard resolutions Windows drivers list, as far as the display fits them. The client's
+    // default formats are 4:3 sizes such as 1024x768 that a Mac display does not report, and the
+    // gxResolution callback rejects a default missing from this list, leaving the CVar without a
+    // value on a fresh install.
+    static const int32_t s_standard[][2] = {
+        { 640, 480 }, { 800, 600 }, { 1024, 768 }, { 1152, 864 }, { 1280, 720 }, { 1280, 800 },
+        { 1280, 960 }, { 1280, 1024 }, { 1366, 768 }, { 1440, 900 }, { 1600, 900 }, { 1600, 1200 },
+        { 1680, 1050 }, { 1920, 1080 }, { 1920, 1200 }, { 2560, 1440 }, { 2560, 1600 },
+    };
+    int32_t maxWidth = 0;
+    int32_t maxHeight = 0;
+    for (uint32_t i = 0; i < modes.Count(); i++) {
+        maxWidth = std::max(maxWidth, modes[i].m_size.x);
+        maxHeight = std::max(maxHeight, modes[i].m_size.y);
+    }
+    for (const auto& size : s_standard) {
+        if (size[0] <= maxWidth && size[1] <= maxHeight) {
+            add(size[0], size[1]);
+        }
+    }
+
     qsort(modes.Ptr(), modes.Count(), sizeof(CGxMonitorMode), CGxMonitorModeSort);
 
     return modes.Count() != 0;
