@@ -93,6 +93,23 @@ void OsGuiBeep() {
     NSBeep();
 }
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+void OsGuiFlashWindow() {
+    // AppKit ignores the request while the application is active, so no check is needed for that.
+    // NSInformationalRequest bounces the Dock icon once, as a flashed Windows taskbar button stops
+    // once the window is activated.
+    void (^request)() = ^{
+        [NSApp requestUserAttention:NSInformationalRequest];
+    };
+
+    if ([NSThread isMainThread]) {
+        request();
+    } else {
+        dispatch_async(dispatch_get_main_queue(), request);
+    }
+}
+#endif
+
 int32_t OsGuiProcessMessage(void* message) {
     return 0;
 }

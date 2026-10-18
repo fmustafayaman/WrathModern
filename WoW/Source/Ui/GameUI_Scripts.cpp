@@ -24,6 +24,7 @@
 #include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
 #include "Engine/Source/lua-5.1/src/lauxlib.h"
 #include "Engine/Source/lua-5.1/src/lua.h"
+#include "Engine/Source/Os/Gui.h"
 #include "Engine/Source/Os/OsFile.h"
 #include "Engine/Source/Os/Time.h"
 #include "Engine/Source/Os/TimeManager.h"
@@ -2587,6 +2588,15 @@ static int32_t Script_GetFramerate(lua_State* L) {
     lua_pushnumber(L, World::GetFramerate());
     return 1;
 }
+
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+// FlashWindow() of the patched HD client executables; addons call it to get attention while the game
+// is in the background
+static int32_t Script_FlashWindow(lua_State* L) {
+    OsGuiFlashWindow();
+    return 0;
+}
+#endif
 
 // VERIFY: ee32b2a0 auto
 // OFFSET: 0x005165E0
@@ -6226,6 +6236,9 @@ static FrameScript_Method s_ScriptFunctions[] = {
     { "GetMouseButtonClicked", &Script_GetMouseButtonClicked },
     { "SetConsoleKey", &Script_SetConsoleKey },
     { "Screenshot", &Script_Screenshot },
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    { "FlashWindow", &Script_FlashWindow },
+#endif
     { "GetFramerate", &Script_GetFramerate },
     { "TogglePerformanceDisplay", &Script_TogglePerformanceDisplay },
     { "TogglePerformancePause", &Script_TogglePerformancePause },

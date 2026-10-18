@@ -157,4 +157,11 @@ void OsGuiSetGxWindow(void* window);
 int32_t OsGuiMessageBox(void* parentWindow, int32_t style, const char* message, const char* title);
 void OsGuiSetWindowTitle(void* window, const char* title);
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+// Asks for attention while the game is in the background: the Dock icon bounces on macOS, the
+// taskbar button flashes on Windows. Backs the FlashWindow() script function that HD client addons
+// call on whispers, invites and ready checks.
+void OsGuiFlashWindow();
+#endif
+
 #endif

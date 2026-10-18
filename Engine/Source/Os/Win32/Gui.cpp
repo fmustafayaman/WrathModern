@@ -415,4 +415,21 @@ int32_t OsGuiProcessMessage(void* message) {
     return handled;
 }
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+void OsGuiFlashWindow() {
+    // Flash the taskbar button until the window comes to the foreground, as the HD client patch does
+    HWND window = static_cast<HWND>(OsGuiGetWindow(0));
+
+    if (!window || GetForegroundWindow() == window) {
+        return;
+    }
+
+    FLASHWINFO info = {};
+    info.cbSize = sizeof(info);
+    info.hwnd = window;
+    info.dwFlags = FLASHW_TRAY | FLASHW_TIMERNOFG;
+    FlashWindowEx(&info);
+}
+#endif
+
 #endif
