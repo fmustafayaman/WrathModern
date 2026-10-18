@@ -757,7 +757,7 @@ static int32_t Script_CastShapeshiftForm(lua_State* L) {
         return 0;
     }
 
-    uint32_t index = static_cast<uint32_t>(lua_tonumber(L, 1)) - 1;
+    uint32_t index = static_cast<uint32_t>(static_cast<int64_t>(lua_tonumber(L, 1))) - 1;
 
     if (index < s_shapeshiftSpells.m_count) {
         Spell_C_ClickSpell(s_shapeshiftSpells.m_data[index].m_spellId, nullptr, WOWGUID{ 0 });
@@ -774,7 +774,7 @@ static int32_t Script_GetShapeshiftFormCooldown(lua_State* L) {
         return 0;
     }
 
-    uint32_t index = static_cast<uint32_t>(lua_tonumber(L, 1)) - 1;
+    uint32_t index = static_cast<uint32_t>(static_cast<int64_t>(lua_tonumber(L, 1))) - 1;
 
     if (index >= s_shapeshiftSpells.m_count) {
         lua_pushnumber(L, 0.0);
@@ -803,7 +803,7 @@ static int32_t Script_PickupCompanion(lua_State* L) {
         return 0;
     }
 
-    CGSpellBook::PickupCompanion(type, static_cast<uint32_t>(lua_tonumber(L, 2)) - 1);
+    CGSpellBook::PickupCompanion(type, static_cast<uint32_t>(static_cast<int64_t>(lua_tonumber(L, 2))) - 1);
     return 0;
 }
 
@@ -834,7 +834,7 @@ static int32_t Script_GetShapeshiftFormInfo(lua_State* L) {
         return 0;
     }
 
-    uint32_t index = static_cast<uint32_t>(lua_tonumber(L, 1)) - 1;
+    uint32_t index = static_cast<uint32_t>(static_cast<int64_t>(lua_tonumber(L, 1))) - 1;
     CGUnit_C* player = ClntObjMgrGetActivePlayerObj();
 
     if (index >= s_shapeshiftSpells.m_count || !player) {
@@ -899,7 +899,7 @@ static int32_t Script_GetCompanionCooldown(lua_State* L) {
         return 0;
     }
 
-    uint32_t index = static_cast<uint32_t>(lua_tonumber(L, 2)) - 1;
+    uint32_t index = static_cast<uint32_t>(static_cast<int64_t>(lua_tonumber(L, 2))) - 1;
 
     if (index >= CGSpellBook::m_companions[type].m_count) {
         return 0;
@@ -929,7 +929,7 @@ static int32_t Script_CallCompanion(lua_State* L) {
         return 0;
     }
 
-    uint32_t index = static_cast<uint32_t>(lua_tonumber(L, 2)) - 1;
+    uint32_t index = static_cast<uint32_t>(static_cast<int64_t>(lua_tonumber(L, 2))) - 1;
 
     if (index >= CGSpellBook::m_companions[type].m_count) {
         return 0;

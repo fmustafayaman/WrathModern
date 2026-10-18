@@ -152,7 +152,7 @@ static int32_t Script_TakeInboxMoney(lua_State* L) {
         WOWGUID object = CGMailInfo::m_object;
 
         if (object) {
-            uint32_t index = static_cast<uint32_t>(lua_tonumber(L, 1)) - 1;
+            uint32_t index = static_cast<uint32_t>(static_cast<int64_t>(lua_tonumber(L, 1))) - 1;
 
             if (index < CGMailInfo::m_numInboxItems) {
                 MailboxMessageInfo* mail = CGMailInfo::m_inbox.m_data[index];
@@ -185,7 +185,7 @@ static int32_t Script_TakeInboxTextItem(lua_State* L) {
         WOWGUID object = CGMailInfo::m_object;
 
         if (object) {
-            uint32_t index = static_cast<uint32_t>(lua_tonumber(L, 1)) - 1;
+            uint32_t index = static_cast<uint32_t>(static_cast<int64_t>(lua_tonumber(L, 1))) - 1;
 
             if (index < CGMailInfo::m_numInboxItems) {
                 MailboxMessageInfo* mail = CGMailInfo::m_inbox.m_data[index];
@@ -214,7 +214,7 @@ static int32_t Script_SelectStationery(lua_State* L) {
         return 0;
     }
 
-    uint32_t index = static_cast<uint32_t>(lua_tonumber(L, 1)) - 1;
+    uint32_t index = static_cast<uint32_t>(static_cast<int64_t>(lua_tonumber(L, 1))) - 1;
 
     if (index >= CGMailInfo::m_numStationeries) {
         CGMailInfo::m_selectedStationery = 0;
@@ -233,7 +233,7 @@ static int32_t Script_GetStationeryInfo(lua_State* L) {
         return 0;
     }
 
-    uint32_t index = static_cast<uint32_t>(lua_tonumber(L, 1)) - 1;
+    uint32_t index = static_cast<uint32_t>(static_cast<int64_t>(lua_tonumber(L, 1))) - 1;
     StationeryInfo* stationery;
     ItemStats_C* stats;
     WOWGUID none = { 0 };
@@ -366,7 +366,7 @@ static int32_t Script_SetSendMailCOD(lua_State* L) {
     double amount = lua_tonumber(L, 1);
 
     if (CGMailInfo::GetNumSendItems()) {
-        CGMailInfo::m_sendCOD = static_cast<uint32_t>(amount);
+        CGMailInfo::m_sendCOD = static_cast<uint32_t>(static_cast<int64_t>(amount));
         FrameScript_SignalEvent(SCRIPT_EVENT_SEND_MAIL_COD_CHANGED, nullptr);
     }
 

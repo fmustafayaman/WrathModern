@@ -378,7 +378,7 @@ static TSFixedArray<uint8_t>* GetAlphaMask(uint32_t size) {
                     float dx = static_cast<float>(x) - center;
                     float dy = static_cast<float>(y) - center;
                     float alpha = (radius - sqrtf(dx * dx + dy * dy) + 0.5f) * 255.0f;
-                    generated->m_data[y * size + x] = static_cast<uint8_t>(std::clamp(rintf(alpha), 0.0f, 255.0f));
+                    generated->m_data[y * size + x] = static_cast<uint8_t>(static_cast<int64_t>(std::clamp(rintf(alpha), 0.0f, 255.0f)));
                 }
             }
         }

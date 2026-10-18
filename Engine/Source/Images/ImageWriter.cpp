@@ -1365,8 +1365,8 @@ static int32_t WriteJpegFile(IWJpegParams* params) {
         float fraction = (quality % 10) * 0.1f;
 
         for (int32_t i = 0; i < 64; i++) {
-            luminance[i] = luminanceLow[i] + static_cast<uint32_t>((luminanceHigh[i] - luminanceLow[i]) * fraction);
-            chrominance[i] = chrominanceLow[i] + static_cast<uint32_t>((chrominanceHigh[i] - chrominanceLow[i]) * fraction);
+            luminance[i] = luminanceLow[i] + static_cast<uint32_t>(static_cast<int64_t>((luminanceHigh[i] - luminanceLow[i]) * fraction));
+            chrominance[i] = chrominanceLow[i] + static_cast<uint32_t>(static_cast<int64_t>((chrominanceHigh[i] - chrominanceLow[i]) * fraction));
         }
     } else {
         for (int32_t i = 0; i < 64; i++) {

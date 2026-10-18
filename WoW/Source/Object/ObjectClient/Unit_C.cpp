@@ -23213,7 +23213,7 @@ void CGUnit_C::RenderTargetSelection() const {
                 fade = (1.0f - half * half) * fade;
             }
 
-            color.a = static_cast<uint8_t>(fade * color.a);
+            color.a = static_cast<uint8_t>(static_cast<int64_t>(fade * color.a));
             C3Vector amount(grow, grow, grow);
             box.Expand(amount);
 
@@ -23252,10 +23252,10 @@ void CGUnit_C::RenderPetTargetSelection() const {
 
     if (t > 0.75f) {
         float x = (t - 0.75f) * 4.0f;
-        color.a = static_cast<uint8_t>((1.0f - x * x) * 255.0f);
+        color.a = static_cast<uint8_t>(static_cast<int64_t>((1.0f - x * x) * 255.0f));
     } else if (t < 0.25f) {
         float x = t * 4.0f;
-        color.a = static_cast<uint8_t>(x * x * 255.0f);
+        color.a = static_cast<uint8_t>(static_cast<int64_t>(x * x * 255.0f));
     }
 
     C3Vector amount(size, size, size + size);

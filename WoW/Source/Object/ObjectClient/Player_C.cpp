@@ -14250,7 +14250,7 @@ int32_t OnUpdatePlayerRuneRegen(WOWGUID guid, uint32_t offset, uint32_t count, c
             clamped = 0.0f;
         }
 
-        CGRuneInfo::SetRuneLastUsedTime(i, FrameTime::s_curTimeMs - static_cast<uint32_t>(progress * 1000.0 / current));
+        CGRuneInfo::SetRuneLastUsedTime(i, FrameTime::s_curTimeMs - static_cast<uint32_t>(static_cast<int64_t>(progress * 1000.0 / current)));
         CGRuneInfo::ComputeRuneRechargeTime(i, clamped);
         CGActionBar::SignalUpdateCooldown();
     }

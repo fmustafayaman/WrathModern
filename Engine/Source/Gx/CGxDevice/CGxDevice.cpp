@@ -958,8 +958,8 @@ void CGxDevice::DeviceGamma(CGxGammaRamp& ramp) {
 // VERIFY: 17f58e3d manual
 // OFFSET: 0x006841D0
 void CGxDevice::DeviceScreenShot() {
-    this->m_scrShotWidth = static_cast<uint32_t>(this->m_curWindowRect.maxX);
-    this->m_scrShotHeight = static_cast<uint32_t>(this->m_curWindowRect.maxY);
+    this->m_scrShotWidth = static_cast<uint32_t>(static_cast<int64_t>(this->m_curWindowRect.maxX));
+    this->m_scrShotHeight = static_cast<uint32_t>(static_cast<int64_t>(this->m_curWindowRect.maxY));
 
     CiRect rect;
     rect.minY = 0;

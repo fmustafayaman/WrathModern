@@ -1053,7 +1053,7 @@ static int32_t Script_GetAddOnEnableState(lua_State* L) {
     }
 
     const char* character = lua_tolstring(L, 1, nullptr);
-    const char* name = GetAddOnByIndex(static_cast<uint32_t>(lua_tonumber(L, 2)) - 1);
+    const char* name = GetAddOnByIndex(static_cast<uint32_t>(static_cast<int64_t>(lua_tonumber(L, 2))) - 1);
 
     if (!name) {
         luaL_error(L, "AddOn index must be in the range of 1 to %d", GetNumAddOns());
@@ -1123,7 +1123,7 @@ static int32_t Script_GetAddOnInfo(lua_State* L) {
         return 0;
     }
 
-    const char* name = GetAddOnByIndex(static_cast<uint32_t>(lua_tonumber(L, 1)) - 1);
+    const char* name = GetAddOnByIndex(static_cast<uint32_t>(static_cast<int64_t>(lua_tonumber(L, 1))) - 1);
 
     if (!name) {
         luaL_error(L, "AddOn index must be in the range of 1 to %d", GetNumAddOns());
@@ -1209,7 +1209,7 @@ static int32_t Script_SetRealmSplitState(lua_State* L) {
         return 0;
     }
 
-    uint32_t state = static_cast<uint32_t>(lua_tonumber(L, 1));
+    uint32_t state = static_cast<uint32_t>(static_cast<int64_t>(lua_tonumber(L, 1)));
 
     if (state <= 2) {
         WDataStore msg;
@@ -1452,7 +1452,7 @@ static int32_t Script_PINEntered(lua_State* L) {
             luaL_error(L, "Usage: PINEntered(4-10 key positions) - non-numeric arg #%d", count + 1);
         }
 
-        digits[i - 1] = static_cast<uint8_t>(lua_tonumber(L, i));
+        digits[i - 1] = static_cast<uint8_t>(static_cast<int64_t>(lua_tonumber(L, i)));
         count++;
     }
 
@@ -1477,7 +1477,7 @@ static int32_t Script_MatrixEntered(lua_State* L) {
         luaL_error(L, "MatrixEntered: number must be 0 to 9");
     }
 
-    CGlueMgr::LoginEnterMatrix(static_cast<uint8_t>(value));
+    CGlueMgr::LoginEnterMatrix(static_cast<uint8_t>(static_cast<int64_t>(value)));
     return 0;
 }
 

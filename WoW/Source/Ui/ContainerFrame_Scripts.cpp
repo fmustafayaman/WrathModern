@@ -50,7 +50,7 @@ static int32_t Script_ContainerIDToInventoryID(lua_State* L) {
         return 0;
     }
 
-    uint32_t id = static_cast<uint32_t>(lua_tonumber(L, 1)) - 1;
+    uint32_t id = static_cast<uint32_t>(static_cast<int64_t>(lua_tonumber(L, 1))) - 1;
 
     if (id > 10) {
         luaL_error(L, "ContainerIDToInventoryID(): invalid container ID");
@@ -697,7 +697,7 @@ static int32_t Script_GetContainerItemPurchaseInfo(lua_State* L) {
 
     if (lua_tonumber(L, 3)) {
         CGBag_C* bag = &ClntObjMgrGetActivePlayerObj()->m_bag;
-        uint32_t slot = static_cast<uint32_t>(lua_tonumber(L, 2) - 1);
+        uint32_t slot = static_cast<uint32_t>(static_cast<int64_t>(lua_tonumber(L, 2) - 1));
 
         if (!bag || slot > 18) {
             return 0;
@@ -918,11 +918,11 @@ static int32_t Script_GetContainerFreeSlots(lua_State* L) {
         return 1;
     }
 
-    if (static_cast<uint32_t>(index - 1.0) > 10) {
+    if (static_cast<uint32_t>(static_cast<int64_t>(index - 1.0)) > 10) {
         return 0;
     }
 
-    CGItem_C* container = static_cast<CGItem_C*>(ClntObjMgrObjectPtr(GetBagAtIndex(static_cast<uint32_t>(index - 1.0)), TYPEMASK_CONTAINER, __FILE__, __LINE__));
+    CGItem_C* container = static_cast<CGItem_C*>(ClntObjMgrObjectPtr(GetBagAtIndex(static_cast<uint32_t>(static_cast<int64_t>(index - 1.0))), TYPEMASK_CONTAINER, __FILE__, __LINE__));
 
     if (!container) {
         return 0;
@@ -1025,7 +1025,7 @@ static int32_t Script_GetContainerItemPurchaseItem(lua_State* L) {
 
     if (lua_tonumber(L, 4)) {
         CGBag_C* bag = &ClntObjMgrGetActivePlayerObj()->m_bag;
-        uint32_t slot = static_cast<uint32_t>(lua_tonumber(L, 2) - 1);
+        uint32_t slot = static_cast<uint32_t>(static_cast<int64_t>(lua_tonumber(L, 2) - 1));
 
         if (!bag || slot > 18) {
             return 0;
@@ -1107,7 +1107,7 @@ static int32_t Script_ContainerRefundItemPurchase(lua_State* L) {
 
     if (static_cast<int32_t>(lua_tonumber(L, 3))) {
         CGBag_C* bag = &ClntObjMgrGetActivePlayerObj()->m_bag;
-        uint32_t slot = static_cast<uint32_t>(lua_tonumber(L, 2) - 1);
+        uint32_t slot = static_cast<uint32_t>(static_cast<int64_t>(lua_tonumber(L, 2) - 1));
 
         if (!bag || slot > 18) {
             CGGameUI::DisplayError(ERR_INTERNAL_BAG_ERROR);

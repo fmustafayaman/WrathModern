@@ -1598,7 +1598,7 @@ void CM2Model::SetupBoneSequence(uint16_t sequenceIndex, M2SequenceFallback fall
 
     CM2Scene* scene = this->m_scene;
     float absInvSpeed = fabsf(invSpeed);
-    uint32_t startTime = scene->m_time - static_cast<uint32_t>(time * absInvSpeed);
+    uint32_t startTime = scene->m_time - static_cast<uint32_t>(static_cast<int64_t>(time * absInvSpeed));
 
     if (!((scene->m_flags >> 2) & 1)) {
         startTime++;
@@ -1608,7 +1608,7 @@ void CM2Model::SetupBoneSequence(uint16_t sequenceIndex, M2SequenceFallback fall
     boneSequence->m_startTime = startTime;
     boneSequence->m_repeatCount = repeats;
     boneSequence->m_finished = 0;
-    boneSequence->m_endTime = static_cast<uint32_t>(absInvSpeed * duration) + startTime;
+    boneSequence->m_endTime = static_cast<uint32_t>(static_cast<int64_t>(absInvSpeed * duration)) + startTime;
     boneSequence->m_startOffset = startOffset;
     boneSequence->m_speed = speed;
     boneSequence->m_invSpeed = invSpeed;
@@ -1740,7 +1740,7 @@ void CM2Model::SetBoneSequenceTime(uint32_t boneId, uint32_t time) {
 
     float absInvSpeed = fabsf(bone->m_sequence.m_invSpeed);
     uint32_t duration = bone->m_sequence.m_repeatCount * data->m_sequences[sequenceIndex].m_duration;
-    uint32_t startTime = this->m_scene->m_time - static_cast<uint32_t>(time * absInvSpeed);
+    uint32_t startTime = this->m_scene->m_time - static_cast<uint32_t>(static_cast<int64_t>(time * absInvSpeed));
     bone->m_sequence.m_startTime = startTime;
     bone->m_sequence.m_endTime = startTime + static_cast<uint32_t>(absInvSpeed * duration);
 }
@@ -6484,7 +6484,7 @@ int32_t CM2Model::ProcessCallbacks() {
                 uint32_t duration;
 
                 if (fabsf(speed - 1.0f) >= 0.00000023841858f) {
-                    duration = static_cast<uint32_t>(speed * sequence->m_duration);
+                    duration = static_cast<uint32_t>(static_cast<int64_t>(speed * sequence->m_duration));
                 } else {
                     duration = sequence->m_duration;
                 }
