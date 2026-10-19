@@ -388,7 +388,7 @@ int32_t BuckDataProcessMessage(NetClient* connection, uint32_t msgId, CDataStore
     // shares BuckDataHandleCustomCode below; 0x41B challenges arrive on both connections.
     bool isRealm = connection == NetClient::s_realmConnection;
 
-    if (isRealm && (msgId == BUCK_OPCODE_INSTALL || msgId == MSG_BATTLEGROUND_PLAYER_POSITIONS)) {
+    if (isRealm && msgId == BUCK_OPCODE_INSTALL) {
         return 0;
     }
 
@@ -397,6 +397,18 @@ int32_t BuckDataProcessMessage(NetClient* connection, uint32_t msgId, CDataStore
     int32_t result = 0;
 
     switch (msgId) {
+        case MSG_BATTLEGROUND_PLAYER_POSITIONS:
+            // Warmane delivers its framework blob over this unused stock opcode. The real
+            // battleground message of the same id is small; only consume the large blob, or the
+            // stock battleground handler reads a frame header as a 64-bit GUID and crashes.
+            if (size > 32) {
+                BuckLog("SMSG %03x (%u bytes) framework blob consumed", msgId, size);
+                result = 1;
+                break;
+            }
+
+            return 0;
+
         case BUCK_OPCODE_INSTALL:
             result = BuckDataHandleCustomCode(connection, data, size);
             break;

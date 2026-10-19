@@ -41,7 +41,7 @@ char s_password[256];
 char s_realm[128] = "Lordaeron";
 uint32_t s_started;
 uint32_t s_lastLog;
-bool s_realmListRequested;
+bool s_realmConnectTried;
 FILE* s_log;
 
 void Log(const char* format, ...) __attribute__((format(printf, 1, 2)));
@@ -134,19 +134,21 @@ int32_t AutologinTick(const void* data, void* param) {
                 break;
             }
 
-            // Match the glue login path: the upper-cased account name is what the client reports
-            // to the realm and what the Warden module reads back.
-            strncpy(CGlueMgr::m_accountName, s_account, sizeof(CGlueMgr::m_accountName) - 1);
-
-            for (char* c = CGlueMgr::m_accountName; *c; c++) {
-                if (*c >= 'a' && *c <= 'z') {
-                    *c = static_cast<char>(*c - 'a' + 'A');
-                }
+            // Wait until the glue is ready to accept a login (the scan bypass sets this on
+            // macOS); calling ClientServices::Logon directly skips the glue state the version
+            // proof and realm list run in, and the login stalls at CHECKINGVERSIONS.
+            if (!CGlueMgr::m_scandllOkayToLogIn || !CGlueMgr::m_acceptedTOS || !CGlueMgr::m_acceptedEULA
+                || CGlueMgr::m_idleState != IDLE_NONE) {
+                break;
             }
 
-            Log("logon for account %s", CGlueMgr::m_accountName);
-            ClientServices::Logon(s_account, s_password);
+            char password[256];
+            strncpy(password, s_password, sizeof(password) - 1);
+            password[sizeof(password) - 1] = '\0';
             memset(s_password, 0, sizeof(s_password));
+
+            Log("logon for account %s", s_account);
+            CGlueMgr::LoginServerLogin(s_account, password);
             s_state = AUTOLOGIN_WAIT_LOGIN;
             break;
         }
@@ -156,29 +158,12 @@ int32_t AutologinTick(const void* data, void* param) {
                 break;
             }
 
-            // Set the realm name before the realm-list result runs RealmEnumCallback, which
-            // connects to the selected realm on its own.
-            if (ClientServices::s_realmNameVar) {
-                ClientServices::SelectRealm(s_realm);
-            }
-
-            if (!s_realmListRequested) {
-                s_realmListRequested = true;
-                ClientServices::GetRealmList();
-                Log("logged on; requested the realm list (realm %s)", s_realm);
-            }
-
+            Log("logged on; waiting for the realm list (realm %s)", s_realm);
             s_state = AUTOLOGIN_WAIT_REALM;
             break;
         }
 
         case AUTOLOGIN_WAIT_REALM: {
-            if (connection && !connection->m_connected && connection->m_netState == NS_INITIALIZED
-                && ClientServices::m_selectRealmInfoValid) {
-                ClientServices::ConnectToSelectedServer();
-                Log("connecting to the selected realm");
-            }
-
             if (connection && connection->m_characterList.Count() > 0) {
                 CHARACTER_INFO& character = connection->m_characterList.m_data[0];
                 Log("character list: %u entries; logging in %s", connection->m_characterList.Count(),
@@ -186,6 +171,26 @@ int32_t AutologinTick(const void* data, void* param) {
 
                 connection->CharacterLogin(character.m_guid, 0);
                 s_state = AUTOLOGIN_DONE;
+                break;
+            }
+
+            if (now - s_lastLog > 5000) {
+                s_lastLog = now;
+                Log("waiting for characters: state=%d connected=%u realmValid=%d chars=%u",
+                    connection ? static_cast<int32_t>(connection->m_netState) : -1,
+                    connection ? connection->m_connected : 0,
+                    ClientServices::m_selectRealmInfoValid ? 1 : 0,
+                    connection ? connection->m_characterList.Count() : 0);
+            }
+
+            // If the realm connection has not been started after the realm list arrived, start
+            // it once; the glue normally does this from RealmEnumCallback.
+            if (connection && ClientServices::m_selectRealmInfoValid && !connection->m_connected
+                && connection->m_netState == NS_INITIALIZED && !s_realmConnectTried
+                && now - s_started > 15000) {
+                s_realmConnectTried = true;
+                ClientServices::ConnectToSelectedServer();
+                Log("starting the realm connection");
             }
 
             if (now - s_started > 60000) {

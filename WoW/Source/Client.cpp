@@ -1113,6 +1113,7 @@ int32_t InitializeEngineCallback(const void* data, void* param) {
     InitializeClient();
     // Unattended test runs (WRATHMODERN_* environment variables); inert otherwise
     AutotestInitialize();
+    AutologinInitialize();
 
     return 1;
 }
@@ -1785,8 +1786,6 @@ bool InitializeGlobal() {
     OsIMEInitialize();
     g_rndSeed.SetSeed(OsGetAsyncTimeMs());
     g_clientEventContext = EventCreateContextEx(1, InitializeEngineCallback, DestroyEngineCallback, 0, 0);
-
-    AutologinInitialize();
 
     return true;
 }
