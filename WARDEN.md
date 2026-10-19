@@ -44,6 +44,32 @@ Bilinen sınır: Warmane'in buck-data işleyicileri (sunucunun yüklediği x86 k
 KURULMAZ; sunucunun sonraki veri paketleri işlenmez. Karakter listesi ve dünyaya giriş bu
 haliyle çalışır; ileride buck-data içeriği gerekirse ilgili blob'lar emülatörde çalıştırılmalı.
 
+### 0x41B challenge'ları artık sunucunun kodu ÇALIŞTIRILARAK cevaplanıyor (2026-10-19 akşamı)
+
+Oyun içinde ~1 dk sonra düşmenin nedeni cevaplanmayan `SMSG 0x41B` challenge'larıydı. Çözüldü:
+
+- **Challenge şifresi = CMSG 0x41B isteğinde gönderdiğimiz token** (istemci tampon adresi).
+  Gövde, bu anahtarla dword başına sağa 1 bit döndürülerek XOR'lu; çözülünce
+  `[nonce][codeLen][code]` çıkıyor (iki yakalanmış 40-baytlık challenge'da doğrulandı).
+- **Cevap**, sunucunun kodunun ürettiği baytlardır: `WDataStore` doldurulur, 4'ün katına
+  sıfırla tamamlanır ve ilk dword'den sonrası mesaj boyu anahtarıyla (sağa 1 bit döndürülerek)
+  XOR'lanır. İlk challenge kodu `reply.Put(msg.GetSize())` yapıyor; cevap 12 bayt:
+  `1b 04 00 00 f9 63 be d0 3c 00 00 00` (magic ve değer geri çözülünce 0xD0BE63D1 ve 40).
+- **Nerede:** `Engine/Source/Os/Mac/BuckCodeEmu.{h,cpp}` — teslim edilen x86'yı Unicorn'da,
+  Wow.exe görüntüsü 0x00400000'a eşlenmiş halde çalıştıran makine; istemci fonksiyonları
+  (CDataStore/WDataStore, SMem, memset/memcpy/strlen, zlib_uncompress, VirtualAlloc/Protect,
+  Send2, SetMessageHandler) köprülenir. Hile yok: baytları sunucunun kodu üretir.
+- **İstemci tarafı:** `WoW/Source/Net/NetClient/BuckData.{h,cpp}`; kodu iki bağlantıda da
+  işler (realm'de 0x4B8/0x4B9'u RealmConnection yapar, 0x41B'yi BuckData; dünyada hepsini
+  BuckData). Token `NetClient::m_buckToken`'da saklanır; realm'in istek üreteci artık
+  `BuckDataHandleCustomCode`'u paylaşır. Teşhis: `Logs/buck-data.log`.
+- **Offline test:** `Tools/Wardendump/buck_smoke.cpp` + `Tools/Wardendump/captures/`
+  (`BuckSmoke captures/challenge-40-a.bin 46c7000`; cevabın son dword'ü geri çözülünce 40).
+- **Hâlâ yapılmadı:** 0x41D/0x41C veri paketlerini işleyen sunucu işleyicileri ve 0x4B9 Lua
+  betiği çalıştırılmıyor (yalnız loglanıyor). Uzun challenge'lar yeni istemci fonksiyonu
+  köprüleri gerektirebilir; eksik köprü çağrısı `Logs/buck-data.log`'a düşer ve
+  `BuckCodeEmu.cpp`'deki tabloya eklenir.
+
 ## WARMAME buck/code-stream protokolü (2026-10-19, runtime kanıtı)
 
 Oyundan ~1 dk sonra atılmanın nedeni: Warmane, `battle.net.dll` (oyun klasöründe 15,5 MB, korumalı)

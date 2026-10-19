@@ -2,9 +2,11 @@
 # the repository builds these by hand (see the compile lines in the source headers).
 
 if (WOWDECOMP_PLATFORM_MAC)
-    foreach (probe WardenVersionProbe WardenSmoke)
+    foreach (probe WardenVersionProbe WardenSmoke BuckSmoke)
         if (probe STREQUAL WardenVersionProbe)
             set(sources version_probe.cpp)
+        elseif (probe STREQUAL BuckSmoke)
+            set(sources buck_smoke.cpp)
         else ()
             set(sources warden_smoke.cpp)
         endif ()

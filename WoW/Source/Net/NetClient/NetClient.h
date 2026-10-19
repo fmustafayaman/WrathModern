@@ -109,6 +109,9 @@ class NetClient : public WowConnectionResponse {
     /* 2EA8 */ SCritSect m_pingLock;
     /* 2ED0 */ ClntObjMgr* m_objMgr;
     /* 2ED4 */ TSList<NetClient::HELDMESSAGE> m_heldMessages;
+    // Warmane buck-data: the client-side token this connection reported in its CMSG 0x41B
+    // request; the challenges that follow are encoded with it (see BuckData.cpp).
+    uint32_t m_buckToken;
 
     ~NetClient() override;
     void WCMessageReady(WowConnection* connection, uint32_t timeStamp, CDataStore* msg) override;

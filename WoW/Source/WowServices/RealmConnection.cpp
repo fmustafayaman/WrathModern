@@ -5,6 +5,7 @@
 #include "Engine/Source/Storm/H/storm.h"
 #include "Engine/Source/Tempest/CRandom.h"
 #include "WoW/Source/DB/DBClient/DBCacheInstances.h"
+#include "WoW/Source/Net/NetClient/BuckData.h"
 #include "WoW/Source/UIUtil/AddOns.h"
 #include "WoW/Source/WowServices/WDataStore.h"
 
@@ -514,41 +515,9 @@ int32_t RealmConnection::HandleCustomCode(uint32_t msgId, uint32_t time, CDataSt
     uint32_t size = msg->m_size > msg->m_read ? msg->m_size - msg->m_read : 0;
     const uint8_t* data = msg->m_data + msg->m_read;
 
-    uint32_t request = 0;
-
-    for (uint32_t i = 0; i + 5 <= size; i++) {
-        if (data[i] != 0x68) { // push imm32
-            continue;
-        }
-
-        uint32_t value = static_cast<uint32_t>(data[i + 1]) | (static_cast<uint32_t>(data[i + 2]) << 8)
-            | (static_cast<uint32_t>(data[i + 3]) << 16) | (static_cast<uint32_t>(data[i + 4]) << 24);
-
-        if (value == CMSG_QUERY_SERVER_BUCK_DATA || value == CMSG_CLEAR_SERVER_BUCK_DATA
-            || value == SMSG_SERVER_BUCK_DATA) {
-            request = value;
-            break;
-        }
-    }
-
-    if (request) {
-        uint32_t value = 0;
-
-        if (request == CMSG_QUERY_SERVER_BUCK_DATA) {
-            // The official client asks with the address of the executable buffer it allocated for
-            // the handler that same blob installs (the realm treats it as the session's token);
-            // report a plausible client-side address instead of null so the realm accepts it.
-            value = 0x04000000u | (OsGetAsyncTimeMs() & 0x00FFF000u);
-        }
-
-        CDataStore reply;
-        reply.Put(request);
-        reply.Put(value);
-        reply.Finalize();
-        this->Send(&reply);
-    }
-
-    return 1;
+    // The scanner, the request packets and the challenge token live with the buck-data client
+    // so the world connection answers the same stream the same way (BuckData.cpp).
+    return BuckDataHandleCustomCode(this, data, size);
 }
 
 // VERIFY: 490618f4 manual

@@ -10,6 +10,7 @@
 #include "Engine/Source/Os/TimeManager.h"
 #include "Engine/Source/Storm/H/storm.h"
 #include "WoW/Source/Glue/CGlueMgr.h"
+#include "WoW/Source/Net/NetClient/BuckData.h"
 #include "WoW/Source/WowServices/HMAC.h"
 
 // STATIC: 0x00AD2ED0
@@ -330,6 +331,12 @@ int32_t NetClient::ProcessMessage(uint32_t timeReceived, CDataStore* msg, int32_
         }
     }
 
+    // Warmane's buck-data stream is answered natively (BuckData.cpp): the in-game challenges
+    // carry x86 code that must run, and the world connection would otherwise drop the session.
+    if (BuckDataProcessMessage(this, msgId, msg)) {
+        return 1;
+    }
+
     if (msgId < NUM_MSG_TYPES && this->m_handlers[msgId]) {
         return this->m_handlers[msgId](this->m_handlerParams[msgId], static_cast<NETMESSAGE>(msgId), timeReceived, msg);
     }
@@ -648,6 +655,7 @@ NetClient::NetClient() {
     this->m_bytesReceived = 0;
     this->m_connectedTimestamp = 0;
     this->m_objMgr = nullptr;
+    this->m_buckToken = 0;
 
     NETCLIENTNODE* node = s_clientList.NewNode(2, 0, 0);
     node->m_client = this;
