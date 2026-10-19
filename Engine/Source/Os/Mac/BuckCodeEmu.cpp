@@ -65,6 +65,7 @@ constexpr uint32_t STUB_REG_CLOSE_KEY = 0x0FE00060;
 constexpr uint32_t STUB_SYSTEM_FILE_TIME = 0x0FE00070;
 constexpr uint32_t STUB_GET_PROC_ADDRESS = 0x0FE00080;
 constexpr uint32_t STUB_GET_CURRENT_HW_PROFILE = 0x0FE00090;
+constexpr uint32_t STUB_CLOSE_HANDLE = 0x0FE000D0;
 
 constexpr uint32_t IAT_LOAD_LIBRARY = 0x009DF248;
 constexpr uint32_t IAT_FREE_LIBRARY = 0x009DF250;
@@ -73,6 +74,7 @@ constexpr uint32_t IAT_REG_QUERY_VALUE = 0x009DF010;
 constexpr uint32_t IAT_REG_CLOSE_KEY = 0x009DF008;
 constexpr uint32_t IAT_SYSTEM_FILE_TIME = 0x009DF388;
 constexpr uint32_t CLIENT_GLOBAL_GET_PROC_ADDRESS = 0x00B2ED98;
+constexpr uint32_t IAT_CLOSE_HANDLE = 0x009DF124;
 
 // The client functions the delivered code calls, by their 12340 addresses.
 constexpr uint32_t CLIENT_STORE_GET_INT = 0x00401170;
@@ -81,6 +83,9 @@ constexpr uint32_t CLIENT_OS_GET_NUMBER_OF_PROCESSORS = 0x0086B240;
 constexpr uint32_t CLIENT_OS_GET_COMPUTER_NAME = 0x0086B480;
 constexpr uint32_t CLIENT_OS_GET_USER_NAME = 0x0086B4A0;
 constexpr uint32_t CLIENT_FIND_DISPLAY_DEVICE = 0x00689EA0;
+constexpr uint32_t CLIENT_TOOLHELP_SNAPSHOT = 0x008A131C;
+constexpr uint32_t CLIENT_MODULE32_FIRST = 0x008A1310;
+constexpr uint32_t CLIENT_MODULE32_NEXT = 0x008A1316;
 constexpr uint32_t CLIENT_WDATASTORE_CTOR = 0x00403EC0;
 constexpr uint32_t CLIENT_WDATASTORE_DTOR = 0x00403F10;
 constexpr uint32_t CLIENT_STORE_PUT8 = 0x0047AFE0;
@@ -239,6 +244,7 @@ bool BuckCodeEmu::Impl::Boot() {
     WriteWord(IAT_REG_CLOSE_KEY, STUB_REG_CLOSE_KEY);
     WriteWord(IAT_SYSTEM_FILE_TIME, STUB_SYSTEM_FILE_TIME);
     WriteWord(CLIENT_GLOBAL_GET_PROC_ADDRESS, STUB_GET_PROC_ADDRESS);
+    WriteWord(IAT_CLOSE_HANDLE, STUB_CLOSE_HANDLE);
 
     // Dispatch every instruction in the machine range through one code hook; the delivered code
     // executes few instructions, and the hook is what catches client calls and the sentinel.
@@ -889,6 +895,43 @@ bool BuckCodeEmu::Impl::HandleClientCall(uint32_t address) {
             WriteMemory(arguments[2], &ticks, sizeof(ticks));
             result = 0;
             finish(16);
+            return true;
+        }
+        case STUB_CLOSE_HANDLE: {
+            result = 1;
+            finish(4);
+            return true;
+        }
+        case CLIENT_TOOLHELP_SNAPSHOT: {
+            // CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, 0): a pseudo-handle for the module walk.
+            result = 0x03000300;
+            finish(0);
+            return true;
+        }
+        case CLIENT_MODULE32_FIRST: {
+            // Module32First fills MODULEENTRY32: base at +0x14, size at +0x18, module name at
+            // +0x20 and the executable path at +0x120. This process has one module: the client
+            // executable the emulator maps at 0x00400000.
+            uint32_t entry = arguments[1];
+            uint32_t base = CLIENT_BASE;
+            uint32_t size = clientSize ? clientSize : 0x9FD000;
+            WriteWord(entry + 0x14, base);
+            WriteWord(entry + 0x18, size);
+            WriteMemory(entry + 0x20, "wow.exe", 8);
+
+            const char* path = services ? services->ClientPath() : nullptr;
+
+            if (path && path[0]) {
+                WriteMemory(entry + 0x120, path, static_cast<uint32_t>(strlen(path)) + 1);
+            }
+
+            result = 1;
+            finish(0);
+            return true;
+        }
+        case CLIENT_MODULE32_NEXT: {
+            result = 0;
+            finish(0);
             return true;
         }
         default:

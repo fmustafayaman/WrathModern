@@ -40,6 +40,9 @@ public:
     // Diagnostics line.
     virtual void Log(const char* line) = 0;
 
+    // The client executable's path as the Windows client sees it (the module scan reports it).
+    virtual const char* ClientPath() = 0;
+
     // FrameScript::Execute: the client's Lua entry point. Delivered code can reach it through
     // the client image the same way Warden modules do.
     virtual void RunLua(const char* source, const char* filename, const char* taint) = 0;

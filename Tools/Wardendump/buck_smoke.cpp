@@ -77,6 +77,24 @@ public:
         printf("lua: %.200s\n", source ? source : "");
         fflush(stdout);
     }
+
+    const char* ClientPath() override {
+        static std::string s_path;
+
+        if (s_path.empty()) {
+            const char* path = getenv("WARDEN_CLIENT_EXE");
+
+            if (path && path[0]) {
+                s_path = "Z:";
+
+                for (const char* c = path; *c; c++) {
+                    s_path += (*c == '/') ? '\\' : *c;
+                }
+            }
+        }
+
+        return s_path.c_str();
+    }
 };
 
 bool ReadFile(const char* path, std::vector<uint8_t>& out) {

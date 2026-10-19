@@ -16,6 +16,7 @@
 #include "Engine/Source/Os/Mac/MacOs.h"
 #include "Engine/Source/Os/TimeManager.h"
 #include "Platform/Mac/Paths.h"
+#include "Platform/Mac/Paths.h"
 #include "WoW/Source/Net/NetClient/NetClient.h"
 #include "WoW/Source/Net/Types.h"
 
@@ -126,6 +127,24 @@ public:
     void RunLua(const char* source, const char* filename, const char* taint) override {
         BuckLog("FrameScript::Execute from delivered code: %.200s", source ? source : "");
         FrameScript_Execute(source, filename, taint);
+    }
+
+    const char* ClientPath() override {
+        static std::string s_path;
+
+        if (s_path.empty()) {
+            char path[4096];
+
+            if (MacPaths::FindInClientDirectory("Wow.exe", path, sizeof(path))) {
+                s_path = "Z:";
+
+                for (const char* c = path; *c; c++) {
+                    s_path += (*c == '/') ? '\\' : *c;
+                }
+            }
+        }
+
+        return s_path.c_str();
     }
 };
 
