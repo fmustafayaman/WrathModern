@@ -490,6 +490,9 @@ void BuckCodeEmu::Impl::StoreGetArray(uint32_t store, uint32_t destination, uint
         std::vector<uint8_t> copy(bytes);
         ReadMemory(buffer + read - base, copy.data(), bytes);
         WriteMemory(destination, copy.data(), bytes);
+        // The destination can be code the previous challenge already executed; Unicorn keeps
+        // translations of guest writes made from a hook, so drop them or the old code runs.
+        uc_ctl_remove_cache(machine, destination, destination + bytes);
     }
 
     WriteWord(store + STORE_READ, read + bytes);
@@ -1049,6 +1052,7 @@ bool BuckCodeEmu::RunChallenge(const uint8_t* payload, uint32_t size, uint32_t t
     }
 
     impl.WriteMemory(codeAddress, decoded.data() + 8, codeLength);
+    uc_ctl_remove_cache(impl.machine, codeAddress, codeAddress + codeLength);
 
     uint32_t entryFrame[1] = { STOP_ADDRESS };
     impl.WriteMemory(STACK_TOP - 0x200, entryFrame, sizeof(entryFrame));
@@ -1123,6 +1127,7 @@ bool BuckCodeEmu::RunHandlerChallenge(const uint8_t* handler, uint32_t handlerSi
     std::vector<uint8_t> buffer(0x1000, 0);
     impl.WriteMemory(handlerAddress, buffer.data(), static_cast<uint32_t>(buffer.size()));
     impl.WriteMemory(handlerAddress, handler, handlerSize);
+    uc_ctl_remove_cache(impl.machine, handlerAddress, handlerAddress + 0x1000);
 
     // The wire payload, still encoded: the handler decodes it in place, as it does live.
     std::vector<uint8_t> raw(payload, payload + size);

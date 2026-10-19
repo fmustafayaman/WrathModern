@@ -114,6 +114,46 @@ void PrintHex(const char* label, const std::vector<uint8_t>& bytes) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    if (argc >= 7 && strcmp(argv[1], "--seq") == 0) {
+        std::vector<uint8_t> handler;
+        std::vector<uint8_t> first;
+        std::vector<uint8_t> second;
+
+        if (!ReadFile(argv[2], handler) || !ReadFile(argv[3], first) || !ReadFile(argv[4], second)) {
+            fprintf(stderr, "handler or challenges could not be read\n");
+            return 2;
+        }
+
+        setenv("WARDEN_CLIENT_EXE", argv[6], 1);
+
+        SmokeServices services;
+        BuckCodeEmu emulator(&services);
+        uint32_t token = static_cast<uint32_t>(strtoul(argv[5], nullptr, 16));
+        uint32_t key = token;
+        std::vector<uint8_t> response;
+        uint32_t nextKey = 0;
+
+        if (!emulator.RunHandlerChallenge(handler.data(), static_cast<uint32_t>(handler.size()),
+                first.data(), static_cast<uint32_t>(first.size()), token, key, response, nextKey)) {
+            fprintf(stderr, "first challenge failed\n");
+            return 1;
+        }
+
+        PrintHex("first response", response);
+        printf("first next key: %08x\n", nextKey);
+        key = nextKey;
+
+        if (!emulator.RunHandlerChallenge(handler.data(), static_cast<uint32_t>(handler.size()),
+                second.data(), static_cast<uint32_t>(second.size()), token, key, response, nextKey)) {
+            fprintf(stderr, "second challenge failed\n");
+            return 1;
+        }
+
+        PrintHex("second response", response);
+        printf("second next key: %08x\n", nextKey);
+        return 0;
+    }
+
     if (argc >= 5 && strcmp(argv[1], "--handler") == 0) {
         std::vector<uint8_t> handler;
         std::vector<uint8_t> challenge;

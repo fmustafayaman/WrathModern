@@ -71,6 +71,12 @@ Resmi istemcinin `realmhook-client` kaydıyla protokol birebir çözüldü:
   bayt resmi kayıtla birebir: bellek `0x3FFFFF000`, 10 işlemci, `MAC`, `MAC`, `Apple M4`,
   `{12340001-...}` GUID'i.
   Kaydedilmiş challenge: `Tools/Wardendump/captures/challenge-660.bin`.
+- **İstemciye özgü tuzak (çözüldü):** Aynı emülatör örneğinde önce 40'lık sonra 660'lık
+  challenge çalışınca ikincisi eski 26 baytlık kodu çalıştırıyordu; Unicorn, hook içinden
+  yapılan guest yazımlarında translation cache'i geçersiz kılmıyordu. `StoreGetArray` kodu
+  yazdıktan sonra `uc_ctl_remove_cache` ile o aralığı temizliyor; işleyici tamponu ve
+  `RunChallenge` kodu da aynı şekilde temizleniyor. `BuckSmoke --seq client-40.bin
+  client-660.bin 04d30000` artık sırayla 12 ve 112 bayt üretiyor.
 - **Anahtar zinciri:** bir sonraki challenge, önceki challenge'ın **nonce**'u ile kodlanıyor;
   işleyicinin yeniden kaydettiği param bu. `s_challengeKey` bunu taşıyor; çözüm adayları
   arasında token ve nonce denenip başlık/kod makullüğüyle doğrulanıyor (`ChooseChallengeKey`).
