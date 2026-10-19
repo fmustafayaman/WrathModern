@@ -39,6 +39,10 @@ public:
 
     // Diagnostics line.
     virtual void Log(const char* line) = 0;
+
+    // FrameScript::Execute: the client's Lua entry point. Delivered code can reach it through
+    // the client image the same way Warden modules do.
+    virtual void RunLua(const char* source, const char* filename, const char* taint) = 0;
 };
 
 class BuckCodeEmu {
@@ -53,7 +57,17 @@ public:
     // the token this client reported in its CMSG 0x41B request, executes the delivered code as
     // the official handler does, and returns the reply the client would send (the CMSG 0x41B
     // payload, opcode first). False when the challenge does not decode or the code faults.
-    bool RunChallenge(const uint8_t* payload, uint32_t size, uint32_t token, std::vector<uint8_t>& response);
+    bool RunChallenge(const uint8_t* payload, uint32_t size, uint32_t token, uint32_t key, std::vector<uint8_t>& response);
+
+    // Answers a challenge by running the server's own 0x41B handler (the segment the 0x4B8
+    // install code registered), exactly as the client's message dispatch calls it: the handler
+    // sits at the token the server knows, its key argument is that token, and the message store
+    // is positioned past the opcode and the challenge header. The handler decodes the payload,
+    // runs the delivered code and sends its reply through the bridged Send2, which is captured
+    // as the response. This is what the official client does; no framing is reconstructed here.
+    // nextKey receives the param the handler registered for the following message, when it did.
+    bool RunHandlerChallenge(const uint8_t* handler, uint32_t handlerSize, const uint8_t* payload,
+        uint32_t size, uint32_t token, uint32_t key, std::vector<uint8_t>& response, uint32_t& nextKey);
 
     // Decodes a challenge without running it: header, code length and the decoded message.
     // Used by diagnostics to compare against the official client's traffic.

@@ -70,6 +70,13 @@ public:
         printf("%s\n", line);
         fflush(stdout);
     }
+
+    void RunLua(const char* source, const char* filename, const char* taint) override {
+        (void)filename;
+        (void)taint;
+        printf("lua: %.200s\n", source ? source : "");
+        fflush(stdout);
+    }
 };
 
 bool ReadFile(const char* path, std::vector<uint8_t>& out) {
@@ -107,8 +114,67 @@ void PrintHex(const char* label, const std::vector<uint8_t>& bytes) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    if (argc >= 5 && strcmp(argv[1], "--handler") == 0) {
+        std::vector<uint8_t> handler;
+        std::vector<uint8_t> challenge;
+
+        if (!ReadFile(argv[2], handler) || !ReadFile(argv[3], challenge)) {
+            fprintf(stderr, "handler or challenge could not be read\n");
+            return 2;
+        }
+
+        if (argc >= 6) {
+            setenv("WARDEN_CLIENT_EXE", argv[5], 1);
+        }
+
+        SmokeServices services;
+        BuckCodeEmu emulator(&services);
+        uint32_t token = static_cast<uint32_t>(strtoul(argv[4], nullptr, 16));
+        std::vector<uint8_t> response;
+        uint32_t nextKey = 0;
+
+        if (!emulator.RunHandlerChallenge(handler.data(), static_cast<uint32_t>(handler.size()),
+                challenge.data(), static_cast<uint32_t>(challenge.size()), token, token, response, nextKey)) {
+            fprintf(stderr, "challenge handler failed\n");
+            return 1;
+        }
+
+        PrintHex("response", response);
+        printf("next key: %08x\n", nextKey);
+        return 0;
+    }
+
+    if (argc >= 3 && strcmp(argv[1], "--lua") == 0) {
+        std::vector<uint8_t> blob;
+
+        if (!ReadFile(argv[2], blob)) {
+            fprintf(stderr, "script: %s could not be read\n", argv[2]);
+            return 2;
+        }
+
+        // The delivered 0x4B9 handler's rolling XOR (seed IsRead() = 0).
+        std::string script;
+        uint8_t key = 0;
+
+        for (uint8_t byte : blob) {
+            uint8_t decoded = byte ^ key;
+            key = static_cast<uint8_t>(key + decoded + 1);
+
+            if (!decoded) {
+                break;
+            }
+
+            script += static_cast<char>(decoded);
+        }
+
+        printf("script (%u bytes):\n%s\n", static_cast<uint32_t>(script.size()), script.c_str());
+        return 0;
+    }
+
     if (argc < 3) {
         fprintf(stderr, "usage: %s <challenge.bin> <token-hex> [Wow.exe]\n", argv[0]);
+        fprintf(stderr, "       %s --handler <handler.bin> <challenge.bin> <token-hex> [Wow.exe]\n", argv[0]);
+        fprintf(stderr, "       %s --lua <4b9-payload.bin>\n", argv[0]);
         return 2;
     }
 
@@ -142,7 +208,7 @@ int main(int argc, char** argv) {
 
     std::vector<uint8_t> response;
 
-    if (!emulator.RunChallenge(challenge.data(), static_cast<uint32_t>(challenge.size()), token, response)) {
+    if (!emulator.RunChallenge(challenge.data(), static_cast<uint32_t>(challenge.size()), token, token, response)) {
         fprintf(stderr, "challenge code failed\n");
         return 1;
     }
