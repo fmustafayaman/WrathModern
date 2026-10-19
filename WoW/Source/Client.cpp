@@ -103,6 +103,7 @@
 #include "WoW/Source/WorldClient/FrameTime.h"
 #include "WoW/Source/WorldClient/Map.h"
 #include "WoW/Source/WorldClient/Mods/ModHost.h"
+#include "WoW/Source/Autologin.h"
 #include "WoW/Source/WorldClient/MapWeather.h"
 #include "WoW/Source/WorldClient/shadow.h"
 #include "WoW/Source/WorldClient/World.h"
@@ -1784,6 +1785,8 @@ bool InitializeGlobal() {
     OsIMEInitialize();
     g_rndSeed.SetSeed(OsGetAsyncTimeMs());
     g_clientEventContext = EventCreateContextEx(1, InitializeEngineCallback, DestroyEngineCallback, 0, 0);
+
+    AutologinInitialize();
 
     return true;
 }

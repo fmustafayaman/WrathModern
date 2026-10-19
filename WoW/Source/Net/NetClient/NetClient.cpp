@@ -329,6 +329,22 @@ int32_t NetClient::ProcessMessage(uint32_t timeReceived, CDataStore* msg, int32_
             fputc('\n', file);
             fclose(file);
         }
+    } else {
+        // Diagnostics: the world connection's packets, so a disconnect after character login can
+        // be read back to the last message the server sent (Logs/world-packets.log).
+        uint32_t size = msg->m_size > msg->m_read ? msg->m_size - msg->m_read : 0;
+        FILE* file = fopen("Logs/world-packets.log", "a");
+
+        if (file) {
+            fprintf(file, "%u SMSG %04x size=%u:", OsGetAsyncTimeMs(), msgId, size);
+
+            for (uint32_t i = 0; i < size && i < 256; i++) {
+                fprintf(file, " %02x", msg->m_data[msg->m_read + i]);
+            }
+
+            fputc('\n', file);
+            fclose(file);
+        }
     }
 
     // Warmane's buck-data stream is answered natively (BuckData.cpp): the in-game challenges
@@ -383,6 +399,30 @@ void NetClient::LogUnhandledMessage(uint32_t msgId, CDataStore* msg) {
 void NetClient::WCConnected(WowConnection* connection, WowConnection* inbound, uint32_t timeStamp, const NETCONNADDR* addr) {
     if (connection != this->m_serverConnection) {
         return;
+    }
+
+    {
+        FILE* file = fopen("Logs/net-events.log", "a");
+
+        if (file) {
+            fprintf(file, "%u CONNECTED this=%p\n", OsGetAsyncTimeMs(), (void*)this);
+            fclose(file);
+        }
+    }
+
+    // A server can send its first packet (the auth challenge) in the same poll that reports the
+    // TCP connect, before the queued connect event runs. Treat the connection as connected now,
+    // so the reply to that challenge is not dropped by Send's state check; HandleConnect will
+    // set the same state again when the event is polled.
+    this->m_netState = NS_CONNECTED;
+
+    if (this != s_realmConnection) {
+        FILE* file = fopen("Logs/world-packets.log", "a");
+
+        if (file) {
+            fprintf(file, "%u CONNECT\n", OsGetAsyncTimeMs());
+            fclose(file);
+        }
     }
 
     this->m_pingLock.Enter();
@@ -453,6 +493,18 @@ int32_t NetClient::Connect(const char* address) {
         port = atol(separator + 1);
     }
 
+    {
+        // Diagnostics: every connection this process opens, so the realm-to-world reconnect
+        // after character selection can be followed even though both use the same object.
+        FILE* file = fopen("Logs/net-events.log", "a");
+
+        if (file) {
+            fprintf(file, "%u CONNECT this=%p to %s:%u state=%d\n", OsGetAsyncTimeMs(), (void*)this, host, port,
+                static_cast<int32_t>(this->m_netState));
+            fclose(file);
+        }
+    }
+
     this->m_serverConnection->SetEncryption(false);
     this->m_netState = NS_INITIALIZED;
 
@@ -494,6 +546,15 @@ int32_t NetClient::HandleConnect() {
 // VERIFY: df419859 auto
 // OFFSET: 0x00632540
 int32_t NetClient::HandleDisconnect() {
+    if (this != s_realmConnection) {
+        FILE* file = fopen("Logs/world-packets.log", "a");
+
+        if (file) {
+            fprintf(file, "%u HANDLE_DISCONNECT state=%d\n", OsGetAsyncTimeMs(), static_cast<int32_t>(this->m_netState));
+            fclose(file);
+        }
+    }
+
     if (this->m_objMgr) {
         NetClient::PushObjMgr(this->m_objMgr);
     }
@@ -565,6 +626,25 @@ void NetClient::EnableEncryption(WowConnection* connection, const uint8_t* seed,
 // VERIFY: 08d8deb0 auto
 // OFFSET: 0x006326D0
 void NetClient::WCDisconnected(WowConnection* connection, uint32_t timeStamp, const NETCONNADDR* addr) {
+    {
+        FILE* file = fopen("Logs/net-events.log", "a");
+
+        if (file) {
+            fprintf(file, "%u DISCONNECTED this=%p state=%d\n", OsGetAsyncTimeMs(), (void*)this,
+                static_cast<int32_t>(this->m_netState));
+            fclose(file);
+        }
+    }
+
+    if (this != s_realmConnection) {
+        FILE* file = fopen("Logs/world-packets.log", "a");
+
+        if (file) {
+            fprintf(file, "%u DISCONNECT\n", OsGetAsyncTimeMs());
+            fclose(file);
+        }
+    }
+
     this->m_pingLock.Enter();
     OsGetAsyncTimeMs();
 
@@ -665,6 +745,20 @@ NetClient::NetClient() {
 // OFFSET: 0x00632B50
 void NetClient::Send(CDataStore* msg) {
     if (this->m_netState != NS_CONNECTED) {
+        FILE* file = fopen("Logs/net-events.log", "a");
+
+        if (file) {
+            uint16_t opcode = 0;
+
+            if (msg->m_size - msg->m_read >= 2) {
+                memcpy(&opcode, msg->m_data + msg->m_read, sizeof(opcode));
+            }
+
+            fprintf(file, "%u SEND_DROPPED state=%d opcode=%04x size=%u\n", OsGetAsyncTimeMs(),
+                static_cast<int32_t>(this->m_netState), opcode, msg->m_size - msg->m_read);
+            fclose(file);
+        }
+
         return;
     }
 
@@ -677,6 +771,26 @@ void NetClient::Send(CDataStore* msg) {
             fprintf(file, "%u CMSG size=%u:", OsGetAsyncTimeMs(), size);
 
             for (uint32_t i = 0; i < size; i++) {
+                fprintf(file, " %02x", msg->m_data[msg->m_read + i]);
+            }
+
+            fputc('\n', file);
+            fclose(file);
+        }
+    } else {
+        uint32_t size = msg->m_size - msg->m_read;
+        FILE* file = fopen("Logs/world-packets.log", "a");
+
+        if (file) {
+            uint16_t opcode = 0;
+
+            if (size >= 2) {
+                memcpy(&opcode, msg->m_data + msg->m_read, sizeof(opcode));
+            }
+
+            fprintf(file, "%u CMSG %04x size=%u:", OsGetAsyncTimeMs(), opcode, size);
+
+            for (uint32_t i = 0; i < size && i < 256; i++) {
                 fprintf(file, " %02x", msg->m_data[msg->m_read + i]);
             }
 
@@ -723,6 +837,16 @@ void NetClient::Send(CDataStore* msg) {
 // VERIFY: 30fc936b manual
 // OFFSET: 0x00632C10
 void NetClient::WCCantConnect(WowConnection* connection, uint32_t timeStamp, const NETCONNADDR* addr) {
+    {
+        FILE* file = fopen("Logs/net-events.log", "a");
+
+        if (file) {
+            fprintf(file, "%u CANT_CONNECT this=%p server=%p redirect=%p\n", OsGetAsyncTimeMs(), (void*)this,
+                (void*)this->m_serverConnection, (void*)this->m_redirectConnection);
+            fclose(file);
+        }
+    }
+
     if (connection == this->m_redirectConnection) {
         CDataStore msg;
         msg.Put(static_cast<uint32_t>(CMSG_CONNECT_TO_FAILED));

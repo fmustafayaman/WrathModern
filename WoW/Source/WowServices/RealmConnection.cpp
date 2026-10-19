@@ -395,6 +395,16 @@ int32_t RealmConnection::HandleLogoutResponse(uint32_t msgId, uint32_t time, CDa
 // VERIFY: a1616851 manual
 // OFFSET: 0x00464830
 void RealmConnection::HandleAuthChallenge(AuthenticationChallenge* challenge) {
+    {
+        FILE* file = fopen("Logs/net-events.log", "a");
+
+        if (file) {
+            fprintf(file, "%u AUTH_CHALLENGE this=%p state=%d\n", OsGetAsyncTimeMs(), (void*)this,
+                static_cast<int32_t>(this->m_netState));
+            fclose(file);
+        }
+    }
+
     if (this->m_realmResponse) {
         this->m_realmResponse->GameServerResult(this, "SMSG_AUTH_CHALLENGE", nullptr, nullptr);
     }
