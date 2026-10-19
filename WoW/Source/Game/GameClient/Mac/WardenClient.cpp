@@ -13,7 +13,10 @@
  * The emulation executes the module's own code, so the warden protocol behaves as authored.
  */
 
+#include "WoW/Source/Glue/CGlueMgr.h"
 #include "WoW/Source/Game/GameClient/WardenClient.h"
+#include "Engine/Source/FrameScript/FrameScript.h"
+#include "WoW/Source/Ui/BattlefieldInfo.h"
 #include "Engine/Source/Os/WardenEmu.h"
 #include "Engine/Source/Os/TimeManager.h"
 #include "Engine/Source/Os/Mac/MacOs.h"
@@ -280,6 +283,41 @@ public:
     // The same clock the Windows client's OsGetAsyncTimeMs reads.
     uint32_t ClientTimeMs() override {
         return OsGetAsyncTimeMs();
+    }
+
+    // The module calls the client's FrameScript::Execute for Lua checks. Run the script in the
+    // game's own Lua state; the script sends its answer the same way the Windows client does.
+    bool ExecuteLua(const char* source, const char* filename, const char* taint) override {
+        if (!source || !source[0]) {
+            return false;
+        }
+
+        WardenClientLog("FrameScript::Execute: %s", source);
+        FrameScript_Execute(source, filename, taint);
+        return true;
+    }
+
+    // CGBattlefieldInfo::InitializeGame: the client's own battlefield setup, called by the
+    // custom module through the client function table.
+    void InitializeBattlefield() override {
+        // The module can ask for this repeatedly; the official function allocates new score
+        // blocks each time, so run it once and keep the client's state stable.
+        static bool initialized = false;
+
+        if (initialized) {
+            return;
+        }
+
+        initialized = true;
+        WardenClientLog("CGBattlefieldInfo::InitializeGame");
+        CGBattlefieldInfo::InitializeGame();
+    }
+
+    // The account name this client logged in with, uppercased exactly like the client sends it.
+    // Warmane's .zdata stub returns this string to the module; the official client's generated
+    // stub answers the same way.
+    const char* AccountName() override {
+        return CGlueMgr::m_accountName;
     }
 
     static void UnloadPendingModule() {

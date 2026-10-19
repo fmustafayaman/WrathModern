@@ -75,6 +75,10 @@ class NetClient : public WowConnectionResponse {
     public:
     static uint32_t s_clientCount;
 
+    // Diagnostics: the realm (character selection) connection, so its packets can be logged to
+    // Logs/realm-packets.log separately from world traffic.
+    static NetClient* s_realmConnection;
+
     struct HELDMESSAGE : public TSLinkedNode<NetClient::HELDMESSAGE> {
         /* 0008 */ CDataStore m_msg;
 

@@ -45,6 +45,22 @@ public:
     // OsGetAsyncTimeMs: the client clock, which modules call directly inside the client image.
     virtual uint32_t ClientTimeMs() = 0;
 
+    // FrameScript::Execute: the client's Lua entry point, which Warden modules call for Lua
+    // checks. The module hands over a script in the guest; the host runs it in the game's Lua
+    // state. The script itself sends the check answer (for example through SendAddonMessage),
+    // exactly as it does in the Windows client.
+    virtual bool ExecuteLua(const char* source, const char* filename, const char* taint) = 0;
+
+    // CGBattlefieldInfo::InitializeGame: Warmane's custom module calls the client's battlefield
+    // initializer before it reads the handlers it installs. The host runs the client's own
+    // implementation; the module then finds the table it expects.
+    virtual void InitializeBattlefield() = 0;
+
+    // The logged-in account name, exactly as the client sends it (uppercased). Warmane's module
+    // asks the client's .zdata stub (client RVA 0x9D1000) for it as part of its account checks;
+    // the official client's runtime-generated stub returns this same string.
+    virtual const char* AccountName() = 0;
+
     virtual ~WardenEmuServices() {}
 };
 

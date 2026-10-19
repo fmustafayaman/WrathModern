@@ -1,5 +1,6 @@
 #include "RealmConnection.h"
 #include "Engine/Source/BlizzardCore/Source/Packages/Util/SHA1.h"
+#include "Engine/Source/Os/OsFile.h"
 #include "Engine/Source/Os/TimeManager.h"
 #include "Engine/Source/Storm/H/storm.h"
 #include "Engine/Source/Tempest/CRandom.h"
@@ -161,6 +162,16 @@ int32_t RealmConnection::MessageHandler(void* param, NETMESSAGE msgId, uint32_t 
             result = connection->HandleClientCacheVersion(SMSG_CACHE_VERSION, time, msg);
             break;
 
+        case SMSG_REALM_SPLIT:
+            result = connection->HandleRealmSplit(msgId, time, msg);
+            break;
+
+        case CMSG_UNUSED5:
+        case CMSG_UNUSED6:
+        case MSG_BATTLEGROUND_PLAYER_POSITIONS:
+            result = connection->HandleCustomCode(msgId, time, msg);
+            break;
+
         default:
             break;
     }
@@ -184,6 +195,8 @@ int32_t RealmConnection::MessageHandler(void* param, NETMESSAGE msgId, uint32_t 
 RealmConnection::RealmConnection(RealmResponse* realmResponse) : m_realmResponse(realmResponse), m_authenticated(0), m_queuePosition(0), m_freeCharacterMigration(0), m_billingTimeRemaining(0), m_billingTimeRested(0), m_billingFlags(0), m_accountExpansion(0), m_regionId(0), m_battlegroupId(0), m_realmId(0) {
     this->Initialize();
 
+    NetClient::s_realmConnection = this;
+
     this->SetMessageHandler(SMSG_AUTH_CHALLENGE, RealmConnection::MessageHandler, this);
     this->SetMessageHandler(SMSG_AUTH_RESPONSE, RealmConnection::MessageHandler, this);
     this->SetMessageHandler(SMSG_ADDON_INFO, RealmConnection::MessageHandler, this);
@@ -195,6 +208,16 @@ RealmConnection::RealmConnection(RealmResponse* realmResponse) : m_realmResponse
     this->SetMessageHandler(SMSG_LOGOUT_RESPONSE, RealmConnection::MessageHandler, this);
     this->SetMessageHandler(SMSG_DELETE_CHAR, RealmConnection::MessageHandler, this);
     this->SetMessageHandler(SMSG_CACHE_VERSION, RealmConnection::MessageHandler, this);
+    // Warmane delivers its custom client-side code over these unused numeric opcodes at the
+    // character-selection connection; the handler replays the buck-data requests each blob would
+    // send (see HandleCustomCode).
+    this->SetMessageHandler(CMSG_UNUSED5, RealmConnection::MessageHandler, this);
+    this->SetMessageHandler(CMSG_UNUSED6, RealmConnection::MessageHandler, this);
+    this->SetMessageHandler(MSG_BATTLEGROUND_PLAYER_POSITIONS, RealmConnection::MessageHandler, this);
+    // The realm split notice is part of the character-selection handshake; the native connection
+    // answers it so the character list follows even without the glue scripts that normally do
+    // this (and the glue path calls AcknowledgeRealmSplit too, see CGlueMgr::OnRealmSplitMsg).
+    this->SetMessageHandler(SMSG_REALM_SPLIT, RealmConnection::MessageHandler, this);
 
     RealmConnection::s_allRealmConnectionsCrit.Enter();
     RealmConnection::REALMCONNECTIONNODE* node = RealmConnection::s_allRealmConnections.NewNode(2, 0, 0);
@@ -205,6 +228,11 @@ RealmConnection::RealmConnection(RealmResponse* realmResponse) : m_realmResponse
 // VERIFY: a4dc8cc2 auto
 // OFFSET: 0x00464350
 int32_t RealmConnection::HandleConnect() {
+    if (FILE* file = fopen("Logs/realm-packets.log", "a")) {
+        fprintf(file, "%u CONNECT\n", OsGetAsyncTimeMs());
+        fclose(file);
+    }
+
     if (this->m_realmResponse) {
         this->m_realmResponse->GameServerResult(this, "Connected", nullptr, nullptr);
     }
@@ -218,6 +246,11 @@ int32_t RealmConnection::HandleConnect() {
 // VERIFY: 2bad756d auto
 // OFFSET: 0x00464390
 int32_t RealmConnection::HandleDisconnect() {
+    if (FILE* file = fopen("Logs/realm-packets.log", "a")) {
+        fprintf(file, "%u DISCONNECT\n", OsGetAsyncTimeMs());
+        fclose(file);
+    }
+
     if (this->m_realmResponse) {
         this->m_realmResponse->GameServerResult(this, "Disconnected", nullptr, nullptr);
     }
@@ -230,6 +263,11 @@ int32_t RealmConnection::HandleDisconnect() {
 // VERIFY: e27d0b04 auto
 // OFFSET: 0x004643D0
 int32_t RealmConnection::HandleCantConnect() {
+    if (FILE* file = fopen("Logs/realm-packets.log", "a")) {
+        fprintf(file, "%u CANT_CONNECT\n", OsGetAsyncTimeMs());
+        fclose(file);
+    }
+
     if (this->m_realmResponse) {
         this->m_realmResponse->GameServerResult(this, "Can't Connect", nullptr, nullptr);
     }
@@ -406,7 +444,17 @@ void RealmConnection::RequestCharacterEnum() {
     // and announces itself with an empty opcode-0x52E message right before the request, and the
     // server answers the character list only after it. The native client carries that part of
     // the extension itself.
-    {
+    //
+    // Only do that when the extension is actually installed: the official client only sends this
+    // because the DLL loaded and hooked the request. On a server without the extension (Warmane)
+    // the unknown opcode is a protocol violation and the server closes the connection.
+#if defined(WOWDECOMP_PLATFORM_MAC)
+    const char* extensionPath = "Data/Extensions/clientextensions.dll";
+#else
+    const char* extensionPath = "Data\\Extensions\\clientextensions.dll";
+#endif
+
+    if (OsFileExists(extensionPath)) {
         CDataStore hello;
         hello.Put(static_cast<uint32_t>(CMSG_GRIMFALL_CLIENT_EXTENSIONS));
         hello.Finalize();
@@ -417,6 +465,90 @@ void RealmConnection::RequestCharacterEnum() {
     msg.Put(static_cast<uint32_t>(CMSG_ENUM_CHARACTERS));
     msg.Finalize();
     this->Send(&msg);
+}
+
+// VERIFY: manual
+// The realm split notice arrives as part of the realm's character-selection handshake. The realm
+// reports the split state and expects the client to acknowledge it; only then does it answer the
+// character list (Warmane behaves this way). The official client does the acknowledgement from
+// its GlueXML scripts, which this client does not run for this part; carry it natively.
+int32_t RealmConnection::HandleRealmSplit(uint32_t msgId, uint32_t time, CDataStore* msg) {
+    uint32_t realmId = 0;
+    uint32_t state = 0;
+    char date[64] = { 0 };
+
+    msg->Get(realmId);
+    msg->Get(state);
+    msg->GetString(date, sizeof(date));
+
+    this->AcknowledgeRealmSplit(state);
+
+    return 1;
+}
+
+void RealmConnection::AcknowledgeRealmSplit(uint32_t state) {
+    CDataStore reply;
+    reply.Put(static_cast<uint32_t>(CMSG_REALM_SPLIT));
+    reply.Put(state);
+    reply.Finalize();
+    this->Send(&reply);
+
+    // The character request goes out as soon as the realm connection authenticates; the realm can
+    // ignore it while the split handshake is still open, so ask again now that it is answered.
+    CDataStore request;
+    request.Put(static_cast<uint32_t>(CMSG_ENUM_CHARACTERS));
+    request.Finalize();
+    this->Send(&request);
+}
+
+// VERIFY: manual
+// Warmane ships its custom client-side code over unused numeric opcodes (0x2E9, 0x4B8 in the
+// stock tables) right after the Warden handshake. The official client executes each blob; the
+// first thing the code each blob does is ask for the server buck data (the stock opcodes 0x41D,
+// 0x41C, 0x41B), the realm answers with that data, and only then with the character list.
+// Replay those requests here: each blob carries its request opcode as a `push` immediate right
+// before it calls the client's message builder, so it can be read from the blob itself. The
+// blobs' other effects (memory setup, the .zdata stubs the Warden module later calls) are not
+// needed for the character enumeration itself.
+int32_t RealmConnection::HandleCustomCode(uint32_t msgId, uint32_t time, CDataStore* msg) {
+    uint32_t size = msg->m_size > msg->m_read ? msg->m_size - msg->m_read : 0;
+    const uint8_t* data = msg->m_data + msg->m_read;
+
+    uint32_t request = 0;
+
+    for (uint32_t i = 0; i + 5 <= size; i++) {
+        if (data[i] != 0x68) { // push imm32
+            continue;
+        }
+
+        uint32_t value = static_cast<uint32_t>(data[i + 1]) | (static_cast<uint32_t>(data[i + 2]) << 8)
+            | (static_cast<uint32_t>(data[i + 3]) << 16) | (static_cast<uint32_t>(data[i + 4]) << 24);
+
+        if (value == CMSG_QUERY_SERVER_BUCK_DATA || value == CMSG_CLEAR_SERVER_BUCK_DATA
+            || value == SMSG_SERVER_BUCK_DATA) {
+            request = value;
+            break;
+        }
+    }
+
+    if (request) {
+        uint32_t value = 0;
+
+        if (request == CMSG_QUERY_SERVER_BUCK_DATA) {
+            // The official client asks with the address of the executable buffer it allocated for
+            // the handler that same blob installs (the realm treats it as the session's token);
+            // report a plausible client-side address instead of null so the realm accepts it.
+            value = 0x04000000u | (OsGetAsyncTimeMs() & 0x00FFF000u);
+        }
+
+        CDataStore reply;
+        reply.Put(request);
+        reply.Put(value);
+        reply.Finalize();
+        this->Send(&reply);
+    }
+
+    return 1;
 }
 
 // VERIFY: 490618f4 manual

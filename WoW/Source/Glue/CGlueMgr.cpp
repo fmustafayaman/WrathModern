@@ -811,6 +811,13 @@ int32_t CGlueMgr::OnRealmSplitMsg(void* param, NETMESSAGE msgId, uint32_t time, 
 
     FrameScript_SignalEvent(GLUE_EVENT_SERVER_SPLIT_NOTICE, "%d%d%s", realmId, state, date);
 
+    // The realm waits for the split state before it answers the character list; acknowledge it on
+    // the native connection as well, so the list arrives even when the GlueXML scripts that
+    // normally send SetRealmSplitState are not active (see RealmConnection::AcknowledgeRealmSplit).
+    if (ClientServices::Connection()) {
+        ClientServices::Connection()->AcknowledgeRealmSplit(state);
+    }
+
     return 1;
 }
 

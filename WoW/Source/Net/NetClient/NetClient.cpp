@@ -20,6 +20,7 @@ static HPROPCONTEXT s_propContext;
 
 // STATIC: 0x00C5D628
 static uint32_t s_stats[6];
+NetClient* NetClient::s_realmConnection = nullptr;
 
 // STATIC: 0x00C5D640
 static uint32_t s_initializeTime;
@@ -310,6 +311,24 @@ int32_t NetClient::ProcessMessage(uint32_t timeReceived, CDataStore* msg, int32_
 #if defined(WOWDECOMP_PLATFORM_MAC)
     NetLogOpcode("in ", msgId, msg->m_size);
 #endif
+
+    // Diagnostics: log every packet the realm connection receives, before any handler runs, so a
+    // stalled character-list request shows exactly what (if anything) the server answered.
+    if (this == s_realmConnection) {
+        uint32_t size = msg->m_size > msg->m_read ? msg->m_size - msg->m_read : 0;
+        FILE* file = fopen("Logs/realm-packets.log", "a");
+
+        if (file) {
+            fprintf(file, "%u SMSG %04x size=%u:", OsGetAsyncTimeMs(), msgId, size);
+
+            for (uint32_t i = 0; i < size; i++) {
+                fprintf(file, " %02x", msg->m_data[msg->m_read + i]);
+            }
+
+            fputc('\n', file);
+            fclose(file);
+        }
+    }
 
     if (msgId < NUM_MSG_TYPES && this->m_handlers[msgId]) {
         return this->m_handlers[msgId](this->m_handlerParams[msgId], static_cast<NETMESSAGE>(msgId), timeReceived, msg);
@@ -639,6 +658,23 @@ NetClient::NetClient() {
 void NetClient::Send(CDataStore* msg) {
     if (this->m_netState != NS_CONNECTED) {
         return;
+    }
+
+    // Diagnostics: log every packet the realm connection sends (the store starts with the opcode).
+    if (this == s_realmConnection) {
+        uint32_t size = msg->m_size - msg->m_read;
+        FILE* file = fopen("Logs/realm-packets.log", "a");
+
+        if (file) {
+            fprintf(file, "%u CMSG size=%u:", OsGetAsyncTimeMs(), size);
+
+            for (uint32_t i = 0; i < size; i++) {
+                fprintf(file, " %02x", msg->m_data[msg->m_read + i]);
+            }
+
+            fputc('\n', file);
+            fclose(file);
+        }
     }
 
     uint32_t size = msg->m_size - msg->m_read;

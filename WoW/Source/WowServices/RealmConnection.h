@@ -104,6 +104,9 @@ class RealmConnection : public NetClient {
     int32_t HandleClientCacheVersion(uint32_t msgId, uint32_t time, CDataStore* msg);
     int32_t HandleLogoutResponse(uint32_t msgId, uint32_t time, CDataStore* msg);
     void RequestCharacterEnum();
+    int32_t HandleCustomCode(uint32_t msgId, uint32_t time, CDataStore* msg);
+    int32_t HandleRealmSplit(uint32_t msgId, uint32_t time, CDataStore* msg);
+    void AcknowledgeRealmSplit(uint32_t state);
     void RequestCharacterLogin(WOWGUID guid, int32_t a2);
     void SetSelectedRealm(uint32_t regionId, uint32_t battlegroupId, uint32_t realmId);
 };

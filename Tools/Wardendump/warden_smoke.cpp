@@ -222,6 +222,25 @@ public:
         return (uint32_t)((uint64_t)now.tv_sec * 1000u + (uint32_t)(now.tv_nsec / 1000000u));
     }
 
+    bool ExecuteLua(const char* source, const char* filename, const char* taint) override {
+        (void)filename;
+        (void)taint;
+        std::printf("LUA CHECK: %s\n", source ? source : "(null)");
+        return true;
+    }
+
+    void InitializeBattlefield() override {
+        std::printf("BATTLEFIELD INIT\n");
+    }
+
+    // The account name handed to the module's .zdata stub checks. A live session's login name
+    // is not in the trace, so the replay takes it from WARDEN_ACCOUNT (uppercased here).
+    std::string accountName = "WMTEST";
+
+    const char* AccountName() override {
+        return accountName.c_str();
+    }
+
     bool StateLoad(void* data, uint32_t& size) override {
         std::printf("STATE LOAD size=%u (%s)\n", size, hasSavedState ? "restored" : "nothing saved");
 
@@ -324,6 +343,11 @@ static int ReplaySession(const char* imagePath, const char* tracePath, const cha
 
     std::vector<std::vector<uint8_t>> packets;
     SmokeServices services;
+
+    if (const char* account = getenv("WARDEN_ACCOUNT")) {
+        services.accountName = account;
+    }
+
     // WARDEN_REPLAY_COLD=1 replays a session whose client had no cached module: the module is
     // downloaded through the trace instead of taken from <module.bin>.
     const char* cold = std::getenv("WARDEN_REPLAY_COLD");

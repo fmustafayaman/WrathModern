@@ -83,6 +83,7 @@ constexpr uint32_t LIB_STUBS = MISC_BASE + 0x100; // 16 stubs, 8 bytes each
 constexpr uint32_t SCRATCH_KEY = SCRATCH_BASE + 0x0000; // session key copy
 constexpr uint32_t SCRATCH_DATA = SCRATCH_BASE + 0x0100; // bytes delivered to the module
 constexpr uint32_t SCRATCH_OUTPUT = SCRATCH_BASE + 0x9000; // out-parameters
+constexpr uint32_t SCRATCH_ACCOUNT = SCRATCH_BASE + 0x9200; // account name for the .zdata stub
 
 // Honest ceiling for bytes crossing the bridge. Buffers handed to the module live in the
 // scratch area below the out-parameter block, which caps the delivered packet size; everything
@@ -106,6 +107,8 @@ constexpr uint32_t PSEUDO_USER32 = 0x03020000;
 enum ClientFunctionId {
     CLIENT_OS_GET_ASYNC_TIME_MS,
     CLIENT_OS_LOAD_LIBRARY,
+    CLIENT_FRAME_SCRIPT_EXECUTE,
+    CLIENT_WARMANE_CLIENT_CALL,
 };
 
 struct ClientFunction {
@@ -120,6 +123,12 @@ constexpr ClientFunction s_clientFunctions[] = {
     { CLIENT_OS_GET_ASYNC_TIME_MS, "OsGetAsyncTimeMs", 0x0086AE20, { 0x8B, 0x0D, 0x9C, 0x15, 0xD4, 0x00 } },
     // void* __cdecl OsLoadLibrary(const char* fileName): push ebp; mov ebp, esp; mov eax, [ebp+8]
     { CLIENT_OS_LOAD_LIBRARY, "OsLoadLibrary", 0x0086C4E0, { 0x55, 0x8B, 0xEC, 0x8B, 0x45, 0x08 } },
+    // void __cdecl FrameScript::Execute(const char* source, const char* filename, const char* taint)
+    // push ebp; mov ebp, esp; push ecx; add dword ptr [0x00D413A0], 1
+    { CLIENT_FRAME_SCRIPT_EXECUTE, "FrameScript::Execute", 0x00819210, { 0x55, 0x8B, 0xEC, 0x51, 0x83, 0x05 } },
+    // Warmane's custom module calls this client function after MODULE_INITIALIZE. In the 12340
+    // image it is a FrameScript registration routine; the module only needs the call to run.
+    { CLIENT_WARMANE_CLIENT_CALL, "WarmaneClientCall", 0x0054E720, { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 } },
 };
 
 constexpr uint32_t CLIENT_FUNCTION_COUNT = sizeof(s_clientFunctions) / sizeof(s_clientFunctions[0]);
@@ -218,6 +227,12 @@ struct WardenEmu::Impl {
     uint32_t imageSize = 0;
     uint32_t exportAddress = 0;
     uint32_t moduleObject = 0;
+
+    // Diagnostics: a running copy of the module's outbound RC4 stream (module object +0x20).
+    // Re-synced from guest memory at every guest call entry, then advanced as each output is
+    // read, so module outputs can be logged as the plaintext the server will decrypt.
+    uint8_t outDecryptState[0x102] = {};
+    bool outDecryptValid = false;
 
     // Guest heap regions (bump allocated for the module). The extended region starts one page
     // in, its first page holds the import stubs.
@@ -360,6 +375,7 @@ struct WardenEmu::Impl {
     void HandleClientCode(uint32_t address);
     void HandleCodeHook(uint64_t address);
     bool HandleInvalidMemory(uc_mem_type type, uint64_t address, int size, int64_t value);
+    void TraceSha1(uint32_t address);
 };
 
 // =====================================================================
@@ -497,6 +513,25 @@ bool WardenEmu::Impl::Boot() {
             impl->RecordBlock((uint32_t)address, esp);
         }),
         this, 1, 0);
+
+    // Diagnostics: the module's own SHA1 / RC4 routines, so a hash response can be traced to
+    // the bytes it was computed from. Off unless WARDEN_TRACE_SHA1 is set.
+    if (getenv("WARDEN_TRACE_SHA1")) {
+        // The expanded module's own SHA1 (init 0x1834, update 0x2AA4, final 0x5379) and its
+        // RC4 stream step (0x4F0C); RVAs are in the BLL image, not the compressed stream.
+        const uint32_t traced[] = { 0x1834, 0x2AA4, 0x5379, 0x5850, 0x3862, 0x3876, 0x1F8C };
+
+        for (uint32_t offset : traced) {
+            uc_hook traceHook;
+            uc_hook_add(machine, &traceHook, UC_HOOK_CODE,
+                reinterpret_cast<void*>(+[](uc_engine* machine, uint64_t address, uint32_t size, void* user) {
+                    (void)machine;
+                    (void)size;
+                    static_cast<WardenEmu::Impl*>(user)->TraceSha1((uint32_t)address);
+                }),
+                this, IMAGE_BASE + offset, IMAGE_BASE + offset);
+        }
+    }
 
     uc_hook intrHook;
     uc_hook_add(machine, &intrHook, UC_HOOK_INTR,
@@ -1851,6 +1886,10 @@ bool WardenEmu::Impl::CallGuest(uint32_t address, const uint32_t* stackArguments
     uc_reg_write(machine, UC_X86_REG_EBP, &ebp);
     uc_reg_write(machine, UC_X86_REG_ECX, &ecx);
 
+    if (getenv("WARDEN_TRACE_PACKETS") && moduleObject != 0) {
+        outDecryptValid = ReadMemory(moduleObject + 0x20, outDecryptState, sizeof(outDecryptState));
+    }
+
     m_faulted = false;
     uc_err error = uc_emu_start(machine, address, STOP_ADDRESS, 0, 50000000);
 
@@ -1900,6 +1939,59 @@ void WardenEmu::Impl::HandleClientCode(uint32_t address) {
     uint32_t frame[4] = { 0 }; // return address, then the first stack arguments
     uc_mem_read(machine, esp, frame, sizeof(frame));
 
+    // Warmane's custom module calls the client's .zdata stub at client RVA 0x9D1000. The shipped
+    // executable has zeros there; the official client's Warden runtime generates the stub at
+    // startup, and the one in this slot returns the logged-in account name. The module copies
+    // the returned string into its check response, so answer with the same value this client
+    // logged in with (uppercased, exactly as the client sends it).
+    if (address >= 0x00DD1000 && address < 0x00DD2000) {
+        uint32_t returnAddress = frame[0];
+        uint32_t ecx = 0;
+        uc_reg_read(machine, UC_X86_REG_ECX, &ecx);
+
+        // Slot +0x7E8 passes the input buffer as the first stack argument; slot +0x7E4 keeps it
+        // in ECX. Log what the module asked for either way.
+        uint32_t inputPointer = frame[1] ? frame[1] : ecx;
+        char input[96] = { 0 };
+
+        if (inputPointer) {
+            ReadGuestString(inputPointer, input, sizeof(input));
+        }
+
+        const char* account = services->AccountName();
+        char upper[64] = { 0 };
+        uint32_t length = 0;
+
+        if (account) {
+            while (account[length] && length < sizeof(upper) - 1) {
+                char character = account[length];
+                upper[length] = (character >= 'a' && character <= 'z')
+                    ? static_cast<char>(character - 'a' + 'A')
+                    : character;
+                length++;
+            }
+        }
+
+        upper[length] = '\0';
+        WriteMemory(SCRATCH_ACCOUNT, upper, length + 1);
+
+        esp += 4;
+
+        if (returnAddress == IMAGE_BASE + 0x2AC6) {
+            // The slot +0x7E4 call site pushes one argument and does no caller cleanup, so the
+            // callee pops the return address and that argument.
+            esp += 4;
+        }
+
+        uint32_t result = SCRATCH_ACCOUNT;
+        uc_reg_write(machine, UC_X86_REG_EAX, &result);
+        uc_reg_write(machine, UC_X86_REG_ESP, &esp);
+        uc_reg_write(machine, UC_X86_REG_EIP, &returnAddress);
+        WardenLog("warmane zdata call at %08x('%s') -> account '%s'", address, input, upper);
+        return;
+    }
+
+
     for (uint32_t i = 0; i < CLIENT_FUNCTION_COUNT; i++) {
         const ClientFunction& function = s_clientFunctions[i];
 
@@ -1929,6 +2021,66 @@ void WardenEmu::Impl::HandleClientCode(uint32_t address) {
                 char name[128] = { 0 };
                 ReadGuestString(frame[1], name, sizeof(name));
                 WardenLog("client %s(%s) -> %08x", function.name, name, result);
+                break;
+            }
+            case CLIENT_WARMANE_CLIENT_CALL: {
+                char arg0[256] = { 0 };
+                char arg1[256] = { 0 };
+                char arg2[256] = { 0 };
+
+                if (frame[1]) {
+                    ReadGuestString(frame[1], arg0, sizeof(arg0));
+                }
+
+                if (frame[2]) {
+                    ReadGuestString(frame[2], arg1, sizeof(arg1));
+                }
+
+                if (frame[3]) {
+                    ReadGuestString(frame[3], arg2, sizeof(arg2));
+                }
+
+                // The stock 12340 function at this address is a registration routine that
+                // returns 0 on its normal path. The custom module only needs the call and its
+                // result; the module's own Lua checks go through FrameScript::Execute above.
+                WardenLog("warmane client call 54E720(%08x, %08x, %08x) strings '%s' '%s' '%s'",
+                    frame[1], frame[2], frame[3], arg0, arg1, arg2);
+                // The real CGBattlefieldInfo::InitializeGame returns the destination of its
+                // final memset (0x00BE9EF8 in the 12340 image), and the module writes EAX to its
+                // outbound stream and/or treats it as a const char*. Return exactly that.
+                services->InitializeBattlefield();
+                result = 0x00BE9EF8;
+
+                if (frame[0] == IMAGE_BASE + 0x2AC6) {
+                    // Optional module slot +0x7E4: one stack argument and no caller cleanup, so
+                    // the callee must pop return address + argument.
+                    esp += 4;
+                }
+
+                WardenLog("warmane client call 54E720 -> %08x", result);
+                break;
+            }
+            case CLIENT_FRAME_SCRIPT_EXECUTE: {
+                char source[4096] = { 0 };
+                char filename[256] = { 0 };
+                char taint[256] = { 0 };
+
+                if (frame[1]) {
+                    ReadGuestString(frame[1], source, sizeof(source));
+                }
+
+                if (frame[2]) {
+                    ReadGuestString(frame[2], filename, sizeof(filename));
+                }
+
+                if (frame[3]) {
+                    ReadGuestString(frame[3], taint, sizeof(taint));
+                }
+
+                bool executed = services->ExecuteLua(source, frame[2] ? filename : nullptr,
+                    frame[3] ? taint : nullptr);
+                result = executed ? 0 : 1;
+                WardenLog("client FrameScript::Execute(%s) -> %d", source, result);
                 break;
             }
         }
@@ -1995,6 +2147,32 @@ void WardenEmu::Impl::HandleCodeHook(uint64_t address) {
 
             moduleTransferBuffer.resize(size);
             ReadMemory(arguments[0], moduleTransferBuffer.data(), size);
+
+            if (getenv("WARDEN_TRACE_PACKETS") && outDecryptValid && size) {
+                std::vector<uint8_t> plain(moduleTransferBuffer);
+
+                for (uint32_t i = 0; i < size; i++) {
+                    uint8_t& a = outDecryptState[0x100];
+                    uint8_t& b = outDecryptState[0x101];
+                    a++;
+                    b = static_cast<uint8_t>(b + outDecryptState[a]);
+                    uint8_t t = outDecryptState[b];
+                    outDecryptState[b] = outDecryptState[a];
+                    outDecryptState[a] = t;
+                    plain[i] ^= outDecryptState[static_cast<uint8_t>(outDecryptState[b] + outDecryptState[a])];
+                }
+
+                std::string hex;
+
+                for (uint32_t i = 0; i < size && i < 128; i++) {
+                    char text[3];
+                    snprintf(text, sizeof(text), "%02x", plain[i]);
+                    hex += text;
+                }
+
+                WardenLog("module outplain (%u): %s", size, hex.c_str());
+            }
+
             services->ModuleOutput(moduleTransferBuffer.data(), size);
             break;
         }
@@ -2075,6 +2253,89 @@ void WardenEmu::Impl::HandleCodeHook(uint64_t address) {
     }
 
     uc_reg_write(machine, UC_X86_REG_EAX, &returnEax);
+}
+
+// WARDEN_TRACE_SHA1: log the module's own SHA1 lifecycle. Warden's hash exchange hashes a
+// 16-byte client key seed; seeing every update input says exactly which bytes went in.
+void WardenEmu::Impl::TraceSha1(uint32_t address) {
+    uint32_t eax = 0, ecx = 0, edx = 0, esi = 0, esp = 0;
+
+    uc_reg_read(machine, UC_X86_REG_EAX, &eax);
+    uc_reg_read(machine, UC_X86_REG_ECX, &ecx);
+    uc_reg_read(machine, UC_X86_REG_EDX, &edx);
+    uc_reg_read(machine, UC_X86_REG_ESI, &esi);
+    uc_reg_read(machine, UC_X86_REG_ESP, &esp);
+
+    uint32_t caller = 0;
+    ReadWord(esp, caller);
+    uint32_t callerRva = caller >= IMAGE_BASE && caller < IMAGE_BASE + imageSize ? caller - IMAGE_BASE : 0;
+
+    switch (address - IMAGE_BASE) {
+        case 0x1834:
+            fprintf(stderr, "sha1 init ctx=%08x caller=%08x (rva %04x)\n", eax, caller, callerRva);
+            break;
+        case 0x5850: {
+            uint32_t edi = 0;
+            uc_reg_read(machine, UC_X86_REG_EDI, &edi);
+            fprintf(stderr, "hmac init ctx=%08x key=%08x caller=%08x (rva %04x)\n", eax, edi, caller,
+                callerRva);
+            break;
+        }
+        case 0x3862:
+        case 0x3876: {
+            uint8_t bytes[16];
+
+            if (ReadMemory(esp + 0x1c, bytes, sizeof(bytes))) {
+                fprintf(stderr, "seed at rva %04x (%08x):", address - IMAGE_BASE, esp + 0x1c);
+
+                for (uint8_t byte : bytes) {
+                    fprintf(stderr, " %02x", byte);
+                }
+
+                fprintf(stderr, "\n");
+            }
+
+            break;
+        }
+        case 0x1F8C: {
+            uint8_t bytes[16];
+
+            if (ReadMemory(eax, bytes, sizeof(bytes))) {
+                fprintf(stderr, "rekey buffer at %08x:", eax);
+                for (uint8_t byte : bytes) {
+                    fprintf(stderr, " %02x", byte);
+                }
+                fprintf(stderr, "\n");
+            }
+
+            break;
+        }
+        case 0x2AA4: {
+            uint32_t length = 0;
+            ReadWord(esp + 4, length);
+            std::string hex;
+            uint8_t bytes[64];
+            uint32_t shown = length < sizeof(bytes) ? length : sizeof(bytes);
+
+            if (shown && ReadMemory(eax, bytes, shown)) {
+                char text[3];
+                for (uint32_t i = 0; i < shown; i++) {
+                    snprintf(text, sizeof(text), "%02x", bytes[i]);
+                    hex += text;
+                }
+            }
+
+            fprintf(stderr, "sha1 update ctx=%08x data=%08x len=%u caller=%08x (rva %04x) bytes=%s\n",
+                esi, eax, length, caller, callerRva, hex.c_str());
+            break;
+        }
+        case 0x5379:
+            fprintf(stderr, "sha1 final ctx=%08x out=%08x caller=%08x (rva %04x)\n", ecx, edx, caller,
+                callerRva);
+            break;
+        default:
+            break;
+    }
 }
 
 bool WardenEmu::Impl::HandleInvalidMemory(uc_mem_type type, uint64_t address, int size, int64_t value) {
@@ -2750,6 +3011,37 @@ void WardenEmu::Data(const void* data, uint32_t size, uint32_t& consumed) {
     }
 
     impl.WriteMemory(SCRATCH_DATA, data, size);
+
+    // Diagnostics: decrypt a copy of the inbound packet with the module's live input RC4 state.
+    // The state sits in the module object at +0x20 (out) and +0x20+0x102 (in); reading a copy
+    // leaves the module's own stream untouched.
+    if (getenv("WARDEN_TRACE_PACKETS") && impl.moduleObject) {
+        uint8_t state[0x102];
+        std::vector<uint8_t> plain(static_cast<const uint8_t*>(data), static_cast<const uint8_t*>(data) + size);
+
+        if (impl.ReadMemory(impl.moduleObject + 0x20 + 0x102, state, sizeof(state))) {
+            for (uint32_t i = 0; i < size; i++) {
+                uint8_t& a = state[0x100];
+                uint8_t& b = state[0x101];
+                a++;
+                b = static_cast<uint8_t>(b + state[a]);
+                uint8_t t = state[b];
+                state[b] = state[a];
+                state[a] = t;
+                plain[i] ^= state[static_cast<uint8_t>(state[b] + state[a])];
+            }
+
+            std::string hex;
+
+            for (uint32_t i = 0; i < size && i < 96; i++) {
+                char text[3];
+                snprintf(text, sizeof(text), "%02x", plain[i]);
+                hex += text;
+            }
+
+            WardenLog("module plaintext (%u): %s", size, hex.c_str());
+        }
+    }
 
     uint32_t vtable;
     impl.ReadWord(impl.moduleObject, vtable);

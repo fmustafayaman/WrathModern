@@ -7,7 +7,45 @@ Yol: istemci tarafı Warden'ı emülasyonla çalıştırmak. Hile/sahte cevap YO
 > **Takıldığım yer:** Gerçek oturum olmadan (doğru oturum anahtarı) bu iki hatayı offline çoğaltamıyorum. Bu yüzden tanı dump'ları eklendi; **bir kez daha login** gerekiyor — sonrası tamamen offline. Ayrıntı: en alttaki "NEREDE TAKILDIK" bölümü.
 
 
+> **GÜNCEL DURUM (2026-10-19 akşamı): Warmane'de karakter listesi VE oyuna giriş ÇALIŞIYOR.**
+> Eksik parçalar kapandı: (1) `SMSG_REALM_SPLIT` onayı + karakter isteğinin el sıkışma sonrası
+> tekrarı, (2) Warmane'in özel kod dağıtım paketlerine (0x2E9/0x4B8) karşılık gönderilen
+> buck-data istekleri (0x41D/0x41C/0x41B; 0x41B'de istemci adresi token'ı — sıfır gönderilince
+> sunucu bağlantıyı kesiyor), (3) modülün `.zdata` hesap-adı stub'ı (client RVA 0x9D1000) için
+> `AccountName()` köprüsü (resmi istemcinin cevabıyla byte-byte aynı). Ayrıntı ve kanıtlar:
+> aşağıdaki "WARMAME" bölümü ve `Logs/realm-packets.log`.
+
+## WARMAME (2026-10-19) — karakter listesine giden yol
+
+Warmane, Warden el sıkışmasından sonra realm bağlantısında **özel kod paketleri** gönderir
+(`02e9` = 264 B, `04b8` = 2037/338/893/502 B; ikisi de stock tabloda kullanılmayan opcode'lar).
+Resmi istemci bu bloblardaki x86 kodu çalıştırır; kod `SetMessageHandler` ile buck-data
+işleyicilerini kurar ve `WDataStore` + `Send2` ile **istek paketlerini** yollar. Sunucu ancak bu
+isteklerden sonra veri paketlerini ve **karakter listesini** (`003b`) gönderir.
+
+Yakalanan resmi istemci trafiği (`realmhook-client.dll`, NetClient::ProcessMessage/Send):
+```
+RECV 04b8(2037) -> SEND 041d | payload 00000000
+RECV 04b8(338)  -> SEND 041c | payload 00000000
+RECV 04b8(893)+(502) -> SEND 041b | payload <istemci tampon adresi, ör. 00004c05>
+RECV 041d(10838), 041c(361), 04b9(1808), 003b(karakter listesi), 041b(40) ...
+```
+Native istemci aynı istekleri gönderir (`RealmConnection::HandleCustomCode`, blob içindeki
+`push <opcode>` deseninden opcode'u okur; 0x41B için makul bir istemci adresi token'ı üretir).
+Token sıfır gönderilirse sunucu bağlantıyı sessizce keser — kanıtlandı.
+
+Ek olarak: realm bağlantısındaki tüm paketler `Logs/realm-packets.log`'a yazılır
+(`NetClient::ProcessMessage/Send`, yalnız realm bağlantısı için; teşhis amaçlı). Warden
+modülünün `.zdata` stub çağrısı (client RVA 0x9D1000) artık `WardenEmuServices::AccountName()`
+ile giriş yapılan hesabın büyük harfli adını döndürür; resmi istemcinin cevabıyla birebir aynı
+(`020b00...0009LORADONAA`).
+
+Bilinen sınır: Warmane'in buck-data işleyicileri (sunucunun yüklediği x86 kod) native tarafta
+KURULMAZ; sunucunun sonraki veri paketleri işlenmez. Karakter listesi ve dünyaya giriş bu
+haliyle çalışır; ileride buck-data içeriği gerekirse ilgili blob'lar emülatörde çalıştırılmalı.
+
 ## YAPILDI (2026-10-17)
+
 
 ### Köprü (Engine/Source/Os/WardenEmu.h + Mac/WardenEmu.cpp)
 - Unicorn 32-bit x86 makinesi; BLL görüntü yükleyici birebir (40-bayt başlık, run-length, relocation +base, import çözer).
