@@ -369,25 +369,34 @@ int32_t BuckDataProcessMessage(NetClient* connection, uint32_t msgId, CDataStore
 
     uint32_t size = msg->m_size > msg->m_read ? msg->m_size - msg->m_read : 0;
     const uint8_t* data = msg->m_data + msg->m_read;
+    int32_t result = 0;
 
     switch (msgId) {
         case BUCK_OPCODE_INSTALL:
-            return BuckDataHandleCustomCode(connection, data, size);
+            result = BuckDataHandleCustomCode(connection, data, size);
+            break;
 
         case BUCK_OPCODE_CHALLENGE:
-            return HandleChallenge(connection, data, size);
+            result = HandleChallenge(connection, data, size);
+            break;
 
         case CMSG_UNUSED6: // 0x4B9: a delivered Lua script, decoded and run like the handler does
-            return HandleLuaScript(data, size);
+            result = HandleLuaScript(data, size);
+            break;
 
         case BUCK_OPCODE_CLEAR: // 0x41C: data for the delivered handlers
         case BUCK_OPCODE_DATA: // 0x41D: data for the delivered handlers
             BuckLog("SMSG %03x (%u bytes) left to the client: %s", msgId, size, ToHex(data, size).c_str());
-            return 1;
+            result = 1;
+            break;
 
         default:
             return 0;
     }
+
+    // What these handlers read, they read whole; mark the store consumed for the caller.
+    msg->m_read = msg->m_size;
+    return result;
 }
 
 #else

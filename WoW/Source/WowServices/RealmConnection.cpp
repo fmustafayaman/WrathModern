@@ -516,8 +516,11 @@ int32_t RealmConnection::HandleCustomCode(uint32_t msgId, uint32_t time, CDataSt
     const uint8_t* data = msg->m_data + msg->m_read;
 
     // The scanner, the request packets and the challenge token live with the buck-data client
-    // so the world connection answers the same stream the same way (BuckData.cpp).
-    return BuckDataHandleCustomCode(this, data, size);
+    // so the world connection answers the same stream the same way (BuckData.cpp). The message
+    // is consumed here: its segments were inspected, and the framework's own reading is done.
+    int32_t result = BuckDataHandleCustomCode(this, data, size);
+    msg->m_read = msg->m_size;
+    return result;
 }
 
 // VERIFY: 490618f4 manual
