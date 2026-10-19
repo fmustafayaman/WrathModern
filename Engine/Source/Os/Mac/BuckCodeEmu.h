@@ -57,7 +57,8 @@ public:
     // the token this client reported in its CMSG 0x41B request, executes the delivered code as
     // the official handler does, and returns the reply the client would send (the CMSG 0x41B
     // payload, opcode first). False when the challenge does not decode or the code faults.
-    bool RunChallenge(const uint8_t* payload, uint32_t size, uint32_t token, uint32_t key, std::vector<uint8_t>& response);
+    bool RunChallenge(const uint8_t* payload, uint32_t size, uint32_t token, uint32_t key,
+        std::vector<uint8_t>& response, uint32_t& nextKey);
 
     // Answers a challenge by running the server's own 0x41B handler (the segment the 0x4B8
     // install code registered), exactly as the client's message dispatch calls it: the handler

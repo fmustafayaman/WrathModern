@@ -297,7 +297,7 @@ int32_t HandleChallenge(NetClient* connection, const uint8_t* data, uint32_t siz
     }
 
     if (!answered) {
-        answered = Emulator().RunChallenge(data, size, token, key, response);
+        answered = Emulator().RunChallenge(data, size, token, key, response, nextKey);
     }
 
     if (!answered) {

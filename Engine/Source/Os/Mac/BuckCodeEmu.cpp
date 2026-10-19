@@ -58,7 +58,7 @@ constexpr uint32_t STUB_VIRTUAL_ALLOC = 0x0FE00000;
 constexpr uint32_t STUB_VIRTUAL_PROTECT = 0x0FE00010;
 
 // The client functions the delivered code calls, by their 12340 addresses.
-constexpr uint32_t CLIENT_STORE_GET_SIZE = 0x00401170;
+constexpr uint32_t CLIENT_STORE_GET_INT = 0x00401170;
 constexpr uint32_t CLIENT_WDATASTORE_CTOR = 0x00403EC0;
 constexpr uint32_t CLIENT_WDATASTORE_DTOR = 0x00403F10;
 constexpr uint32_t CLIENT_STORE_PUT8 = 0x0047AFE0;
@@ -137,7 +137,7 @@ struct BuckCodeEmu::Impl {
 
     // CDataStore / WDataStore semantics on guest objects.
     void StoreConstruct(uint32_t store);
-    uint32_t StoreGetSize(uint32_t store);
+    uint32_t StoreGetInt(uint32_t store);
     void StorePutBytes(uint32_t store, const void* data, uint32_t size);
     uint32_t StorePut(uint32_t store, uint32_t value, uint32_t width);
     void StoreGetArray(uint32_t store, uint32_t destination, uint32_t count);
@@ -147,7 +147,7 @@ struct BuckCodeEmu::Impl {
     bool HandleClientCall(uint32_t address);
     void HandleInvalidMemory(uc_mem_type type, uint64_t address, int size);
 
-    bool BuildMessage(const std::vector<uint8_t>& decoded);
+    bool BuildMessage(const std::vector<uint8_t>& decoded, uint32_t readPosition);
     bool BuildReply(uint32_t& replySize);
 };
 
@@ -331,12 +331,24 @@ void BuckCodeEmu::Impl::StoreConstruct(uint32_t store) {
     WriteWord(store + STORE_CHUNK_SIZE, 256);
 }
 
-uint32_t BuckCodeEmu::Impl::StoreGetSize(uint32_t store) {
+uint32_t BuckCodeEmu::Impl::StoreGetInt(uint32_t store) {
+    uint32_t buffer = 0;
+    uint32_t base = 0;
     uint32_t size = 0;
     uint32_t read = 0;
+    ReadWord(store + STORE_DATA, buffer);
+    ReadWord(store + STORE_BASE, base);
     ReadWord(store + STORE_SIZE, size);
     ReadWord(store + STORE_READ, read);
-    return size > read ? size - read : 0;
+
+    uint32_t value = 0;
+
+    if (read + 4 <= size && buffer) {
+        ReadMemory(buffer + read - base, &value, sizeof(value));
+        WriteWord(store + STORE_READ, read + 4);
+    }
+
+    return value;
 }
 
 void BuckCodeEmu::Impl::StorePutBytes(uint32_t store, const void* data, uint32_t size) {
@@ -445,10 +457,11 @@ bool BuckCodeEmu::Impl::HandleClientCall(uint32_t address) {
     };
 
     switch (address) {
-        case CLIENT_STORE_GET_SIZE: {
-            // The decompiled client exposes this as the store's remaining size; the delivered
-            // code uses it both as a read length and, in the challenge answer, as a value.
-            result = StoreGetSize(ecx);
+        case CLIENT_STORE_GET_INT: {
+            // CDataStore::GetInt: consumes the next dword and returns it. The 0x41B handler
+            // reads the challenge nonce, then the code length, then the delivered code reads
+            // the trailing answer dword with the same call.
+            result = StoreGetInt(ecx);
             finish(0);
             return true;
         }
@@ -733,13 +746,12 @@ void BuckCodeEmu::Impl::HandleInvalidMemory(uc_mem_type type, uint64_t address, 
 // Challenge execution
 // =====================================================================
 
-bool BuckCodeEmu::Impl::BuildMessage(const std::vector<uint8_t>& decoded) {
+bool BuckCodeEmu::Impl::BuildMessage(const std::vector<uint8_t>& decoded, uint32_t readPosition) {
     StoreConstruct(MESSAGE_OBJECT);
 
-    // As the official client hands the message to its handler: the two-byte opcode and the
-    // challenge's [nonce][codeLength] header have been consumed, so the store is
-    // [opcode][payload] with m_read past the header. GetSize then reports the bytes the handler
-    // copies (the code and its padding), which is also the value the delivered code reads.
+    // The message as the official client has it when a 0x41B handler runs: the two-byte opcode
+    // is in front and has already been read, while the challenge payload follows untouched.
+    // The handler itself consumes the nonce, the code length and the code from this store.
     uint32_t buffer = HeapAlloc(static_cast<uint32_t>(decoded.size()) + 0x100);
     WriteWord(MESSAGE_OBJECT + STORE_DATA, buffer);
     WriteWord(MESSAGE_OBJECT + STORE_BASE, 0);
@@ -750,7 +762,7 @@ bool BuckCodeEmu::Impl::BuildMessage(const std::vector<uint8_t>& decoded) {
     WriteMemory(buffer + 2, decoded.data(), static_cast<uint32_t>(decoded.size()));
 
     WriteWord(MESSAGE_OBJECT + STORE_SIZE, static_cast<uint32_t>(decoded.size()) + 2);
-    WriteWord(MESSAGE_OBJECT + STORE_READ, 10);
+    WriteWord(MESSAGE_OBJECT + STORE_READ, readPosition);
     return true;
 }
 
@@ -794,8 +806,10 @@ bool BuckCodeEmu::DecodeChallenge(const uint8_t* payload, uint32_t size, uint32_
     return true;
 }
 
-bool BuckCodeEmu::RunChallenge(const uint8_t* payload, uint32_t size, uint32_t token, uint32_t key, std::vector<uint8_t>& response) {
+bool BuckCodeEmu::RunChallenge(const uint8_t* payload, uint32_t size, uint32_t token, uint32_t key,
+    std::vector<uint8_t>& response, uint32_t& nextKey) {
     Impl& impl = *m_impl;
+    nextKey = 0;
 
     if (!impl.Boot()) {
         return false;
@@ -808,29 +822,34 @@ bool BuckCodeEmu::RunChallenge(const uint8_t* payload, uint32_t size, uint32_t t
         return false;
     }
 
+    if (size < 12) {
+        impl.Log("challenge too short to carry its answer");
+        return false;
+    }
+
+    uint32_t nonce = 0;
     uint32_t codeLength = 0;
+    memcpy(&nonce, decoded.data(), sizeof(nonce));
     memcpy(&codeLength, decoded.data() + 4, sizeof(codeLength));
 
     if (codeLength > size - 8) {
         codeLength = size - 8;
     }
 
-    impl.Log("challenge %u bytes, token %08x: nonce %08x, code %u bytes", size, token,
-        *reinterpret_cast<uint32_t*>(decoded.data()), codeLength);
-    impl.BuildMessage(decoded);
+    // The handler reads the nonce and the code length, then copies the code. The delivered code
+    // follows with one more GetInt, which reads the answer dword the server placed after the
+    // code; the reply carries that value back, encoded with the nonce.
+    uint32_t readPosition = 10 + codeLength;
+
+    if (readPosition > size + 2) {
+        readPosition = size + 2;
+    }
+
+    impl.BuildMessage(decoded, readPosition);
     uint32_t replySize = 0;
     impl.BuildReply(replySize);
 
-    // The handler consumes the message before calling the delivered code: it copies everything
-    // from the current read position (the code and its padding) into the handler buffer. That
-    // advances the read position, so when the code asks GetSize it gets zero. Reproduce the
-    // consumption here; the reply encoding key is the size before it.
-    uint32_t encodeKey = impl.StoreGetSize(MESSAGE_OBJECT);
-
-    if (encodeKey) {
-        uint32_t discard = impl.HeapAlloc(encodeKey + 16);
-        impl.StoreGetArray(MESSAGE_OBJECT, discard, encodeKey);
-    }
+    impl.Log("challenge %u bytes, token %08x: nonce %08x, code %u bytes", size, token, nonce, codeLength);
 
     // The official handler copies the decoded message to handler + 0x154 and calls it there.
     // Run the code from the same place so any self-relative reference agrees.
@@ -861,7 +880,7 @@ bool BuckCodeEmu::RunChallenge(const uint8_t* payload, uint32_t size, uint32_t t
     }
 
     // The handler's finishing step: pad the reply to a multiple of four bytes, then encode every
-    // dword after the id with the message size, rotating the key right one bit each dword.
+    // dword after the id with the nonce, rotating the key right one bit each dword.
     uint32_t used = 0;
     impl.ReadWord(REPLY_OBJECT + STORE_SIZE, used);
 
@@ -873,7 +892,7 @@ bool BuckCodeEmu::RunChallenge(const uint8_t* payload, uint32_t size, uint32_t t
     uint32_t buffer = 0;
     impl.ReadWord(REPLY_OBJECT + STORE_DATA, buffer);
 
-    uint32_t encodingKey = encodeKey;
+    uint32_t encodingKey = nonce;
 
     for (uint32_t offset = 4; offset < used; offset += 4) {
         uint32_t word = 0;
@@ -886,7 +905,8 @@ bool BuckCodeEmu::RunChallenge(const uint8_t* payload, uint32_t size, uint32_t t
     response.resize(used);
     impl.ReadMemory(buffer, response.data(), used);
 
-    impl.Log("challenge answered with %u bytes", used);
+    nextKey = nonce;
+    impl.Log("challenge answered with %u bytes (next key %08x)", used, nextKey);
     return true;
 }
 
@@ -917,7 +937,7 @@ bool BuckCodeEmu::RunHandlerChallenge(const uint8_t* handler, uint32_t handlerSi
 
     // The wire payload, still encoded: the handler decodes it in place, as it does live.
     std::vector<uint8_t> raw(payload, payload + size);
-    impl.BuildMessage(raw);
+    impl.BuildMessage(raw, 2);
 
     // The dispatch call: arg1 is the key the framework holds for this handler (the install token
     // first, then whatever param the handler registered), arg4 is the message; EAX carries the

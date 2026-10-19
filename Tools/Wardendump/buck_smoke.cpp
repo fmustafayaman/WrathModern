@@ -209,12 +209,15 @@ int main(int argc, char** argv) {
     printf("code %u bytes\n", codeLength);
 
     std::vector<uint8_t> response;
+    uint32_t nextKey = 0;
 
-    if (!emulator.RunChallenge(challenge.data(), static_cast<uint32_t>(challenge.size()), token, token, response)) {
+    if (!emulator.RunChallenge(challenge.data(), static_cast<uint32_t>(challenge.size()), token, token,
+            response, nextKey)) {
         fprintf(stderr, "challenge code failed\n");
         return 1;
     }
 
     PrintHex("response", response);
+    printf("next key: %08x\n", nextKey);
     return 0;
 }

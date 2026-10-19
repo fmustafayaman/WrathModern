@@ -44,24 +44,25 @@ Bilinen sınır: Warmane'in buck-data kod akışının 0x41B challenge'ları art
 çalıştırılıyor (aşağıya bakın); 0x41D/0x41C veri paketlerini işleyen sunucu işleyicileri hâlâ
 kurulmuyor, bu paketler yalnız loglanıyor. Karakter listesi ve dünyaya giriş çalışıyor.
 
-### 0x41B challenge'ları artık sunucunun kodu ÇALIŞTIRILARAK cevaplanıyor (2026-10-19 akşamı)
+### 0x41B challenge'ları sunucunun kodu ÇALIŞTIRILARAK cevaplanıyor (2026-10-19 akşamı)
 
-Oyun içinde ~1 dk sonra düşmenin nedeni cevaplanmayan `SMSG 0x41B` challenge'larıydı. Çözüldü:
+Oyun içinde ~1 dk sonra düşmenin ve karakter seçiminde kopmanın nedeni yanlış 0x41B cevabıydı.
+Resmi istemcinin `realmhook-client` kaydıyla protokol birebir çözüldü:
 
-- **Challenge şifresi = CMSG 0x41B isteğinde gönderdiğimiz token** (istemci tampon adresi).
-  Gövde, bu anahtarla dword başına sağa 1 bit döndürülerek XOR'lu; çözülünce
-  `[nonce][codeLen][code]` çıkıyor (iki yakalanmış 40-baytlık challenge'da doğrulandı).
-- **Cevabı biz kurmuyoruz:** 0x4B8 bloğunun son segmenti olan sunucunun **0x41B işleyicisi**
-  token adresinde çalıştırılıyor; mesaj `m_read` opcode+başlıktan sonra olacak şekilde veriliyor
-  (böylece işleyici kodu `handler+0x154`'e kopyalayıp çağırıyor). İşleyici çıktısı doğrudan
-  CMSG 0x41B olarak gidiyor. İlk challenge kodu `reply.Put(msg.GetSize())` yapıyor; işleyici
-  mesajı zaten tükettiği için `GetSize` 0 dönüyor ve cevap 12 bayt:
-  `1b 04 00 00 f1 63 be d0 10 00 00 00` (magic ^ 32, sonra 0 ^ 16; geri çözülünce
-  0xD0BE63D1 ve 0).
-- **Anahtar zinciri:** işleyici kendini `SetMessageHandler(0x41B, ctx, GetSize)` ile yeniden
-  kaydediyor (ilk turda 32). Framework bu param'ı sonraki çağrıya geçiriyor; `s_challengeKey`
-  bunu taşıyor, ama çözüm adayları arasında token ve boyut da denenip başlık/kod makullüğüyle
-  doğrulanıyor (`ChooseChallengeKey`).
+- **İlk anahtar = CMSG 0x41B isteğinde gönderdiğimiz token.** Gövde dword başına sağa 1 bit
+  döndürülerek XOR'lu; çözülünce `[nonce][codeLen][code][answer]` çıkıyor.
+- **0x41B işleyicisi** (0x4B8 bloğunun son segmenti) token adresinde çalıştırılıyor. İşleyici
+  `CDataStore::GetInt` ile **nonce**'u okur (0x401170; GetSize değil), kendini
+  `SetMessageHandler(0x41B, ctx, nonce)` ile yeniden kaydeder, `GetInt` ile codeLen'i okur,
+  kodu `handler+0x154`'e kopyalar ve çağırır. Kod son bir `GetInt` ile kuyruktaki **answer**
+  dword'ünü okur; cevap `[0x41B][0xD0BE63D1][answer]` olur ve nonce anahtarıyla kodlanır.
+- **Doğrulama:** Resmi kayıttaki 40 baytlık challenge (token `0x05660000`, nonce
+  `0x4AC5131D`) bizim makinemizde birebir aynı cevabı üretiyor:
+  `1b 04 00 00 cc 70 7b 9a ec 6d 08 e0` (`0x456AE462` answer'ı). Bu challenge
+  `Tools/Wardendump/captures/challenge-official-40.bin` olarak saklandı.
+- **Anahtar zinciri:** bir sonraki challenge, önceki challenge'ın **nonce**'u ile kodlanıyor;
+  işleyicinin yeniden kaydettiği param bu. `s_challengeKey` bunu taşıyor; çözüm adayları
+  arasında token ve nonce denenip başlık/kod makullüğüyle doğrulanıyor (`ChooseChallengeKey`).
 - **Nerede:** `Engine/Source/Os/Mac/BuckCodeEmu.{h,cpp}` — teslim edilen x86'yı Unicorn'da,
   Wow.exe görüntüsü 0x00400000'a eşlenmiş halde çalıştıran makine; istemci fonksiyonları
   (CDataStore/WDataStore, SMem, memset/memcpy/strlen, zlib_uncompress, VirtualAlloc/Protect,
@@ -71,18 +72,19 @@ Oyun içinde ~1 dk sonra düşmenin nedeni cevaplanmayan `SMSG 0x41B` challenge'
   BuckData). Token `NetClient::m_buckToken` ve süreç geneli `s_lastBuckToken`'da saklanır;
   realm'in istek üreteci artık `BuckDataHandleCustomCode`'u paylaşır. Teşhis:
   `Logs/buck-data.log`.
-- **Offline test:** `Tools/Wardendump/buck_smoke.cpp` + `Tools/Wardendump/captures/`
-  (`BuckSmoke captures/challenge-40-a.bin 46c7000`: cevap `... f1 63 be d0 10 ...`; son
-  dword geri çözülünce 0). `--handler` sunucunun 0x41B işleyicisini, `--lua` 0x4B9
-  betiğini çözer.
+- **Offline test:** `Tools/Wardendump/buck_smoke.cpp` + `Tools/Wardendump/captures/`.
+  `BuckSmoke --handler captures/handler-41b.bin captures/challenge-official-40.bin 5660000`
+  resmi kayıttaki challenge'a resmi cevabı (`cc 70 7b 9a ec 6d 08 e0`) birebir üretir;
+  `--lua` 0x4B9 betiğini çözer. `challenge-40-a/b` eski oturum kayıtlarıdır.
 - **Hâlâ yapılmadı:** 0x41D/0x41C veri paketlerini işleyen sunucu işleyicileri kurulmuyor
   (paketler yalnız loglanıyor). 0x4B9 Lua betiği doğru tohumla çözülüp `FrameScript_Execute`
   ile çalıştırılıyor: işleyici ilk baytı `CDataStore::GetByte` ile anahtar tohumu olarak
   okuyor, kalanı onunla çözüyor (eskiden tohum 0 sanılıp ilk bayt da çözülüyordu; karakter
   seçiminde Lua sözdizimi hatası veriyordu). Uzun challenge'lar yeni istemci fonksiyonu köprüleri gerektirebilir; eksik
   köprü çağrısı `Logs/buck-data.log`'a düşer ve `BuckCodeEmu.cpp`'deki tabloya eklenir.
-  Offline testler: `BuckSmoke --handler captures/handler-41b.bin captures/challenge-40-a.bin
-  46c7000` (sunucunun işleyicisiyle cevap) ve `BuckSmoke --lua captures/lua-4b9.bin`.
+  Offline testler: `BuckSmoke --handler captures/handler-41b.bin
+  captures/challenge-official-40.bin 5660000` (resmi cevabın birebir aynısı) ve
+  `BuckSmoke --lua captures/lua-4b9.bin`.
 
 ## WARMAME buck/code-stream protokolü (2026-10-19, runtime kanıtı)
 
