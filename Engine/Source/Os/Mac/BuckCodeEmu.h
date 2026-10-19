@@ -73,6 +73,11 @@ public:
     bool RunHandlerChallenge(const uint8_t* handler, uint32_t handlerSize, const uint8_t* payload,
         uint32_t size, uint32_t token, uint32_t key, std::vector<uint8_t>& response, uint32_t& nextKey);
 
+    // Runs a delivered data handler (the 0x41C/0x41D segments) with a message positioned like
+    // the client's dispatch: the handler may patch or write client globals. No reply is expected.
+    bool RunDataHandler(const uint8_t* handler, uint32_t handlerSize, const uint8_t* payload,
+        uint32_t size, uint32_t token);
+
     // Decodes a challenge without running it: header, code length and the decoded message.
     // Used by diagnostics to compare against the official client's traffic.
     static bool DecodeChallenge(const uint8_t* payload, uint32_t size, uint32_t token, std::vector<uint8_t>& decoded);

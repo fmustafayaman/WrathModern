@@ -91,6 +91,7 @@ constexpr uint32_t CLIENT_WDATASTORE_DTOR = 0x00403F10;
 constexpr uint32_t CLIENT_STORE_PUT8 = 0x0047AFE0;
 constexpr uint32_t CLIENT_STORE_PUT32 = 0x0047B0A0;
 constexpr uint32_t CLIENT_STORE_PUT64 = 0x0047B100;
+constexpr uint32_t CLIENT_STORE_PUT_ARRAY = 0x0047B1C0;
 constexpr uint32_t CLIENT_STORE_PUT_STRING = 0x0047B300;
 constexpr uint32_t CLIENT_STORE_GET_ARRAY = 0x0047B560;
 constexpr uint32_t CLIENT_STORE_GET_IN_SITU = 0x0047B6B0;
@@ -575,6 +576,20 @@ bool BuckCodeEmu::Impl::HandleClientCall(uint32_t address) {
         case CLIENT_STORE_PUT64: {
             StorePut(ecx, arguments[0], 4);
             StorePut(ecx, arguments[1], 4);
+            result = ecx;
+            finish(8);
+            return true;
+        }
+        case CLIENT_STORE_PUT_ARRAY: {
+            uint32_t data = arguments[0];
+            uint32_t count = arguments[1];
+
+            if (data && count) {
+                std::vector<uint8_t> bytes(count);
+                ReadMemory(data, bytes.data(), count);
+                StorePutBytes(ecx, bytes.data(), count);
+            }
+
             result = ecx;
             finish(8);
             return true;
@@ -1212,6 +1227,57 @@ bool BuckCodeEmu::RunHandlerChallenge(const uint8_t* handler, uint32_t handlerSi
     }
 
     impl.Log("challenge handler replied with %u bytes (next key %08x)", static_cast<uint32_t>(response.size()), nextKey);
+    return true;
+}
+
+bool BuckCodeEmu::RunDataHandler(const uint8_t* handler, uint32_t handlerSize, const uint8_t* payload,
+    uint32_t size, uint32_t token) {
+    Impl& impl = *m_impl;
+
+    if (!handler || !handlerSize || handlerSize > 0x1000) {
+        return false;
+    }
+
+    if (!impl.Boot()) {
+        return false;
+    }
+
+    uint32_t handlerAddress = CODE_FALLBACK;
+
+    if (token >= CLIENT_BASE && static_cast<uint64_t>(token) + 0x1000 < MACHINE_BASE + MACHINE_SIZE) {
+        handlerAddress = token;
+    }
+
+    std::vector<uint8_t> buffer(0x1000, 0);
+    impl.WriteMemory(handlerAddress, buffer.data(), static_cast<uint32_t>(buffer.size()));
+    impl.WriteMemory(handlerAddress, handler, handlerSize);
+    uc_ctl_remove_cache(impl.machine, handlerAddress, handlerAddress + 0x1000);
+
+    std::vector<uint8_t> raw(payload, payload + size);
+    impl.BuildMessage(raw, 2);
+
+    uint32_t frame[5] = { STOP_ADDRESS, token, 0, 0, MESSAGE_OBJECT };
+    uint32_t esp = STACK_TOP - 0x400;
+    impl.WriteMemory(esp, frame, sizeof(frame));
+
+    uint32_t eax = handlerAddress;
+    uc_reg_write(impl.machine, UC_X86_REG_EAX, &eax);
+    uc_reg_write(impl.machine, UC_X86_REG_ESP, &esp);
+
+    impl.faulted = false;
+    uc_err error = uc_emu_start(impl.machine, handlerAddress, STOP_ADDRESS, 0, 0);
+
+    if (error != UC_ERR_OK || impl.faulted) {
+        impl.Log("data handler failed%s%s", error != UC_ERR_OK ? ": " : "",
+            error != UC_ERR_OK ? uc_strerror(error) : "");
+        return false;
+    }
+
+    // The 0x41C handler leaves the data table the later challenges read at 0x00DD0FD8.
+    uint32_t table[10] = { 0 };
+    impl.ReadMemory(0x00DD0FD8, table, sizeof(table));
+    impl.Log("data handler done; 0xDD0FD8: %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x",
+        table[0], table[1], table[2], table[3], table[4], table[5], table[6], table[7], table[8], table[9]);
     return true;
 }
 

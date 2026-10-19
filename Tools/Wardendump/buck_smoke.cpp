@@ -132,6 +132,32 @@ void PrintHex(const char* label, const std::vector<uint8_t>& bytes) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    if (argc >= 6 && strcmp(argv[1], "--data") == 0) {
+        std::vector<uint8_t> handler;
+        std::vector<uint8_t> payload;
+
+        if (!ReadFile(argv[2], handler) || !ReadFile(argv[3], payload)) {
+            fprintf(stderr, "handler or payload could not be read\n");
+            return 2;
+        }
+
+        if (argc >= 6) {
+            setenv("WARDEN_CLIENT_EXE", argv[5], 1);
+        }
+
+        SmokeServices services;
+        BuckCodeEmu emulator(&services);
+        uint32_t token = static_cast<uint32_t>(strtoul(argv[4], nullptr, 16));
+
+        if (!emulator.RunDataHandler(handler.data(), static_cast<uint32_t>(handler.size()),
+                payload.data(), static_cast<uint32_t>(payload.size()), token)) {
+            fprintf(stderr, "data handler failed\n");
+            return 1;
+        }
+
+        return 0;
+    }
+
     if (argc >= 7 && strcmp(argv[1], "--seq") == 0) {
         std::vector<uint8_t> handler;
         std::vector<uint8_t> first;
