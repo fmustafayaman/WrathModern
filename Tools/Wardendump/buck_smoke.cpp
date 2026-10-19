@@ -130,11 +130,12 @@ int main(int argc, char** argv) {
         SmokeServices services;
         BuckCodeEmu emulator(&services);
         uint32_t token = static_cast<uint32_t>(strtoul(argv[4], nullptr, 16));
+        uint32_t key = argc >= 7 ? static_cast<uint32_t>(strtoul(argv[6], nullptr, 16)) : token;
         std::vector<uint8_t> response;
         uint32_t nextKey = 0;
 
         if (!emulator.RunHandlerChallenge(handler.data(), static_cast<uint32_t>(handler.size()),
-                challenge.data(), static_cast<uint32_t>(challenge.size()), token, token, response, nextKey)) {
+                challenge.data(), static_cast<uint32_t>(challenge.size()), token, key, response, nextKey)) {
             fprintf(stderr, "challenge handler failed\n");
             return 1;
         }
@@ -173,7 +174,7 @@ int main(int argc, char** argv) {
 
     if (argc < 3) {
         fprintf(stderr, "usage: %s <challenge.bin> <token-hex> [Wow.exe]\n", argv[0]);
-        fprintf(stderr, "       %s --handler <handler.bin> <challenge.bin> <token-hex> [Wow.exe]\n", argv[0]);
+        fprintf(stderr, "       %s --handler <handler.bin> <challenge.bin> <token-hex> [Wow.exe] [key-hex]\n", argv[0]);
         fprintf(stderr, "       %s --lua <4b9-payload.bin>\n", argv[0]);
         return 2;
     }
