@@ -107,18 +107,59 @@ fixtures live in `Tools/Wardendump/captures/`; `wardenrealm.log` in the Wine pre
 (`/Users/mustafayaman/WoWSilicon/drive_c/`) is a capture of the **official** client and is the
 ground truth for protocol comparisons.
 
+## Current state (2026-10-19 evening)
+
+- Warmane login, character list and **world entry work** with the native client. The last live
+  run (autologin, character `Hendell`) stayed in the world for more than twelve minutes while the
+  Warden keepalives continued.
+- Buck-data challenges answered in that run: 40, 660, 192, 88, 92 and 84 bytes. The 192 reply is
+  the 56-byte single-module scan; the 88/92 replies are memory-read challenges whose pointers
+  point at client image/global addresses, so their **contents and lengths differ from the official
+  capture** (the server tolerated them but this is the first place to look if a later check
+  rejects the session). The 84 reply uses the zeroed `0x00DD0FD8` table because the 0x41C data
+  handler is not installed yet.
+- The client is launched unattended with `WRATHMODERN_AUTOLOGIN=1`; the current test instance may
+  still be running. Kill it before starting another login:
+  `pkill -f 'WrathModern.app/Contents/MacOS/WrathModern'`.
+- The external-volume TCC prompt is fixed by stable signing with the `WrathModern Dev` identity
+  (see below); one approval survives rebuilds.
+- Next fidelity steps if needed: run the delivered 0x41C/0x41D data handlers with
+  `BuckCodeEmu::RunDataHandler` (`BuckSmoke --data`) so `0x00DD0FD8` holds the real table, and
+  reproduce the 88/92 memory-read payloads from the official capture.
+
 ## Testing the live server
 
-There is no automated login yet. Manual testing means launching the app and logging in. If you add
-automation, read credentials from an environment variable or a user-only file outside the
-repository; never commit or print them. The account name in the screenshots is `LORADONAA`; the
-password is not in the repository.
+`WRATHMODERN_AUTOLOGIN=1` makes the client log in by itself and enter the world with its first
+character. Credentials are read from `$HOME/.wrathmodern-autologin` (or
+`WRATHMODERN_AUTOLOGIN_FILE`), one value per line:
+
+```
+account
+password
+Lordaeron        (optional realm)
+```
+
+The file must be user-only (`chmod 600`); never commit it or print the password. The mode uses
+`CGlueMgr::LoginServerLogin` rather than a bare `ClientServices::Logon`, because the glue state
+drives the version proof and realm list. Progress goes to `Logs/autologin.log`. The process is
+left running after the character login is sent, so the session can be observed and stopped with
+`pkill -f WrathModern.app/Contents/MacOS/WrathModern`.
 
 When a live session drops, read `buck-data.log` first: a missing bridge appears as
 `delivered code called client XXXXXXXX with no bridge`, followed by a failed challenge. Implement
 the bridge by identifying the client function at that address (decompiled source or the official
 capture), add a fixture under `Tools/Wardendump/captures/`, and reproduce it offline with
 `BuckSmoke` before asking for another live run.
+
+### macOS permissions and code signing
+
+The game lives on an external volume; macOS asks for removable-volume access. An ad-hoc signature
+changes every build, so the permission would be forgotten each time. `Tools/sign-app.sh` signs both
+the built bundle and the copy in the game directory with the stable `WrathModern Dev` identity from
+the login keychain; the build runs it automatically. If the identity is missing the script does
+nothing. After a signature change, approve the volume prompt once; subsequent rebuilds keep the
+grant. The script also removes ExFAT AppleDouble `._*` files before signing, because they are
+unsealed content and make `codesign` refuse the bundle.
 
 ## Conventions
 

@@ -104,7 +104,31 @@ Resmi istemcinin `realmhook-client` kaydıyla protokol birebir çözüldü:
   captures/challenge-official-40.bin 5660000` (resmi cevabın birebir aynısı) ve
   `BuckSmoke --lua captures/lua-4b9.bin`.
 
-## WARMAME buck/code-stream protokolü (2026-10-19, runtime kanıtı)
+## CANLI DURUM (2026-10-19 akşamı) — dünyada 12+ dakika
+
+Otomatik giriş (`WRATHMODERN_AUTOLOGIN=1`) ile doğrulandı: istemci kendisi giriş yaptı,
+`Hendell` karakteriyle dünyaya girdi ve **12 dakikadan fazla** bağlantıda kaldı; Warden
+keepalive'ları devam etti. Dünyada cevaplanan challenge'lar: **40, 660, 192, 88, 92 ve 84**
+bayt. Eski ~1 dakikalık kopma artık yok.
+
+- Otomatik giriş `CGlueMgr::LoginServerLogin` üzerinden yapılıyor (doğrudan
+  `ClientServices::Logon` sürüm kanıtında takılıyordu); kimlik bilgileri repo dışındaki
+  `~/.wrathmodern-autologin` dosyasında (account, password, realm), `chmod 600`.
+  İlerleme `Logs/autologin.log`'da; istemci karakter girişinden sonra açık bırakılıyor.
+  **Yeni testten önce çalışan örneği kapat:** `pkill -f WrathModern.app/Contents/MacOS/WrathModern`.
+- 264 baytlık `SMSG 0x2E9` framework paketi artık BuckData tarafından tüketiliyor; stok
+  battleground handler'ı onu 64-bit GUID sanıp `CDataStore::Get(uint64)` üzerinde çöküyordu.
+- macOS çıkarılabilir disk izni: uygulama `WrathModern Dev` kimliğiyle kalıcı imzalanıyor
+  (`Tools/sign-app.sh`, derleme sonrası otomatik; ExFAT `._*` dosyaları imzadan önce siliniyor).
+  Bir kez izin verildikten sonra yeniden derlemelerde sorulmuyor.
+- **Kalan sadakat farkı:** 88 ve 92 baytlık challenge'lar, sunucunun verdiği istemci
+  adreslerinden bellek okuyup döndürüyor; bizim dönüş uzunluğu/içeriği resmi istemciden farklı
+  (ör. 88 → bizde 212 bayt, resmide 20). Sunucu şu an bunu tolere ediyor; ileride bir kontrol
+  reddederse ilk bakılacak yer burası. 84 baytlık tablo `0x00DD0FD8` hâlâ sıfır, çünkü 0x41C
+  veri işleyicisi kurulmuyor. `BuckCodeEmu::RunDataHandler` / `BuckSmoke --data` bu işleyiciyi
+  çalıştırmak için hazır.
+
+
 
 Oyundan ~1 dk sonra atılmanın nedeni: Warmane, `battle.net.dll` (oyun klasöründe 15,5 MB, korumalı)
 aracılığıyla **kod akıtan bir challenge-response** çalıştırıyor. Kanıtlar (resmi istemci, hook DLL):
