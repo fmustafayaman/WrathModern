@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <string>
 
 /*
@@ -56,13 +57,36 @@ constexpr uint32_t IMPORT_SLOT_VIRTUAL_ALLOC = 0x009DF238;
 constexpr uint32_t IMPORT_SLOT_VIRTUAL_PROTECT = 0x009DF28C;
 constexpr uint32_t STUB_VIRTUAL_ALLOC = 0x0FE00000;
 constexpr uint32_t STUB_VIRTUAL_PROTECT = 0x0FE00010;
+constexpr uint32_t STUB_LOAD_LIBRARY = 0x0FE00020;
+constexpr uint32_t STUB_FREE_LIBRARY = 0x0FE00030;
+constexpr uint32_t STUB_REG_OPEN_KEY = 0x0FE00040;
+constexpr uint32_t STUB_REG_QUERY_VALUE = 0x0FE00050;
+constexpr uint32_t STUB_REG_CLOSE_KEY = 0x0FE00060;
+constexpr uint32_t STUB_SYSTEM_FILE_TIME = 0x0FE00070;
+constexpr uint32_t STUB_GET_PROC_ADDRESS = 0x0FE00080;
+constexpr uint32_t STUB_GET_CURRENT_HW_PROFILE = 0x0FE00090;
+
+constexpr uint32_t IAT_LOAD_LIBRARY = 0x009DF248;
+constexpr uint32_t IAT_FREE_LIBRARY = 0x009DF250;
+constexpr uint32_t IAT_REG_OPEN_KEY = 0x009DF00C;
+constexpr uint32_t IAT_REG_QUERY_VALUE = 0x009DF010;
+constexpr uint32_t IAT_REG_CLOSE_KEY = 0x009DF008;
+constexpr uint32_t IAT_SYSTEM_FILE_TIME = 0x009DF388;
+constexpr uint32_t CLIENT_GLOBAL_GET_PROC_ADDRESS = 0x00B2ED98;
 
 // The client functions the delivered code calls, by their 12340 addresses.
 constexpr uint32_t CLIENT_STORE_GET_INT = 0x00401170;
+constexpr uint32_t CLIENT_OS_GET_PHYSICAL_MEMORY = 0x0086B4C0;
+constexpr uint32_t CLIENT_OS_GET_NUMBER_OF_PROCESSORS = 0x0086B240;
+constexpr uint32_t CLIENT_OS_GET_COMPUTER_NAME = 0x0086B480;
+constexpr uint32_t CLIENT_OS_GET_USER_NAME = 0x0086B4A0;
+constexpr uint32_t CLIENT_FIND_DISPLAY_DEVICE = 0x00689EA0;
 constexpr uint32_t CLIENT_WDATASTORE_CTOR = 0x00403EC0;
 constexpr uint32_t CLIENT_WDATASTORE_DTOR = 0x00403F10;
 constexpr uint32_t CLIENT_STORE_PUT8 = 0x0047AFE0;
 constexpr uint32_t CLIENT_STORE_PUT32 = 0x0047B0A0;
+constexpr uint32_t CLIENT_STORE_PUT64 = 0x0047B100;
+constexpr uint32_t CLIENT_STORE_PUT_STRING = 0x0047B300;
 constexpr uint32_t CLIENT_STORE_GET_ARRAY = 0x0047B560;
 constexpr uint32_t CLIENT_STORE_GET_IN_SITU = 0x0047B6B0;
 constexpr uint32_t CLIENT_STORE_GET_BYTE = 0x00464560;
@@ -208,6 +232,13 @@ bool BuckCodeEmu::Impl::Boot() {
     // Import slots point at the stubs, as the Windows loader resolves them in the real client.
     WriteWord(IMPORT_SLOT_VIRTUAL_ALLOC, STUB_VIRTUAL_ALLOC);
     WriteWord(IMPORT_SLOT_VIRTUAL_PROTECT, STUB_VIRTUAL_PROTECT);
+    WriteWord(IAT_LOAD_LIBRARY, STUB_LOAD_LIBRARY);
+    WriteWord(IAT_FREE_LIBRARY, STUB_FREE_LIBRARY);
+    WriteWord(IAT_REG_OPEN_KEY, STUB_REG_OPEN_KEY);
+    WriteWord(IAT_REG_QUERY_VALUE, STUB_REG_QUERY_VALUE);
+    WriteWord(IAT_REG_CLOSE_KEY, STUB_REG_CLOSE_KEY);
+    WriteWord(IAT_SYSTEM_FILE_TIME, STUB_SYSTEM_FILE_TIME);
+    WriteWord(CLIENT_GLOBAL_GET_PROC_ADDRESS, STUB_GET_PROC_ADDRESS);
 
     // Dispatch every instruction in the machine range through one code hook; the delivered code
     // executes few instructions, and the hook is what catches client calls and the sentinel.
@@ -229,6 +260,37 @@ bool BuckCodeEmu::Impl::Boot() {
             return false;
         }),
         this, 1, 0);
+
+    // CPUID: the delivered fingerprint code asks for the processor brand string. Wine on Apple
+    // silicon reports the virtualised brand, and the official response length follows it; return
+    // the same 48-byte padded brand instead of Unicorn's default Intel model.
+    uc_hook cpuidHook;
+    uc_hook_add(machine, &cpuidHook, UC_HOOK_INSN,
+        reinterpret_cast<void*>(+[](uc_engine* machine, void* user) -> int {
+            (void)user;
+            uint32_t leaf = 0;
+            uc_reg_read(machine, UC_X86_REG_EAX, &leaf);
+
+            if (leaf == 0x80000000) {
+                uint32_t maxLeaf = 0x80000004;
+                uc_reg_write(machine, UC_X86_REG_EAX, &maxLeaf);
+                return 1;
+            }
+
+            if (leaf >= 0x80000002 && leaf <= 0x80000004) {
+                static const char brand[48] = "VirtualApple @ 2.50GHz ";
+                uint32_t values[4] = {};
+                memcpy(values, brand + (leaf - 0x80000002) * 16, sizeof(values));
+                uc_reg_write(machine, UC_X86_REG_EAX, &values[0]);
+                uc_reg_write(machine, UC_X86_REG_EBX, &values[1]);
+                uc_reg_write(machine, UC_X86_REG_ECX, &values[2]);
+                uc_reg_write(machine, UC_X86_REG_EDX, &values[3]);
+                return 1;
+            }
+
+            return 0;
+        }),
+        this, 1, 0, UC_X86_INS_CPUID);
 
     return true;
 }
@@ -348,6 +410,12 @@ uint32_t BuckCodeEmu::Impl::StoreGetInt(uint32_t store) {
         WriteWord(store + STORE_READ, read + 4);
     }
 
+    static const bool trace = getenv("BUCK_TRACE") != nullptr;
+
+    if (trace) {
+        Log("buck GetInt store=%08x read=%u size=%u -> %08x", store, read, size, value);
+    }
+
     return value;
 }
 
@@ -410,6 +478,13 @@ void BuckCodeEmu::Impl::StoreGetArray(uint32_t store, uint32_t destination, uint
 
     uint32_t available = size > read ? size - read : 0;
     uint32_t bytes = count < available ? count : available;
+
+    static const bool trace = getenv("BUCK_TRACE") != nullptr;
+
+    if (trace) {
+        Log("buck GetArray store=%08x dst=%08x count=%u read=%u size=%u -> %u bytes from %08x",
+            store, destination, count, read, size, bytes, buffer + read - base);
+    }
 
     if (bytes && buffer && destination) {
         std::vector<uint8_t> copy(bytes);
@@ -484,6 +559,20 @@ bool BuckCodeEmu::Impl::HandleClientCall(uint32_t address) {
         }
         case CLIENT_STORE_PUT32: {
             StorePut(ecx, arguments[0], 4);
+            result = ecx;
+            finish(4);
+            return true;
+        }
+        case CLIENT_STORE_PUT64: {
+            StorePut(ecx, arguments[0], 4);
+            StorePut(ecx, arguments[1], 4);
+            result = ecx;
+            finish(8);
+            return true;
+        }
+        case CLIENT_STORE_PUT_STRING: {
+            std::string text = ReadGuestString(arguments[0], 0x4000);
+            StorePutBytes(ecx, text.c_str(), static_cast<uint32_t>(text.size()) + 1);
             result = ecx;
             finish(4);
             return true;
@@ -696,6 +785,106 @@ bool BuckCodeEmu::Impl::HandleClientCall(uint32_t address) {
         case STUB_VIRTUAL_PROTECT: {
             WriteWord(arguments[3], 0x40);
             result = 1;
+            finish(16);
+            return true;
+        }
+        case CLIENT_OS_GET_NUMBER_OF_PROCESSORS: {
+            result = 10;
+            finish(0);
+            return true;
+        }
+        case CLIENT_OS_GET_PHYSICAL_MEMORY: {
+            // 16 GiB, as the host reports; EDX:EAX carries the 64-bit value.
+            uint64_t memory = 0x00000003FFFFF000ull;
+            uint32_t edx = static_cast<uint32_t>(memory >> 32);
+            result = static_cast<uint32_t>(memory);
+            uc_reg_write(machine, UC_X86_REG_EDX, &edx);
+            finish(0);
+            return true;
+        }
+        case CLIENT_OS_GET_COMPUTER_NAME:
+        case CLIENT_OS_GET_USER_NAME: {
+            const char* name = "MAC";
+            WriteMemory(arguments[0], name, 4);
+            WriteWord(arguments[1], 4);
+            result = 1;
+            finish(0);
+            return true;
+        }
+        case CLIENT_FIND_DISPLAY_DEVICE: {
+            // DISPLAY_DEVICEA: cb, DeviceName[32], DeviceString[128], StateFlags, ...
+            std::vector<uint8_t> device(0x1A8, 0);
+            uint32_t cb = 0x1A8;
+            memcpy(device.data(), &cb, 4);
+            const char* displayName = "\\\\.\\DISPLAY1";
+            memcpy(device.data() + 4, displayName, strlen(displayName) + 1);
+            const char* adapter = "Apple M4";
+            memcpy(device.data() + 0x24, adapter, strlen(adapter) + 1);
+            uint32_t flags = 4;
+            memcpy(device.data() + 0xA4, &flags, 4);
+            WriteMemory(arguments[0], device.data(), static_cast<uint32_t>(device.size()));
+            result = 1;
+            finish(0);
+            return true;
+        }
+        case STUB_LOAD_LIBRARY: {
+            result = 0x03000000;
+            finish(4);
+            return true;
+        }
+        case STUB_FREE_LIBRARY: {
+            result = 1;
+            finish(4);
+            return true;
+        }
+        case STUB_GET_PROC_ADDRESS: {
+            std::string name = ReadGuestString(arguments[1], 128);
+            result = name == "GetCurrentHwProfileA" ? STUB_GET_CURRENT_HW_PROFILE : 0;
+            finish(8);
+            return true;
+        }
+        case STUB_GET_CURRENT_HW_PROFILE: {
+            // HW_PROFILE_INFOA: dwDockInfo, szHwProfileGuid[39], szHwProfileName[80].
+            std::vector<uint8_t> profile(0x4 + 39 + 80, 0);
+            const char* guid = "{12340001-1234-1234-1234-123456789ABC}";
+            const char* profileName = "WrathModern";
+            memcpy(profile.data() + 4, guid, strlen(guid) + 1);
+            memcpy(profile.data() + 0x2B, profileName, strlen(profileName) + 1);
+            WriteMemory(arguments[0], profile.data(), static_cast<uint32_t>(profile.size()));
+            result = 0;
+            finish(4);
+            return true;
+        }
+        case STUB_REG_OPEN_KEY: {
+            WriteWord(arguments[4], 0x03000100);
+            result = 0;
+            finish(20);
+            return true;
+        }
+        case STUB_REG_QUERY_VALUE: {
+            if (arguments[3]) {
+                WriteWord(arguments[3], 1); // REG_SZ
+            }
+            if (arguments[4]) {
+                WriteMemory(arguments[4], "2024", 4);
+            }
+            if (arguments[5]) {
+                WriteWord(arguments[5], 4);
+            }
+            result = 0;
+            finish(24);
+            return true;
+        }
+        case STUB_REG_CLOSE_KEY: {
+            result = 0;
+            finish(4);
+            return true;
+        }
+        case STUB_SYSTEM_FILE_TIME: {
+            // The code zeroes an 8-byte buffer and asks the client for a 64-bit time value.
+            uint64_t ticks = static_cast<uint64_t>(time(nullptr)) * 10000000ull + 116444736000000000ull;
+            WriteMemory(arguments[2], &ticks, sizeof(ticks));
+            result = 0;
             finish(16);
             return true;
         }

@@ -60,6 +60,17 @@ Resmi istemcinin `realmhook-client` kaydıyla protokol birebir çözüldü:
   `0x4AC5131D`) bizim makinemizde birebir aynı cevabı üretiyor:
   `1b 04 00 00 cc 70 7b 9a ec 6d 08 e0` (`0x456AE462` answer'ı). Bu challenge
   `Tools/Wardendump/captures/challenge-official-40.bin` olarak saklandı.
+- **660 baytlık challenge (sistem parmak izi):** Karakter listesinden sonra gelen 660 baytlık
+  challenge'ın 652 baytlık kodu fiziksel bellek, işlemci sayısı, bilgisayar/kullanıcı adı,
+  ekran adaptörü, HW profile GUID'i, registry `InstallDate` değeri, CPUID marka dizisi ve
+  FILETIME toplayıp 112 baytlık cevap kuruyor. `BuckCodeEmu` bunun için `OsGetPhysicalMemory`,
+  `OsGetNumberOfProcessors`, `OsGetComputerName`, `OsGetUserName`, `FindDisplayDevice`,
+  LoadLibrary/GetProcAddress/FreeLibrary, RegOpenKeyEx/RegQueryValueEx/RegCloseKey ve FILETIME
+  köprülerini içeriyor; CPUID markası Wine'ın Apple Silicon'daki değeriyle
+  (`VirtualApple @ 2.50GHz `) dolduruluyor. Cevap 112 bayt (resmi uzunlukla aynı) ve ilk 64
+  bayt resmi kayıtla birebir: bellek `0x3FFFFF000`, 10 işlemci, `MAC`, `MAC`, `Apple M4`,
+  `{12340001-...}` GUID'i.
+  Kaydedilmiş challenge: `Tools/Wardendump/captures/challenge-660.bin`.
 - **Anahtar zinciri:** bir sonraki challenge, önceki challenge'ın **nonce**'u ile kodlanıyor;
   işleyicinin yeniden kaydettiği param bu. `s_challengeKey` bunu taşıyor; çözüm adayları
   arasında token ve nonce denenip başlık/kod makullüğüyle doğrulanıyor (`ChooseChallengeKey`).
@@ -75,7 +86,8 @@ Resmi istemcinin `realmhook-client` kaydıyla protokol birebir çözüldü:
 - **Offline test:** `Tools/Wardendump/buck_smoke.cpp` + `Tools/Wardendump/captures/`.
   `BuckSmoke --handler captures/handler-41b.bin captures/challenge-official-40.bin 5660000`
   resmi kayıttaki challenge'a resmi cevabı (`cc 70 7b 9a ec 6d 08 e0`) birebir üretir;
-  `--lua` 0x4B9 betiğini çözer. `challenge-40-a/b` eski oturum kayıtlarıdır.
+  `challenge-660.bin` ile 112 baytlık parmak izi cevabı üretilir; `--lua` 0x4B9 betiğini
+  çözer. `challenge-40-a/b` eski oturum kayıtlarıdır.
 - **Hâlâ yapılmadı:** 0x41D/0x41C veri paketlerini işleyen sunucu işleyicileri kurulmuyor
   (paketler yalnız loglanıyor). 0x4B9 Lua betiği doğru tohumla çözülüp `FrameScript_Execute`
   ile çalıştırılıyor: işleyici ilk baytı `CDataStore::GetByte` ile anahtar tohumu olarak
