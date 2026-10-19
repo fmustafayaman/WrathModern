@@ -61,6 +61,15 @@ public:
     // the official client's runtime-generated stub returns this same string.
     virtual const char* AccountName() = 0;
 
+    // SFile2: the module reads game files through the client's own Storm file API and hashes
+    // their bytes (the live 364-byte challenge checks a file this way). The handle is opaque to
+    // the module, so the host may return its own SFile object. FileRead returns the bytes read;
+    // zero means failure, exactly as SFileReadFile reports it.
+    virtual void* FileOpen(const char* name) = 0;
+    virtual uint32_t FileSize(void* file) = 0;
+    virtual uint32_t FileRead(void* file, void* buffer, uint32_t count) = 0;
+    virtual void FileClose(void* file) = 0;
+
     virtual ~WardenEmuServices() {}
 };
 

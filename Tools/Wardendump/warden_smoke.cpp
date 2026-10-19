@@ -35,13 +35,17 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <map>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 #include <zlib.h>
 
 #include "Engine/Source/Os/WardenEmu.h"
 #include "Engine/Source/Os/Mac/MacOs.h"
+#include "Engine/Source/Storm/H/storm.h"
+#include "Engine/Source/BlizzardCore/SFile2-Core.h"
 #include "WoW/Source/Game/GameClient/WardenModuleData.h"
 
 static void Rc4Crypt(const uint8_t* key, uint32_t keyLength, uint8_t* buffer, uint32_t size) {
@@ -239,6 +243,214 @@ public:
 
     const char* AccountName() override {
         return accountName.c_str();
+    }
+
+    // File checks: the live client answers through SFile2 (MPQ-aware). The offline replay does
+    // the same: Storm's archives are opened from the game directory, so the module reads the
+    // very bytes the real client would hand it. Without a usable archive set it falls back to
+    // plain files (loose-file paths only) and reports which name it could not open.
+    std::string gameDir;
+    bool m_stormAttempted = false;
+    bool m_stormReady = false;
+    std::map<void*, bool> m_stormFiles;
+
+    const std::string& GameDirectory() {
+        if (!gameDir.empty()) {
+            return gameDir;
+        }
+
+        const char* exe = std::getenv("WARDEN_CLIENT_EXE");
+        gameDir = ".";
+
+        if (exe && exe[0]) {
+            std::string path = exe;
+            size_t slash = path.find_last_of('/');
+
+            if (slash != std::string::npos) {
+                gameDir = path.substr(0, slash);
+            }
+        }
+
+        return gameDir;
+    }
+
+    static bool FileExists(const std::string& path) {
+        FILE* file = std::fopen(path.c_str(), "rb");
+
+        if (!file) {
+            return false;
+        }
+
+        std::fclose(file);
+        return true;
+    }
+
+    void OpenArchive(const std::string& name, int32_t priority, bool optional) {
+        std::string path = GameDirectory() + "/" + name;
+
+        if (!FileExists(path)) {
+            if (!optional) {
+                std::printf("STORM archive missing: %s\n", name.c_str());
+            }
+
+            return;
+        }
+
+        SArchive* archive = nullptr;
+
+        if (SFile::OpenArchive(path.c_str(), priority, 0xC00, &archive)) {
+            std::printf("STORM archive %s at priority %d\n", name.c_str(), priority);
+        } else {
+            std::printf("STORM archive %s failed\n", name.c_str());
+        }
+    }
+
+    void InitializeStorm() {
+        if (m_stormAttempted) {
+            return;
+        }
+
+        m_stormAttempted = true;
+
+        char previous[4096];
+
+        if (!getcwd(previous, sizeof(previous))) {
+            previous[0] = '\0';
+        }
+
+        // SFileOpenArchive resolves relative paths against the process directory, exactly as the
+        // game does once it chdirs into the client directory.
+        if (chdir(GameDirectory().c_str()) != 0) {
+            std::printf("STORM cannot enter %s\n", GameDirectory().c_str());
+            return;
+        }
+
+        StormInitialize();
+
+        int32_t priority = 1;
+        OpenArchive("Data/common.mpq", priority++, false);
+        OpenArchive("Data/common-2.mpq", priority++, true);
+        OpenArchive("Data/expansion.mpq", priority++, true);
+        OpenArchive("Data/lichking.mpq", priority++, true);
+        OpenArchive("Data/enUS/base-enUS.mpq", priority++, true);
+        OpenArchive("Data/enUS/locale-enUS.mpq", priority++, true);
+        OpenArchive("Data/enUS/expansion-locale-enUS.mpq", priority++, true);
+        OpenArchive("Data/enUS/lichking-locale-enUS.mpq", priority++, true);
+        OpenArchive("Data/enUS/backup-enUS.mpq", priority++, true);
+        OpenArchive("Data/enUS/speech-enUS.mpq", priority++, true);
+
+        // Patch archives override the base data; the client opens every patch it finds, the
+        // later ones above the earlier. Alphabetical order is enough here: the maps under test
+        // are original data, and this keeps the replay's bytes independent of that detail.
+        const char* patches[] = {
+            "patch.MPQ", "patch-2.MPQ", "patch-3.MPQ", "patch-5.MPQ", "patch-6.MPQ",
+            "patch-7.MPQ", "patch-8.MPQ", "patch-a.MPQ", "patch-b.MPQ", "patch-c.MPQ",
+            "patch-e.MPQ", "patch-f.MPQ", "patch-i.MPQ", "patch-j.MPQ", "patch-s.MPQ",
+            "patch-t.MPQ", "patch-u.MPQ", "patch-w.MPQ", "patch-x.MPQ", "patch-y.MPQ",
+            "patch-z.MPQ",
+        };
+
+        for (size_t i = 0; i < sizeof(patches) / sizeof(patches[0]); i++) {
+            OpenArchive(std::string("Data/") + patches[i], priority++, true);
+        }
+
+        const char* localePatches[] = {
+            "patch-enUS.MPQ", "patch-enUS-2.MPQ", "patch-enUS-3.MPQ", "patch-enUS-9.MPQ",
+            "patch-enUS-a.MPQ", "patch-enUS-c.MPQ", "patch-enUS-d.MPQ", "patch-enUS-f.MPQ",
+            "patch-enUS-j.MPQ", "patch-enUS-m.MPQ", "patch-enUS-n.MPQ", "patch-enUS-q.MPQ",
+            "patch-enUS-s.MPQ", "patch-enUS-u.MPQ", "patch-enUS-w.MPQ", "patch-enUS-x.MPQ",
+        };
+
+        for (size_t i = 0; i < sizeof(localePatches) / sizeof(localePatches[0]); i++) {
+            OpenArchive(std::string("Data/enUS/") + localePatches[i], priority++, true);
+        }
+
+        if (previous[0]) {
+            chdir(previous);
+        }
+
+        m_stormReady = true;
+    }
+
+    void* FileOpen(const char* name) override {
+        InitializeStorm();
+
+        if (m_stormReady && name && name[0]) {
+            SFileImpl* file = nullptr;
+            int32_t opened = SFileOpenFile(name, &file);
+
+            if (opened && file) {
+                std::printf("SFILE OPEN '%s' -> opened (Storm)\n", name);
+                m_stormFiles[file] = true;
+                return file;
+            }
+        }
+
+        std::string path = GameDirectory() + "/" + (name ? name : "");
+        FILE* file = std::fopen(path.c_str(), "rb");
+        std::printf("SFILE OPEN '%s' -> %s\n", name ? name : "(null)", file ? path.c_str() : "failed");
+
+        if (file) {
+            m_stormFiles[file] = false;
+        }
+
+        return file;
+    }
+
+    uint32_t FileSize(void* file) override {
+        if (!file) {
+            return 0;
+        }
+
+        if (m_stormFiles[file]) {
+            uint32_t size = SFileGetFileSize(static_cast<SFileImpl*>(file), nullptr);
+            std::printf("SFILE SIZE -> %u (Storm)\n", size);
+            return size;
+        }
+
+        FILE* stream = static_cast<FILE*>(file);
+        long here = std::ftell(stream);
+        std::fseek(stream, 0, SEEK_END);
+        long size = std::ftell(stream);
+        std::fseek(stream, here, SEEK_SET);
+        std::printf("SFILE SIZE -> %ld\n", size);
+        return size > 0 ? (uint32_t)size : 0;
+    }
+
+    uint32_t FileRead(void* file, void* buffer, uint32_t count) override {
+        if (!file) {
+            return 0;
+        }
+
+        if (m_stormFiles[file]) {
+            uint32_t read = 0;
+
+            if (!SFileReadFile(static_cast<SFileImpl*>(file), buffer, count, &read, nullptr, 0)) {
+                std::printf("SFILE READ %u -> failed (Storm)\n", count);
+                return 0;
+            }
+
+            std::printf("SFILE READ %u -> %u (Storm)\n", count, read);
+            return read;
+        }
+
+        uint32_t read = (uint32_t)std::fread(buffer, 1, count, static_cast<FILE*>(file));
+        std::printf("SFILE READ %u -> %u\n", count, read);
+        return read;
+    }
+
+    void FileClose(void* file) override {
+        if (!file) {
+            return;
+        }
+
+        if (m_stormFiles[file]) {
+            SFileCloseFile(static_cast<SFileImpl*>(file));
+        } else {
+            std::fclose(static_cast<FILE*>(file));
+        }
+
+        m_stormFiles.erase(file);
     }
 
     bool StateLoad(void* data, uint32_t& size) override {

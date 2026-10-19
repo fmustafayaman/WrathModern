@@ -109,6 +109,10 @@ enum ClientFunctionId {
     CLIENT_OS_LOAD_LIBRARY,
     CLIENT_FRAME_SCRIPT_EXECUTE,
     CLIENT_WARMANE_CLIENT_CALL,
+    CLIENT_SFILE_OPEN_FILE,
+    CLIENT_SFILE_GET_FILE_SIZE,
+    CLIENT_SFILE_READ_FILE,
+    CLIENT_SFILE_CLOSE_FILE,
 };
 
 struct ClientFunction {
@@ -116,19 +120,36 @@ struct ClientFunction {
     const char* name;
     uint32_t address;
     uint8_t prologue[6];
+    // Bytes the real function pops on return besides the return address. The Storm API is
+    // __stdcall (`ret n`), unlike the __cdecl client functions above: the emulator must run the
+    // same cleanup or the module's stack shifts and its saved registers are read back wrong.
+    uint16_t argumentBytes;
 };
 
 constexpr ClientFunction s_clientFunctions[] = {
     // uint32_t __cdecl OsGetAsyncTimeMs(): mov ecx, [s_OsTimeMgr]; jmp OsTimeManager::Snapshot
-    { CLIENT_OS_GET_ASYNC_TIME_MS, "OsGetAsyncTimeMs", 0x0086AE20, { 0x8B, 0x0D, 0x9C, 0x15, 0xD4, 0x00 } },
+    { CLIENT_OS_GET_ASYNC_TIME_MS, "OsGetAsyncTimeMs", 0x0086AE20, { 0x8B, 0x0D, 0x9C, 0x15, 0xD4, 0x00 }, 0 },
     // void* __cdecl OsLoadLibrary(const char* fileName): push ebp; mov ebp, esp; mov eax, [ebp+8]
-    { CLIENT_OS_LOAD_LIBRARY, "OsLoadLibrary", 0x0086C4E0, { 0x55, 0x8B, 0xEC, 0x8B, 0x45, 0x08 } },
+    { CLIENT_OS_LOAD_LIBRARY, "OsLoadLibrary", 0x0086C4E0, { 0x55, 0x8B, 0xEC, 0x8B, 0x45, 0x08 }, 0 },
     // void __cdecl FrameScript::Execute(const char* source, const char* filename, const char* taint)
     // push ebp; mov ebp, esp; push ecx; add dword ptr [0x00D413A0], 1
-    { CLIENT_FRAME_SCRIPT_EXECUTE, "FrameScript::Execute", 0x00819210, { 0x55, 0x8B, 0xEC, 0x51, 0x83, 0x05 } },
+    { CLIENT_FRAME_SCRIPT_EXECUTE, "FrameScript::Execute", 0x00819210, { 0x55, 0x8B, 0xEC, 0x51, 0x83, 0x05 }, 0 },
     // Warmane's custom module calls this client function after MODULE_INITIALIZE. In the 12340
     // image it is a FrameScript registration routine; the module only needs the call to run.
-    { CLIENT_WARMANE_CLIENT_CALL, "WarmaneClientCall", 0x0054E720, { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 } },
+    { CLIENT_WARMANE_CLIENT_CALL, "WarmaneClientCall", 0x0054E720, { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 }, 0 },
+    // int32_t __stdcall SFileOpenFile(const char* name, SFileImpl** result): push ebp; mov ebp,
+    // esp; mov eax, [ebp+0xC]; mov ecx, [ebp+8]; ... call SFile::OpenEx ... ret 8. The 364-byte
+    // world challenge opens game files and hashes them, which is why the module reaches these.
+    { CLIENT_SFILE_OPEN_FILE, "SFileOpenFile", 0x00424F80, { 0x55, 0x8B, 0xEC, 0x8B, 0x45, 0x0C }, 8 },
+    // uint32_t __stdcall SFileGetFileSize(SFileImpl* file, uint32_t* sizeHigh): push ebp; mov ebp,
+    // esp; mov eax, [ebp+8]; mov ecx, [eax] ... ret 8
+    { CLIENT_SFILE_GET_FILE_SIZE, "SFileGetFileSize", 0x004218C0, { 0x55, 0x8B, 0xEC, 0x8B, 0x45, 0x08 }, 8 },
+    // int32_t __stdcall SFileReadFile(SFileImpl* file, void* buffer, uint32_t count, uint32_t*
+    // bytesRead, SOVERLAPPED* overlapped, uint32_t unused): ... ret 0x18
+    { CLIENT_SFILE_READ_FILE, "SFileReadFile", 0x00422530, { 0x55, 0x8B, 0xEC, 0x81, 0xEC, 0x00 }, 0x18 },
+    // int32_t __stdcall SFileCloseFile(SFileImpl* file): push ebp; mov ebp, esp; push esi; mov esi,
+    // [ebp+8] ... ret 4
+    { CLIENT_SFILE_CLOSE_FILE, "SFileCloseFile", 0x00422910, { 0x55, 0x8B, 0xEC, 0x56, 0x8B, 0x75 }, 4 },
 };
 
 constexpr uint32_t CLIENT_FUNCTION_COUNT = sizeof(s_clientFunctions) / sizeof(s_clientFunctions[0]);
@@ -258,6 +279,18 @@ struct WardenEmu::Impl {
     uint32_t m_clientBase = CLIENT_DEFAULT_BASE;
     uint32_t m_clientSize = 0;
     bool m_clientBridged[CLIENT_FUNCTION_COUNT] = { false };
+
+    // Files the module opened through SFileOpenFile. The module only carries the opaque value
+    // written back to its out-pointer; the host keeps the real SFile object.
+    struct OpenFile {
+        uint32_t handle;
+        void* file;
+    };
+
+    std::vector<OpenFile> m_openFiles;
+    uint32_t m_nextFileHandle = 0x0B000000;
+    void* FileForHandle(uint32_t handle) const;
+    uint32_t AddOpenFile(void* file);
 
     // The address space as Windows describes it to the module (VirtualQuery), page granular,
     // sorted and non-overlapping; anything not listed is free. It describes the process the
@@ -1928,6 +1961,25 @@ bool WardenEmu::Impl::CallGuest(uint32_t address, const uint32_t* stackArguments
 // Hook handlers
 // =====================================================================
 
+void* WardenEmu::Impl::FileForHandle(uint32_t handle) const {
+    for (size_t i = 0; i < m_openFiles.size(); i++) {
+        if (m_openFiles[i].handle == handle) {
+            return m_openFiles[i].file;
+        }
+    }
+
+    return nullptr;
+}
+
+uint32_t WardenEmu::Impl::AddOpenFile(void* file) {
+    uint32_t handle = m_nextFileHandle;
+    m_nextFileHandle += 4;
+
+    OpenFile entry = { handle, file };
+    m_openFiles.push_back(entry);
+    return handle;
+}
+
 // The module branched into the client executable. A bridged client function runs as this
 // client's own implementation and returns to the caller exactly like the __cdecl original
 // (EAX holds the result, the caller pops its arguments). Any other client address would need
@@ -2083,10 +2135,90 @@ void WardenEmu::Impl::HandleClientCode(uint32_t address) {
                 WardenLog("client FrameScript::Execute(%s) -> %d", source, result);
                 break;
             }
+            case CLIENT_SFILE_OPEN_FILE: {
+                // int32_t SFileOpenFile(const char* name, SFileImpl** result). The module hashes
+                // the file's bytes; only the handle crosses back into the guest.
+                char name[512] = { 0 };
+
+                if (frame[1]) {
+                    ReadGuestString(frame[1], name, sizeof(name));
+                }
+
+                void* file = services->FileOpen(name);
+                result = file ? 1 : 0;
+
+                if (file && frame[2]) {
+                    WriteWord(frame[2], AddOpenFile(file));
+                }
+
+                WardenLog("client SFileOpenFile('%s') -> %s", name, file ? "opened" : "failed");
+                break;
+            }
+            case CLIENT_SFILE_GET_FILE_SIZE: {
+                void* file = FileForHandle(frame[1]);
+                uint32_t size = file ? services->FileSize(file) : 0;
+
+                if (frame[2]) {
+                    WriteWord(frame[2], 0); // files in a 32-bit client never need the high half
+                }
+
+                result = size;
+                WardenLog("client SFileGetFileSize(%08x) -> %u", frame[1], size);
+                break;
+            }
+            case CLIENT_SFILE_READ_FILE: {
+                // int32_t SFileReadFile(file, buffer, count, bytesRead, overlapped, unused). The
+                // module hashes what it reads, so hand it the file's real bytes.
+                void* file = FileForHandle(frame[1]);
+                uint32_t buffer = frame[2];
+                uint32_t count = frame[3];
+                uint32_t bytesReadPointer = 0;
+                uint32_t overlapped = 0;
+
+                ReadWord(esp + 16, bytesReadPointer);
+                ReadWord(esp + 20, overlapped);
+
+                uint32_t read = 0;
+
+                if (file && buffer && count && count <= 16 * 1024 * 1024 && !overlapped) {
+                    std::vector<uint8_t> bytes(count);
+                    read = services->FileRead(file, bytes.data(), count);
+
+                    if (read && !WriteMemory(buffer, bytes.data(), read)) {
+                        read = 0;
+                    }
+                }
+
+                if (bytesReadPointer) {
+                    WriteWord(bytesReadPointer, read);
+                }
+
+                result = read == count ? 1 : 0;
+                WardenLog("client SFileReadFile(%08x, %u) -> %u bytes", frame[1], count, read);
+                break;
+            }
+            case CLIENT_SFILE_CLOSE_FILE: {
+                for (size_t i = 0; i < m_openFiles.size(); i++) {
+                    if (m_openFiles[i].handle == frame[1]) {
+                        services->FileClose(m_openFiles[i].file);
+                        m_openFiles.erase(m_openFiles.begin() + i);
+                        break;
+                    }
+                }
+
+                result = 1;
+                WardenLog("client SFileCloseFile(%08x)", frame[1]);
+                break;
+            }
         }
 
         uint32_t returnAddress = frame[0];
         esp += 4;
+
+        // __stdcall client functions (the Storm file API) clean their own arguments on return;
+        // the module's stack must end up exactly where its caller expects it.
+        esp += function.argumentBytes;
+
         uc_reg_write(machine, UC_X86_REG_EAX, &result);
         uc_reg_write(machine, UC_X86_REG_ESP, &esp);
         uc_reg_write(machine, UC_X86_REG_EIP, &returnAddress);

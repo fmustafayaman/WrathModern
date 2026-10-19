@@ -23,6 +23,7 @@
 #include "Platform/Mac/Paths.h"
 #include "Engine/Source/Storm/H/storm.h"
 #include "Engine/Source/Storm/Source/SLock.h"
+#include "Engine/Source/BlizzardCore/SFile2-Core.h"
 #include "WoW/Source/Net/NetClient/NetClient.h"
 #include "WoW/Source/WowSvcs/WowSvcsClient/ClientServices.h"
 #include "Engine/Source/Base/CDataStore.h"
@@ -318,6 +319,42 @@ public:
     // stub answers the same way.
     const char* AccountName() override {
         return CGlueMgr::m_accountName;
+    }
+
+    // SFile2 bridging: the module opens a game file and hashes the bytes it reads, exactly as
+    // the Windows client's Storm API returns them. Paths arrive in the client's own form (the
+    // module builds them from the challenge), so hand them to SFileOpenFile unchanged.
+    void* FileOpen(const char* name) override {
+        SFileImpl* file = nullptr;
+        int32_t opened = SFileOpenFile(name, &file);
+
+        WardenClientLog("SFileOpenFile('%s') -> %d %s", name ? name : "(null)", opened,
+            opened ? "opened" : "failed");
+        return opened ? file : nullptr;
+    }
+
+    uint32_t FileSize(void* file) override {
+        return file ? SFileGetFileSize(static_cast<SFileImpl*>(file), nullptr) : 0;
+    }
+
+    uint32_t FileRead(void* file, void* buffer, uint32_t count) override {
+        uint32_t read = 0;
+
+        if (!file || !buffer || !count) {
+            return 0;
+        }
+
+        if (!SFileReadFile(static_cast<SFileImpl*>(file), buffer, count, &read, nullptr, 0)) {
+            WardenClientLog("SFileReadFile(%p, %u) failed", file, count);
+        }
+
+        return read;
+    }
+
+    void FileClose(void* file) override {
+        if (file) {
+            SFileCloseFile(static_cast<SFileImpl*>(file));
+        }
     }
 
     static void UnloadPendingModule() {

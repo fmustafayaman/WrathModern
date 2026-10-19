@@ -104,7 +104,67 @@ Resmi istemcinin `realmhook-client` kaydıyla protokol birebir çözüldü:
   captures/challenge-official-40.bin 5660000` (resmi cevabın birebir aynısı) ve
   `BuckSmoke --lua captures/lua-4b9.bin`.
 
-## CANLI DURUM (2026-10-19 akşamı) — dünyada 12+ dakika
+## WARDEN — 364 baytlık dosya kontrolü ve SFile2 köprüleri (2026-10-19 gece)
+
+Dünyaya girdikten sonra gelen 364 baytlık `SMSG 0x2E6` challenge'ı, Warmane modülünün
+**harita dosyalarını okuyup hash'lemesini** istiyor. Modül dosyaları istemcinin kendi Storm
+API'siyle açıyor:
+
+```
+World\Maps\IsleofConquest\IsleofConquest_35_29.adt
+World\Maps\NorthrendBG\NorthrendBG_36_28.adt
+World\Maps\NetherstormBG\NetherstormBG_27_30.adt
+```
+
+Bu çağrılar `WardenEmu`'da köprülenmediği için emülatör `0x00424F80` (`SFileOpenFile`) üzerinde
+duruyordu; istemci 14 baytlık anlamsız bir cevap gönderiyor ve sunucu ~35 saniye sonra bağlantıyı
+kesiyordu (kanıt: `Logs/warden.log` "module called client code at 00424f80 ... with no native
+bridge", ardından `Logs/net-events.log` DISCONNECTED). Karakter seçim ekranı bu challenge'ı
+almadığı için orada kopma olmuyordu.
+
+Eklenen köprüler (`Engine/Source/Os/WardenEmu.h`, `Engine/Source/Os/Mac/WardenEmu.cpp`,
+`WoW/Source/Game/GameClient/Mac/WardenClient.cpp`):
+
+- `SFileOpenFile` (0x00424F80), `SFileGetFileSize` (0x004218C0), `SFileReadFile` (0x00422530),
+  `SFileCloseFile` (0x00422910) — giriş adresleri Wow.exe giriş baytlarıyla doğrulanıyor.
+- Modüle sahte (opaque) 32-bit handle döner; gerçek `SFileImpl*` istemcide kalır. Böylece modül
+  dosyayı kendi koduna göre parça parça okuyup hash'ler; cevabı yine modül üretir.
+- `WardenEmuServices::FileOpen/FileSize/FileRead/FileClose` arayüzü eklendi.
+- **Kritik ayrıntı — `__stdcall`:** Storm API'si `ret 8/0x18/4` ile kendi argümanlarını temizler.
+  Emülatör ilk denemede yalnız dönüş adresini pop ettiği için modülün yığını 8 bayt kayıyor,
+  kaydedilmiş `edi` yerine dosya handle'ı geri okunuyor ve `[handle+0x20]` okuması fault
+  veriyordu (`guest read fault at 000000000b000020`, `faulting EIP 0180267f`). `ClientFunction`
+  tablosuna `argumentBytes` eklendi; köprü dönüşte `esp += 4 + argumentBytes` yapıyor.
+  Doğrulama: `WardenSmoke --snapshot Logs/warden-snapshot.bin` aynı Process çağrısını hatasız
+  tamamlıyor (320898 baytlık ADT, 19 okuma + close).
+
+Offline doğrulama (`WARDEN_REPLAY_COLD=1 WardenSmoke <image> <traffic> <key>`): replay 364
+baytlık paketi işliyor, üç ADT'yi Storm MPQ'larından okuyor (ör. 320752 bayt, 16K'lık parçalar)
+ve **56 baytlık** gerçek cevabı üretiyor. `WardenSmoke` artık Storm'u başlatıp oyun dizinindeki
+MPQ arşivlerini açıyor; `WARDEN_CLIENT_EXE` hem istemci imajını hem oyun dizinini belirliyor.
+
+## CANLI DURUM (2026-10-19 gece) — SFile köprüsü sonrası
+
+`WRATHMODERN_AUTOLOGIN=1` ile 19:08 oturumu: giriş, karakter listesi ve dünya girişi sorunsuz;
+oturum **15 dakika** boyunca ayakta kaldı (19:08:03 → 19:23:04), Warden keepalive'ları devam etti
+ve hiçbir `no native bridge` / fault oluşmadı. Bu oturumda sunucu dosya-kontrol challenge'ı
+(314/364 B) hiç göndermedi; 15. dakikada bağlantıyı kapattı. Kapanıştan hemen önce 92 baytlık
+buck challenge'ı 188 baytla cevaplandı; cevabın içeriğini çözünce istemci kodundan istenen üç
+bellek bölgesi (`0x0086B5A0`+88, `0x004E31CE`+5, `0x0086B510`+86) **birebir** çıktı — yani 92
+cevabı içerik olarak doğru.
+
+Kalan sadakat farkı **192 baytlık modül taraması**: sunucunun kodu `CreateToolhelp32Snapshot` +
+`Module32First/Next` ile yüklü modülleri geziyor; resmi istemci 1996 baytlık liste (≈33 modül,
+ilk giriş `base 0x00400000 size 0x9FD000 Z:\...\wow.exe`, ikinci modül `0x7BF30000` + `0xB9000`),
+bizim emülatör ise tek giriş (`wow.exe`, 56 bayt) döndürüyor (`BuckCodeEmu` `CLIENT_MODULE32_*`).
+Sunucu bunu şimdilik tolere ediyor; 15. dakikadaki kapanışın nedeni bu olabilir. Sıradaki adım:
+resmi istemcinin modül listesini (oyun DLL'leri + sistem DLL'leri, gerçek base/size/path) emüle
+etmek. Bu yapılmadan oturumun 15 dakikadan fazla sürmesi garanti değil.
+
+**Önemli:** Aynı hesapta iki istemci (bizim autologin + kullanıcının kendi istemcisi) aynı anda
+açılırsa sunucu birini atar. Test sırasında tek istemci çalıştırılmalı.
+
+
 
 Otomatik giriş (`WRATHMODERN_AUTOLOGIN=1`) ile doğrulandı: istemci kendisi giriş yaptı,
 `Hendell` karakteriyle dünyaya girdi ve **12 dakikadan fazla** bağlantıda kaldı; Warden
