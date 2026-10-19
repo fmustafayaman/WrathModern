@@ -44,6 +44,34 @@ Bilinen sınır: Warmane'in buck-data işleyicileri (sunucunun yüklediği x86 k
 KURULMAZ; sunucunun sonraki veri paketleri işlenmez. Karakter listesi ve dünyaya giriş bu
 haliyle çalışır; ileride buck-data içeriği gerekirse ilgili blob'lar emülatörde çalıştırılmalı.
 
+## WARMAME buck/code-stream protokolü (2026-10-19, runtime kanıtı)
+
+Oyundan ~1 dk sonra atılmanın nedeni: Warmane, `battle.net.dll` (oyun klasöründe 15,5 MB, korumalı)
+aracılığıyla **kod akıtan bir challenge-response** çalıştırıyor. Kanıtlar (resmi istemci, hook DLL):
+
+- `SMSG 0x2E9` (264 B) gelince framework `SetMessageHandler(0x4B8, 0x03CD0020, 0x03CD0020)` kuruyor.
+- Her `SMSG 0x4B8` için framework, blob'un [len][kod] parçalarını çalışma zamanı tamponlarına
+  kopyalıyor (COPY this=0x02AEFE58 dst=0x03CD005E len=240 …), install parçasını çalıştırıp
+  istek paketini gönderiyor, sonra handler parçasını 0x03D00000/… adreslerine kopyalayıp
+  `SetMessageHandler` ile bağlıyor:
+  - 0x41D → 0x03D00000 (1789 B; CVar/SFile/SMem/veri toplar), 0x41C → 0x03D10000 (133 B),
+    0x4B9 → 0x03D20000 (350 B; Lua), 0x41B → 0x05660000 (316 B).
+- `SMSG 0x41B` challenge'ları **sunucudan gelen x86 kodu** taşıyor: handler, mesajı
+  `param` anahtarıyla XOR/ror açıp kodu `handler+0x154`'e kopyalıyor ve çağırıyor; dönen yanıt
+  `CMSG 0x41B` olarak gidiyor (gözlenen çiftler: 40→12, 660→112, 192→1996, 84→48, 88→20, 80→20).
+- Anahtar (param) her mesajda framework tarafından rastgele yenileniyor (ör. 0x4AC5131D).
+- `SMSG 0x41D` içeriği: `[uint32 97165][zlib]` — Warmane'in özel içerik veritabanı
+  (Battle Royale, Azshara Crater, özel spell/item metinleri). Native tarafta zlib ile açılabiliyor.
+- Handler'ların kullandığı istemci fonksiyonları: CDataStore (0x47B0A0 Put, 0x47B560 GetArray,
+  0x47B6B0 GetDataInSitu, 0x47B3C0 data), WDataStore (0x403EC0/0x403F10), ClientServices::Send2
+  (0x6B0B50), SetMessageHandler (0x6B0B80), SMem (0x76E540/0x76E5E0), CVar (0x76677B0/767100/
+  767460), SFile2 (0x422140), Lua (0x84DBF0/0x84EC50/0x84F860), SComp (0x778180).
+
+Sonuç: tam uyum için sunucunun gönderdiği x86 kodunu istemci imajı eşliğinde çalıştıracak bir
+sandbox + bu istemci fonksiyonlarının köprüleri gerekir (Unicorn altyapısı WardenEmu'da mevcut).
+Mevcut durumda karakter listesi ve dünyaya giriş çalışıyor; dünya içi periyodik buck exchange
+yanıtlanamadığı için oturum ~1 dk sonra düşüyor.
+
 ## YAPILDI (2026-10-17)
 
 
