@@ -76,8 +76,10 @@ Oyun içinde ~1 dk sonra düşmenin nedeni cevaplanmayan `SMSG 0x41B` challenge'
   dword geri çözülünce 0). `--handler` sunucunun 0x41B işleyicisini, `--lua` 0x4B9
   betiğini çözer.
 - **Hâlâ yapılmadı:** 0x41D/0x41C veri paketlerini işleyen sunucu işleyicileri kurulmuyor
-  (paketler yalnız loglanıyor). 0x4B9 Lua betiği çözülüp `FrameScript_Execute` ile
-  çalıştırılıyor. Uzun challenge'lar yeni istemci fonksiyonu köprüleri gerektirebilir; eksik
+  (paketler yalnız loglanıyor). 0x4B9 Lua betiği doğru tohumla çözülüp `FrameScript_Execute`
+  ile çalıştırılıyor: işleyici ilk baytı `CDataStore::GetByte` ile anahtar tohumu olarak
+  okuyor, kalanı onunla çözüyor (eskiden tohum 0 sanılıp ilk bayt da çözülüyordu; karakter
+  seçiminde Lua sözdizimi hatası veriyordu). Uzun challenge'lar yeni istemci fonksiyonu köprüleri gerektirebilir; eksik
   köprü çağrısı `Logs/buck-data.log`'a düşer ve `BuckCodeEmu.cpp`'deki tabloya eklenir.
   Offline testler: `BuckSmoke --handler captures/handler-41b.bin captures/challenge-40-a.bin
   46c7000` (sunucunun işleyicisiyle cevap) ve `BuckSmoke --lua captures/lua-4b9.bin`.

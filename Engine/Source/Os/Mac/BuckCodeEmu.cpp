@@ -65,7 +65,7 @@ constexpr uint32_t CLIENT_STORE_PUT8 = 0x0047AFE0;
 constexpr uint32_t CLIENT_STORE_PUT32 = 0x0047B0A0;
 constexpr uint32_t CLIENT_STORE_GET_ARRAY = 0x0047B560;
 constexpr uint32_t CLIENT_STORE_GET_IN_SITU = 0x0047B6B0;
-constexpr uint32_t CLIENT_STORE_IS_READ = 0x00464560;
+constexpr uint32_t CLIENT_STORE_GET_BYTE = 0x00464560;
 constexpr uint32_t CLIENT_MEMSET = 0x0040BB80;
 constexpr uint32_t CLIENT_MEMCPY = 0x00414760;
 constexpr uint32_t CLIENT_STRLEN = 0x00412770;
@@ -481,12 +481,26 @@ bool BuckCodeEmu::Impl::HandleClientCall(uint32_t address) {
             finish(8);
             return true;
         }
-        case CLIENT_STORE_IS_READ: {
+        case CLIENT_STORE_GET_BYTE: {
+            // CDataStore::GetByte: consumes the next byte of the message and returns it. The
+            // 0x4B9 handler uses the first payload byte as its rolling-XOR seed.
+            uint32_t buffer = 0;
+            uint32_t base = 0;
             uint32_t size = 0;
             uint32_t read = 0;
+            ReadWord(ecx + STORE_DATA, buffer);
+            ReadWord(ecx + STORE_BASE, base);
             ReadWord(ecx + STORE_SIZE, size);
             ReadWord(ecx + STORE_READ, read);
-            result = read == size ? 1 : 0;
+
+            uint8_t byte = 0;
+
+            if (read < size && buffer) {
+                ReadMemory(buffer + read - base, &byte, 1);
+                WriteWord(ecx + STORE_READ, read + 1);
+            }
+
+            result = byte;
             finish(0);
             return true;
         }

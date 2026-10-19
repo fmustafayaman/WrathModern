@@ -153,12 +153,13 @@ int main(int argc, char** argv) {
             return 2;
         }
 
-        // The delivered 0x4B9 handler's rolling XOR (seed IsRead() = 0).
+        // The delivered 0x4B9 handler's rolling XOR: the first payload byte is the key seed
+        // (CDataStore::GetByte), the NUL-terminated script follows.
         std::string script;
-        uint8_t key = 0;
+        uint8_t key = blob.empty() ? 0 : blob[0];
 
-        for (uint8_t byte : blob) {
-            uint8_t decoded = byte ^ key;
+        for (size_t i = 1; i < blob.size(); i++) {
+            uint8_t decoded = blob[i] ^ key;
             key = static_cast<uint8_t>(key + decoded + 1);
 
             if (!decoded) {

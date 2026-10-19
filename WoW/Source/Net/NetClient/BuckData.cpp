@@ -188,13 +188,18 @@ bool ExtractChallengeHandler(const uint8_t* data, uint32_t size, std::vector<uin
 }
 
 int32_t HandleLuaScript(const uint8_t* data, uint32_t size) {
-    // The delivered 0x4B9 handler decodes a NUL-terminated script in place: each byte is XORed
-    // with a running key that advances by the decoded byte plus one, seeded with IsRead() (0
-    // for a message that still has bytes to read), then hands it to luaL_loadbuffer/lua_pcall.
-    std::string script;
-    uint8_t key = 0;
+    // The delivered 0x4B9 handler first reads one byte with CDataStore::GetByte: that byte is
+    // the seed for the rolling XOR, not part of the script. It then decodes the rest of the
+    // message in place, each byte offset by a key that advances by the decoded byte plus one,
+    // and hands the NUL-terminated result to luaL_loadbuffer/lua_pcall.
+    if (size < 2) {
+        return 1;
+    }
 
-    for (uint32_t i = 0; i < size; i++) {
+    std::string script;
+    uint8_t key = data[0];
+
+    for (uint32_t i = 1; i < size; i++) {
         uint8_t decoded = data[i] ^ key;
         key = static_cast<uint8_t>(key + decoded + 1);
 
@@ -205,7 +210,8 @@ int32_t HandleLuaScript(const uint8_t* data, uint32_t size) {
         script += static_cast<char>(decoded);
     }
 
-    BuckLog("delivered Lua script (%u bytes): %.200s", static_cast<uint32_t>(script.size()), script.c_str());
+    BuckLog("delivered Lua script (%u bytes, seed %02x): %.200s", static_cast<uint32_t>(script.size()),
+        data[0], script.c_str());
 
     if (!script.empty()) {
         FrameScript_Execute(script.c_str(), nullptr, nullptr);
