@@ -25,7 +25,7 @@ binary="$app/Contents/MacOS/WrathModern"
 mkdir -p "$out"
 
 # One run at a time: runs share the game directory's WTF and Screenshots folders and the account
-lock="${TMPDIR:-/tmp}/wrathmodern-autotest.lock"
+lock="/tmp/wrathmodern-autotest.lock"
 waited=0
 while ! mkdir "$lock" 2>/dev/null; do
     if [ "$waited" -ge 900 ]; then
