@@ -131,8 +131,32 @@ Başlangıç noktası: commit `f917b1c`, etiket `wowre-start` (`git diff wowre-s
 
 - (henüz yok)
 
+## Kararlar
+
+- **2026-10-21 — dal amacı:** `WowRe` ve `warmane-login` iki ayrı proje olarak paralel yürür.
+  `warmane-login` bu proje bitene kadar eski kod tabanıyla (D3D9 shim) devam edebilir; `WowRe`
+  bittiğinde native Metal + mod altyapısı oraya portlanır. Bu yüzden `WowRe` değişiklikleri
+  **commit'ler küçük ve konu bazlı** tutulur (sonradan `cherry-pick`/rebase edilebilsin) ve Warmane'e
+  özgü hiçbir şey `WowRe`'ye girmez.
+- **2026-10-21 — canlı test sunucusu:** kullanıcının kendi AzerothCore sunucusu
+  (Dokploy, `yaman@100.71.234.118`, "WoW Bot Brain" compose; ayrıntı hafızada `selfwow-server`).
+  `OSX` platform kimliği burada sorun değil.
+- **2026-10-21 — oyun dizini:** `WowRe` derlemesi oyun dizinine `WrathModern-WowRe.app` adıyla
+  kopyalanır. (Kullanıcı `warmane-login` derlemesini oyun dizininden sildi.)
+
+## Faz 3'te yeniden değerlendirilecek eski kararlar
+
+`macos` dalında şu St0ny yamaları bilerek dışarıda bırakılmıştı (o zaman canlı ChromieCraft'ta
+ban riski ve Windows'a özgülük gerekçesiyle):
+
+- `timer` (#5) — Mac saati zaten hassas; Reforged preset'inde var. Gerçekten gerekli mi ölç.
+- `mouse flicker` (#83), `windowfix` — Windows'a özgü; macOS karşılığı gerekip gerekmediği test edilecek.
+- `occluder` (#61) — yalnızca özel ortam paketleri için anlamlı; kendi sunucumuzda Reforged
+  ortam paketleri kullanılacaksa gerekli.
+- `nothrottle`, `cache` — AzerothCore AntiDOS nedeniyle **dışarıda kalır** (kendi sunucumuzda da
+  paket seli istemiyoruz).
+
 ## Açık sorular
 
-- Canlı test için hangi sunucu kullanılacak (AzerothCore self-host mu, Warmane mi)? `WowRe` istemcisi
-  `OSX` raporlar; Warmane bunu reddeder (logon result 9).
-- Oyun dizinine `WowRe` derlemesi hangi adla kopyalanacak (`WrathModern-WowRe.app` önerisi).
+- Kendi sunucuda otomatik giriş: `macos` tabanında `WRATHMODERN_AUTOLOGIN` var mı, yoksa taşınmalı mı?
+  (Kullanıcı adına giriş yapılmaz; test hesabı/kimlik dosyası kullanıcıdan gelir.)
