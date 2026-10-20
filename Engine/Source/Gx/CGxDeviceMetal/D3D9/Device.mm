@@ -891,6 +891,36 @@ void DeviceImpl::ExecutePendingClears() {
     }
 }
 
+// External passes
+
+bool DeviceImpl::AcquireExternalTargetsImpl(void** commandBuffer, void** color, void** depth, uint32_t* width, uint32_t* height, uint32_t* sampleCount) {
+    ImplState& s = *this->m_state;
+    SurfaceImpl* target = s.m_renderTarget;
+
+    if (!target) {
+        return false;
+    }
+
+    this->ExecutePendingClears();
+    this->EndEncoders();
+
+    // The external passes read and write both targets in this command buffer
+    target->Use().m_lastUse = this->m_serial;
+    target->MarkRendered();
+
+    if (s.m_depthStencil) {
+        s.m_depthStencil->Use().m_lastUse = this->m_serial;
+    }
+
+    *commandBuffer = (__bridge void*)this->Commands();
+    *color = (__bridge void*)target->m_texture;
+    *depth = s.m_depthStencil ? (__bridge void*)s.m_depthStencil->m_texture : nullptr;
+    *width = target->m_width;
+    *height = target->m_height;
+    *sampleCount = static_cast<uint32_t>(target->m_texture.sampleCount);
+    return true;
+}
+
 // Queries
 
 void DeviceImpl::BeginOcclusionQuery(QueryImpl* query) {
@@ -2878,5 +2908,9 @@ HRESULT Device::SetVertexShader(VertexShader* shader) { return static_cast<Devic
 HRESULT Device::SetPixelShader(PixelShader* shader) { return static_cast<DeviceImpl*>(this)->SetPixelShaderImpl(shader); }
 HRESULT Device::SetVertexShaderConstantF(uint32_t start, const float* data, uint32_t count) { return static_cast<DeviceImpl*>(this)->SetShaderConstantsImpl(true, start, data, count); }
 HRESULT Device::SetPixelShaderConstantF(uint32_t start, const float* data, uint32_t count) { return static_cast<DeviceImpl*>(this)->SetShaderConstantsImpl(false, start, data, count); }
+void* Device::GetMetalDevice() { return (__bridge void*)static_cast<DeviceImpl*>(this)->m_device; }
+bool Device::AcquireExternalTargets(void** commandBuffer, void** color, void** depth, uint32_t* width, uint32_t* height, uint32_t* sampleCount) {
+    return static_cast<DeviceImpl*>(this)->AcquireExternalTargetsImpl(commandBuffer, color, depth, width, height, sampleCount);
+}
 
 }

@@ -381,6 +381,7 @@ public:
     HRESULT GetDepthStencilSurfaceImpl(Surface** surface);
     HRESULT StretchRectImpl(Surface* source, const Rect* sourceRect, Surface* dest, const Rect* destRect, D3DTEXTUREFILTERTYPE filter);
     HRESULT ClearImpl(uint32_t count, const D3DRECT* rects, uint32_t flags, uint32_t color, float z);
+    bool AcquireExternalTargetsImpl(void** commandBuffer, void** color, void** depth, uint32_t* width, uint32_t* height, uint32_t* sampleCount);
     HRESULT DrawImpl(D3DPRIMITIVETYPE type, bool indexed, int32_t baseVertex, uint32_t start, uint32_t primitiveCount);
     HRESULT SetRenderStateImpl(D3DRENDERSTATETYPE state, uint32_t value);
     HRESULT SetSamplerStateImpl(uint32_t sampler, D3DSAMPLERSTATETYPE type, uint32_t value);

@@ -243,6 +243,13 @@ public:
     HRESULT SetVertexShaderConstantF(uint32_t start, const float* data, uint32_t count);
     HRESULT SetPixelShaderConstantF(uint32_t start, const float* data, uint32_t count);
 
+    // Metal access for code that draws with Metal itself. GetMetalDevice returns the id<MTLDevice>.
+    // AcquireExternalTargets runs pending clears, ends the open encoders and returns the frame's
+    // command buffer and the current colour and depth textures, unretained; drawing resumes into the
+    // same targets afterwards. It fails while no colour target is set.
+    void* GetMetalDevice();
+    bool AcquireExternalTargets(void** commandBuffer, void** color, void** depth, uint32_t* width, uint32_t* height, uint32_t* sampleCount);
+
 protected:
     Device() = default;
 };

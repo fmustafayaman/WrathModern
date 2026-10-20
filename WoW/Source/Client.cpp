@@ -101,6 +101,7 @@
 #include "WoW/Source/WorldClient/AreaList.h"
 #include "WoW/Source/WorldClient/FrameTime.h"
 #include "WoW/Source/WorldClient/Map.h"
+#include "WoW/Source/WorldClient/Mods/ModHost.h"
 #include "WoW/Source/WorldClient/MapWeather.h"
 #include "WoW/Source/WorldClient/shadow.h"
 #include "WoW/Source/WorldClient/World.h"
@@ -1639,6 +1640,10 @@ void ClientDestroyGame(int32_t charSelect, int32_t resumeGlue, int32_t worldLogi
 // VERIFY: e61971e0 auto
 // OFFSET: 0x004066D0
 int32_t DestroyEngineCallback(const void* data, void* param) {
+#if defined(WRATHMODERN_MODS)
+    // Mods release their Metal objects while the graphics device still exists
+    ModsShutdown();
+#endif
     RemoveConsoleDeviceDefaultCallback(SetDefaults);
     ClientDestroyGame(0, 0, 0);
     WowClientDestroy();

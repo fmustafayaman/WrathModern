@@ -77,6 +77,7 @@
 #include "WoW/Source/Ui/TabardModelFrame.h"
 #include "WoW/Source/Ui/UIBindings.h"
 #include "WoW/Source/Ui/UIMacros.h"
+#include "WoW/Source/WorldClient/Mods/ModHost.h"
 #include "WoW/Source/WorldClient/Barrier.h"
 #include "WoW/Source/WorldClient/DayNight.h"
 #include "WoW/Source/WorldClient/DayNight__DNInfo.h"
@@ -1749,6 +1750,7 @@ void CGWorldFrame::OnWorldRender() {
     scene->SetFloat18(-CWorld::s_unk_CD7758);
     scene->m_passMask = CWorld::m_M2PassMask;
     scene->Draw(M2PASS_0);
+    WRATHMODERN_MOD_HOOK(WM_HOOK_AFTER_OPAQUE);
 
     if (s_spellShadowStyle < 2) {
         DrawSpellCursorShadow(0x200122);
@@ -1757,6 +1759,7 @@ void CGWorldFrame::OnWorldRender() {
     GxuSortDrawList(GxuCat_0, GxuSort_VtxStream, *World::GetCamPos());
     GxuFlushDrawList(GxuCat_0, *World::GetCamPos());
     CWorldScene::RenderDetailDoodads();
+    WRATHMODERN_MOD_HOOK(WM_HOOK_BEFORE_LIQUIDS);
 
     if (World::SceneCamLiquidStatus(nullptr)) {
         CWorldScene::RenderBarriers(this->m_elapsedSec);
@@ -1783,6 +1786,7 @@ void CGWorldFrame::OnWorldRender() {
     CWorldScene::RenderParticulate();
     GxuSortDrawList(GxuCat_1, GxuSort_B2F, *World::GetCamPos());
     GxuFlushDrawList(GxuCat_1, *World::GetCamPos());
+    WRATHMODERN_MOD_HOOK(WM_HOOK_BEFORE_GLARES);
     DayNight::RenderGlares();
     PlayerNameUpdateLate();
 
@@ -1794,6 +1798,7 @@ void CGWorldFrame::OnWorldRender() {
     SmartScreenRectClearGrid(1);
     CGChatBubbleFrame::OnWorldRender(this);
     GxXformSetViewport(minX, maxX, minY, maxY, minZ, maxZ);
+    WRATHMODERN_MOD_HOOK(WM_HOOK_BEFORE_SCREEN_EFFECTS);
     FFX::Finish();
     CVehiclePassenger_C::PostRenderUpdateAll();
 }

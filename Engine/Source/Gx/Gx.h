@@ -55,6 +55,19 @@ CGxDevice* CreateCGxDeviceOpenGl();
 CGxDevice* CreateCGxDeviceMetal();
 // macOS: size of the hardware cursor in points per cursor bitmap pixel
 void GxCursorSetScale(float scale);
+// macOS: Metal access for code that draws with Metal itself (mods). GxMetalDevice returns the
+// id<MTLDevice>; GxMetalAcquireTargets ends the device's encoders and returns the frame's command
+// buffer and current colour and depth textures, unretained. Both fail on another API.
+struct GxMetalTargets {
+    void* commandBuffer;
+    void* color;
+    void* depth;
+    uint32_t width;
+    uint32_t height;
+    uint32_t sampleCount;
+};
+void* GxMetalDevice();
+int32_t GxMetalAcquireTargets(GxMetalTargets& targets);
 CGxDevice* CreateGxDevice(EGxApi api, GxWindowProc windowProc, const CGxFormat& format);
 int32_t GxAdapterDesktopMode(CGxMonitorMode& mode);
 int32_t GxAdapterID(uint16_t& vendorID, uint16_t& deviceID, uint32_t& driverVersionHi, uint32_t& driverVersionLo);

@@ -93,6 +93,13 @@ if (WRATHMODERN_CLIENT_PATCHES)
     add_compile_definitions(WRATHMODERN_CLIENT_PATCHES=1)
 endif ()
 
+# Mods: dynamic libraries in the game's Mods folder that draw with Metal at hooks of the world render
+# (WoW/Source/WorldClient/Mods/WMModAPI.h). Without a Mods folder nothing is loaded.
+option(WRATHMODERN_MODS "Load mods from the game's Mods folder (macOS)" ON)
+if (WRATHMODERN_MODS AND WOWDECOMP_PLATFORM_MAC)
+    add_compile_definitions(WRATHMODERN_MODS=1)
+endif ()
+
 # macOS platform support, linked into every module so Mac/ implementations can use it.
 if (WOWDECOMP_PLATFORM_MAC)
     add_subdirectory(Platform/Mac)

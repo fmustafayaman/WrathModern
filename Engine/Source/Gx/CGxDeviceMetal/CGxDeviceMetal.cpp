@@ -3427,6 +3427,21 @@ void GxCursorSetScale(float scale) {
     }
 }
 
+void* GxMetalDevice() {
+    CGxDeviceMetal* device = dynamic_cast<CGxDeviceMetal*>(g_theGxDevicePtr);
+    return device && device->m_d3dDevice ? device->m_d3dDevice->GetMetalDevice() : nullptr;
+}
+
+int32_t GxMetalAcquireTargets(GxMetalTargets& targets) {
+    CGxDeviceMetal* device = dynamic_cast<CGxDeviceMetal*>(g_theGxDevicePtr);
+
+    if (!device || !device->m_d3dDevice) {
+        return 0;
+    }
+
+    return device->m_d3dDevice->AcquireExternalTargets(&targets.commandBuffer, &targets.color, &targets.depth, &targets.width, &targets.height, &targets.sampleCount);
+}
+
 CGxDevice* CreateCGxDeviceMetal() {
     void* memory = SMemAlloc(sizeof(CGxDeviceMetal), __FILE__, __LINE__, 0);
 
