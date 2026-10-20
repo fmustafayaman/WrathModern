@@ -52,6 +52,7 @@ FILE* s_log;
 // the server then re-sends SMSG_CHAR_ENUM. A new character list after a login attempt therefore
 // means "try again" (the second attempt is not challenged and enters the world).
 uint32_t s_characterListEpoch;
+uint32_t s_characterListSeenAt;
 uint32_t s_loginEpoch;
 uint32_t s_loginAttempts;
 uint32_t s_loginSentAt;
@@ -181,8 +182,6 @@ int32_t AutologinTick(const void* data, void* param) {
         case AUTOLOGIN_WAIT_REALM: {
             if (connection && connection->m_characterList.Count() > 0) {
                 CHARACTER_INFO& character = connection->m_characterList.m_data[0];
-                Log("character list: %u entries; entering world as %s", connection->m_characterList.Count(),
-                    character.m_name);
 
                 // Go through the glue, exactly like the Enter World button: it draws the loading
                 // screen, calls ClientInitializeGame (which installs the SMSG_LOGIN_VERIFY_WORLD
@@ -194,6 +193,21 @@ int32_t AutologinTick(const void* data, void* param) {
                     break;
                 }
 
+                // Give the glue a few seconds to finish drawing the character and installing the
+                // selection callbacks. Entering in the same tick the SMSG_CHAR_ENUM arrives is
+                // what the server rejects immediately; a human presses the button later.
+                if (!s_characterListSeenAt) {
+                    s_characterListSeenAt = now;
+                    Log("character list: %u entries; entering world as %s in 5 seconds",
+                        connection->m_characterList.Count(), character.m_name);
+                    break;
+                }
+
+                if (now - s_characterListSeenAt < 5000) {
+                    break;
+                }
+
+                s_characterListSeenAt = 0;
                 s_worldVerified = false;
                 s_worldVerifiedAt = 0;
                 CGlueMgr::EnterWorld();
@@ -295,7 +309,7 @@ int32_t AutologinTick(const void* data, void* param) {
             // rejected as well, and a tight retry loop only keeps the account hot. Leave the
             // client at the character screen and let a human click anytime; the automatic
             // retry below waits half an hour so the server side has settled.
-            if (s_characterListEpoch != s_loginEpoch && now - s_loginSentAt > 1800000 && s_loginAttempts < 6) {
+            if (s_characterListEpoch != s_loginEpoch && now - s_loginSentAt > 480000 && s_loginAttempts < 6) {
                 Log("world entry after a long backoff; pressing Enter World again (attempt %u)",
                     s_loginAttempts + 1);
                 s_worldVerified = false;
