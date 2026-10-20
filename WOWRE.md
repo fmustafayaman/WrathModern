@@ -121,6 +121,50 @@ tamamını doğrudan Metal karşılığına bağlayınca `D3D9/Device.h` silineb
 | İmleç | `SetCursorProperties`, `ShowCursor` ×3, `SetCursorScale` ×2, `GetCursorImage` | `NSCursor` (zaten native) |
 | Mod | `GetMetalDevice`, `AcquireExternalTargets` | WMModAPI köprüsü |
 
+### Faz 1 tasarımı (2026-10-21)
+
+**Model: `CGxDeviceOpenGl`, `CGxDeviceD3d` değil.** Orijinal istemcide D3D'siz bir backend zaten var:
+`CGxDeviceOpenGl` (binary'den çözülmüş, 113 `VERIFY`). `CGxDevice` durumunu doğrudan kendi API'sinin
+durum adlarına (`m_deviceStates[90]`: `Ds_DepthMask`, `Ds_Blend`, `Ds_CullFace` ...) eşliyor;
+`IRsSendToHw`/`IStateSync*` iskeleti Metal için aynen kullanılabilir. Native `CGxDeviceMetal` bu
+iskeleti izler; satır satır D3D kopyası olmaktan çıkar. Karşılaştırılabilirlik için her metodun
+başına hangi orijinal fonksiyonu (OpenGL ya da D3D sürümü) örnek aldığı yazılır.
+
+**Shader hedefi D3D SM kalır.** İstemcinin `.bls` setleri API'ye göre ayrılır (D3D: `vs_1_1`…`vs_3_0`,
+`ps_1_1`…`ps_3_0`; OpenGL: `arbvp1`, `arbfp1`, NV register combiners). Metal cihazı D3D setini
+yüklemeye devam eder: hem en zengin set odur hem de St0ny'nin 8 ışık shader'ları (`patch-5.MPQ`)
+D3D bytecode'udur. Çevirici (`ShaderBytecode` + `ShaderTranslator`) bu yüzden kalır.
+
+**Hedef dosya düzeni** (`Engine/Source/Gx/CGxDeviceMetal/`):
+
+```
+CGxDeviceMetal.h / .mm     CGxDevice sanal metodları, IRsSendToHw, IStateSync* (OpenGL iskeleti)
+MetalContext.h / .mm       MTLDevice, kuyruk, seri numaraları, komut tamponu, CAMetalLayer, sunum
+MetalResources.h / .mm     UploadHeap, buffer (CGxPool/CGxBuf), doku (CGxTex), sorgular
+MetalFormats.h / .cpp      EGxTexFormat / CGxFormat → MTLPixelFormat (D3DFORMAT ara adımı yok)
+MetalPipeline.h / .mm      pipeline / depth-stencil / sampler önbellekleri (+ ileride binary archive)
+MetalFixedFunction.h/.cpp  sabit fonksiyon MSL üretici; anahtarı CGxDevice durumundan kurulur
+Shader/ShaderBytecode.*    SM1–3 bytecode okuyucu (D3D9Metal isim alanından çıkarılır)
+Shader/ShaderTranslator.*  bytecode → MSL
+```
+
+**Strangler sırası (her adım derlenir ve görsel olarak eskisiyle aynı olmalı):**
+
+- 2a. Görsel taban: mevcut shim derlemesiyle giriş ekranı + karakter seçimi + dünyada sabit bir
+  konumdan pencere görüntüleri (`Tools/` altına betik). Sonraki her adım bununla karşılaştırılır.
+- 2b. `ShaderBytecode`/`ShaderTranslator`/`FixedFunction`'ı D3D9 arayüzünden bağımsız `GxMetal`
+  isim alanına taşı (yalnızca isim/yer değişikliği; davranış aynı).
+- 2c. `UploadHeap`/`BufferCore`/`TextureCore`/pipeline önbellekleri/seri numaralarını
+  `MetalContext` + `MetalResources`'a çıkar; `DeviceImpl` geçici olarak bunların üstünde kalsın.
+- 3a. Kaynaklar: `CGxPool`/`CGxBuf`/`CGxTex`/`CGxQuery` doğrudan `MetalResources` nesneleri tutsun
+  (`D3D9Metal::VertexBuffer/Texture/Query` kalkar).
+- 3b. Hedefler + sunum: `DeviceSetRenderTarget`, `SceneClear`, `ScenePresent`, `TexCopy/TexStretch`,
+  okunabilir derinlik (`Depth32Float_Stencil8`, `ShaderRead`).
+- 3c. Durum: `IRsSendToHw` → Metal durum anahtarları; `EDeviceState`/`DsSet`/D3DRS tabloları kalkar.
+- 3d. Çizim: `Draw` → doğrudan render encoder.
+- 4. `D3D9/Device.h`, `D3D9Types.h`, `Resources.mm`'nin D3D arayüzü silinir; `Mac/CGxDevice.mm`
+  adaptör sorguları `MTLDevice`/`CGDisplay*`'e taşınır. `grep -r D3D9Metal` boş dönmeli.
+
 ## İlerleme günlüğü
 
 ### 2026-10-21 — başlangıç
@@ -133,14 +177,9 @@ Başlangıç noktası: commit `f917b1c`, etiket `wowre-start` (`git diff wowre-s
 
 ## Sıradaki adımlar (yarıda kalırsa buradan devam)
 
-1. [ ] Faz 1 ayrıntılı tasarımı: `CGxDeviceMetal`'in her sanal metodunu ve `IStateSync*` yolunu
-       `DeviceImpl` içindeki karşılığına eşleyen tablo (bu dosyaya eklenecek).
-2. [ ] `D3D9/` içindeki Metal çekirdeğini (`UploadHeap`, `BufferCore`, `TextureCore`, pipeline,
-       translator, fixed function) `MetalCore` olarak D3D tiplerinden bağımsızlaştır; davranış
-       değişmeden derlenmeli ve oyun aynı görünmeli.
-3. [ ] `CGxDeviceMetal`'i adım adım `MetalCore`'a doğrudan bağla; her adımda derle + görsel test.
-4. [ ] `D3D9/` arayüz katmanını sil, `Mac/CGxDevice.mm` adaptör sorgularını doğrudan Metal/CG'ye
-       taşı.
+1. [x] Faz 1 tasarımı (yukarıda "Faz 1 tasarımı").
+2. [ ] 2a görsel taban — GUI testi; kullanıcı oyunda değilken (bkz. hafıza `gui-testing-etiquette`).
+3. [ ] 2b → 2c → 3a → 3b → 3c → 3d → 4 (tasarımdaki sırayla, her biri ayrı commit).
 
 ## Yapılamayanlar / riskler
 
