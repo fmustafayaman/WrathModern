@@ -98,6 +98,7 @@
 #include "WoW/Source/UIUtil/Camera.h"
 #include "WoW/Source/UIUtil/InputControl.h"
 #include "WoW/Source/UIUtil/SmartScreenRect.h"
+#include "WoW/Source/Autotest.h"
 #include "WoW/Source/WorldClient/AreaList.h"
 #include "WoW/Source/WorldClient/FrameTime.h"
 #include "WoW/Source/WorldClient/Map.h"
@@ -1109,6 +1110,8 @@ int32_t InitializeEngineCallback(const void* data, void* param) {
     TextureSetMaxAnisotropy(s_textureMaxAnisotropy[mode]);
 
     InitializeClient();
+    // Unattended test runs (WRATHMODERN_* environment variables); inert otherwise
+    AutotestInitialize();
 
     return 1;
 }
