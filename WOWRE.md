@@ -48,15 +48,30 @@ Kaynaklar (hepsi GitHub'da):
 
 ```sh
 cd ../WrathModern-WowRe
-cmake -S . -B build/mac -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake -S . -B build/mac -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DWRATHMODERN_GAME_DIR="/Volumes/Yaman SSD/WoW_Wrath" \
+  -DWRATHMODERN_APP_NAME=WrathModern-WowRe
 ninja -C build/mac WrathModern
 # örnek mod
 cmake -S Mods/Samples/DepthFog -B build/mods/DepthFog -G Ninja && ninja -C build/mods/DepthFog
 ```
 
-`WRATHMODERN_GAME_DIR` **verilmedi**: verilirse derleme `WrathModern.app`'i oyun dizinine kopyalar ve
-oradaki `warmane-login` derlemesinin üzerine yazar. Canlı test için ayrı bir uygulama adı/kopya
-yöntemi kurulana kadar oyun dizinine kopyalama yok (bkz. "Açık sorular").
+- **Oyun dizini artık `/Volumes/Yaman SSD/WoW_Wrath`** (AGENTS.md'deki `wow3.3.5a` diskte yok).
+  Derleme kendini oraya `WrathModern-WowRe.app` adıyla kopyalar; aynı dizindeki `WrathModern.app`
+  ve `WrathModern.bak.app` başka derlemelerdir, **dokunulmaz**.
+- `Tools/sign-app.sh` (warden dalından alındı) hem `bin/` içindeki uygulamayı hem kopyayı
+  `WrathModern Dev` kimliğiyle imzalar; disk erişim izni yeniden derlemelerde korunur.
+
+### Yerel referanslar (Windows Reforged kurulumu)
+
+`WoW_Wrath` içinde orijinal Reforged kurulumu var; port doğrulamasında **kesin referans** budur:
+
+- `WoW_Wrath/mods/`: `AwesomeWotlkLib.dll`, `CoAVolFog.dll` + `CoAVolFog.ini` + `fogdata.bin` +
+  `waterdata.bin` + `CoAVolFog.log`, `Lexara.dll`, `LuxShoulderCam.dll`, `libSiliconPatch.dll`.
+- `WoW_Wrath/LuxShoulderCam.cfg`, `Cache_AwesomeWotLK/`, `Fonts_AwesomeWotLK/`, `mtld3d*` (CrossOver
+  D3D9→Metal katmanı: görsel/performans karşılaştırma tabanı), `St0nys-AIO-WoW-EXE-Patcher/`.
+- `/Volumes/Yaman SSD/ProjectReforged/presets/`: `patcher_selection.ini` (Reforged'ın seçtiği
+  yamalar, örn. `timer=1`, `lux=1`, `farclip=1`) ve `CoAVolFog.ini`.
 
 ## Mimari notlar (kalıcı bilgi)
 
