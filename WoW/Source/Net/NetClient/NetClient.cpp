@@ -1,4 +1,5 @@
 #include "NetClient.h"
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <new>
@@ -28,6 +29,36 @@ static uint32_t s_idleStats[4];
 
 // STATIC: 0x00C5D654
 uint32_t NetClient::s_clientCount;
+
+#if defined(WOWDECOMP_PLATFORM_MAC)
+// Diagnostics: WRATHMODERN_NETLOG=1 writes the opcode and size of every world packet to
+// Logs/net-opcodes.log. Only identifiers are written, never packet contents.
+static void NetLogOpcode(const char* direction, uint32_t opcode, uint32_t size) {
+    static int32_t s_enabled = -1;
+    static FILE* s_file;
+
+    if (s_enabled < 0) {
+        const char* value = getenv("WRATHMODERN_NETLOG");
+        s_enabled = value && value[0] == '1';
+    }
+
+    if (!s_enabled) {
+        return;
+    }
+
+    if (!s_file) {
+        s_file = fopen("Logs/net-opcodes.log", "w");
+
+        if (!s_file) {
+            s_enabled = 0;
+            return;
+        }
+    }
+
+    fprintf(s_file, "%u %s 0x%03X %u\n", OsGetAsyncTimeMs(), direction, opcode, size);
+    fflush(s_file);
+}
+#endif
 
 // VERIFY: 44b868cd manual
 // OFFSET: 0x006321B0
@@ -276,6 +307,9 @@ int32_t NetClient::ProcessMessage(uint32_t timeReceived, CDataStore* msg, int32_
     uint16_t msgId;
     msg->Get(msgId);
     this->ValidateMessageId(msgId);
+#if defined(WOWDECOMP_PLATFORM_MAC)
+    NetLogOpcode("in ", msgId, msg->m_size);
+#endif
 
     if (msgId < NUM_MSG_TYPES && this->m_handlers[msgId]) {
         return this->m_handlers[msgId](this->m_handlerParams[msgId], static_cast<NETMESSAGE>(msgId), timeReceived, msg);
@@ -583,6 +617,14 @@ void NetClient::Send(CDataStore* msg) {
     if (!size) {
         return;
     }
+
+#if defined(WOWDECOMP_PLATFORM_MAC)
+    if (size >= 2) {
+        uint16_t opcode;
+        memcpy(&opcode, msg->m_data + msg->m_read, sizeof(opcode));
+        NetLogOpcode("out", opcode, size);
+    }
+#endif
 
     if (this->m_suspended) {
         NetClient::HELDMESSAGE* held = this->m_heldMessages.NewNode(2, 0, 0);
