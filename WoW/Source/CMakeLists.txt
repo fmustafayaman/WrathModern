@@ -39,11 +39,20 @@ if (WOWDECOMP_PLATFORM_MAC)
     # The client reads its data from the directory holding the application, so development builds
     # can be copied into a game directory: -DWRATHMODERN_GAME_DIR=/path/to/World of Warcraft
     set(WRATHMODERN_GAME_DIR "" CACHE PATH "Game directory to copy the application into after each build")
+    # Name of the copy in the game directory, so builds of different branches can sit side by side
+    set(WRATHMODERN_APP_NAME "WrathModern" CACHE STRING "Name of the application copied into the game directory, without .app")
+
+    # A stable signature keeps macOS's grants (access to the game volume) across rebuilds
+    add_custom_command(TARGET Wow POST_BUILD
+        COMMAND ${CMAKE_SOURCE_DIR}/Tools/sign-app.sh "$<TARGET_BUNDLE_DIR:Wow>"
+        VERBATIM
+    )
 
     if (WRATHMODERN_GAME_DIR)
         add_custom_command(TARGET Wow POST_BUILD
-            COMMAND rsync -a --delete "$<TARGET_BUNDLE_DIR:Wow>/" "${WRATHMODERN_GAME_DIR}/$<TARGET_BUNDLE_DIR_NAME:Wow>/"
-            COMMENT "Copying the application into ${WRATHMODERN_GAME_DIR}"
+            COMMAND rsync -a --delete "$<TARGET_BUNDLE_DIR:Wow>/" "${WRATHMODERN_GAME_DIR}/${WRATHMODERN_APP_NAME}.app/"
+            COMMAND ${CMAKE_SOURCE_DIR}/Tools/sign-app.sh "${WRATHMODERN_GAME_DIR}/${WRATHMODERN_APP_NAME}.app"
+            COMMENT "Copying the application into ${WRATHMODERN_GAME_DIR}/${WRATHMODERN_APP_NAME}.app"
             VERBATIM
         )
     endif ()
