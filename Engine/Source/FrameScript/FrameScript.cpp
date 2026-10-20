@@ -1445,7 +1445,7 @@ void FrameScript_Destroy() {
 // VERIFY: 8009da99 manual
 // OFFSET: 0x0081AA00
 void FrameScript_SignalEvent(uint32_t index, lua_State* L, int32_t argCount) {
-    if (!s_scriptEvents.Count()) {
+    if (!s_scriptEvents.Count() || index >= s_scriptEvents.Count()) {
         return;
     }
 
@@ -1510,7 +1510,12 @@ void FrameScript_Flush() {
 // VERIFY: 34c0cd89 manual
 // OFFSET: 0x0081AC90
 void vFrameScript_SignalEvent(uint32_t index, const char* format, va_list args) {
-    if (!s_scriptEvents.Count()) {
+    // The MOTD (SCRIPT_EVENT_KNOWLEDGE_BASE_SYSTEM_MOTD_UPDATED, index 492) can arrive on the
+    // realm connection before GameUI creates the full game event table; only the 41 glue events
+    // exist then. Reading s_scriptEvents[492] used to return the MOTD string itself as a pointer
+    // and fault in TSList::Head (0x6574206e65656220, "be..."). Ignore events that are not
+    // installed yet; the chat MOTD is already appended by Packet_SMSG_MOTD.
+    if (!s_scriptEvents.Count() || index >= s_scriptEvents.Count()) {
         return;
     }
 

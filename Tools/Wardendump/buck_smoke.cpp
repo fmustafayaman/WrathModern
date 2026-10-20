@@ -148,9 +148,10 @@ int main(int argc, char** argv) {
         SmokeServices services;
         BuckCodeEmu emulator(&services);
         uint32_t token = static_cast<uint32_t>(strtoul(argv[4], nullptr, 16));
+        uint32_t hookOffset = argc >= 7 ? static_cast<uint32_t>(strtoul(argv[6], nullptr, 16)) : 0;
 
         if (!emulator.RunDataHandler(handler.data(), static_cast<uint32_t>(handler.size()),
-                payload.data(), static_cast<uint32_t>(payload.size()), token)) {
+                payload.data(), static_cast<uint32_t>(payload.size()), token, hookOffset)) {
             fprintf(stderr, "data handler failed\n");
             return 1;
         }

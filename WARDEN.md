@@ -501,3 +501,95 @@ modül BLLLoader'ın bıraktığı gibi; stack/heap özel RW; import stub sayfas
 MEM_IMAGE RX). VirtualAlloc/Protect/Free bu haritayı günceller. Replay 3000 ek kareyle hatasız; tarama
 kullanıcı alanını uçtan uca dolaşıyor. Not: MISC (OurLibrary stub'ları, STOP) gerçek süreçte istemcinin
 kendi verisine/koduna denk geldiği için özel RW bildiriliyor.
+
+---
+
+## 2026-10-20 — WardenSmoke "consumed 0" kök nedeni ve tek-check iterasyonu
+
+### Kök neden: replay'in modül önbelleği canlıdan farklıydı (RC4/framing değil)
+Canlı istemci her girişte **yerleşik (builtin) modülle** başlar ve sunucu modülü o oturumda
+indirilene kadar `g_wardenCache` boştur: ilk `ModuleUse` **cache miss** döner, yerleşik modül
+1 baytlık "module missing" cevabını verir, ardından sunucu modülü **503 baytlık transfer
+paketleriyle** parça parça gelir ve ancak `ModuleCache` çağrısından sonraki `ModuleUse` başarılı
+olur. `WardenSmoke`, `<module.bin>` verildiğinde ilk `ModuleUse`'u "cache hit" sayıyordu; bu yüzden
+yerleşik modül "module ok" (canlı `bf` yerine `be`, 2026-10-20 oturumunda `fa` yerine `fb`)
+diyor ve **sunucu modülü hemen aktive ediliyordu**. Sunucu modülünün RC4 durumu yerleşik modülün
+503'lük paketlerini çözemez → her paket `consumed 0`.
+
+Kanıt (oturum 71, aynı anahtar):
+- `--cache-hit` (eski davranış): `MODULE OUTPUT #0 ... fb [DIFFERS]`, live `fa`; ardından
+  `packet[1] 503 bytes, consumed 0`.
+- Yeni varsayılan (boş önbellek): `MODULE OUTPUT #0 ... fa [matches]`; `packet[1..36] 503 bytes,
+  consumed 503`; 287 baytlık pakette `MODULE CACHE ... 18284` → `MODULE USE ... cached module
+  (28780 byte image)`; 17 baytlık paket → 21 bayt canlı cevap.
+
+### Değişiklikler
+- `Tools/Wardendump/warden_smoke.cpp`:
+  - `ModuleUse` artık canlı `g_wardenCache` gibi: yalnızca **bu oturumdaki** `ModuleCache`
+    girdisiyle eşleşen id başarılı; `<module.bin>` sadece `--cache-hit` /
+    `WARDEN_REPLAY_CACHE_HIT=1` ile önceden yüklenmiş sayılır (önceki girişten cache).
+  - `SESSION` başına oturum listesi: `--list`, `--list-packets`, `--session <n>` (1 tabanlı,
+    negatif sondan). Varsayılan: paket içeren son oturum.
+  - `--until <n>`: yalnızca 0..n sunucu paketini besle ve dur (tek check üzerinde çalışmak için).
+  - `--dump-plain <dir>`: sunucu modülünün gördüğü **çözülmüş** paketi `packet-NNN.plain`
+    olarak yazar (modülün inbound RC4 durumunun kopyasıyla).
+  - `--feed <hex|@file>`: verilen **düz metin** Warden check payload'ını, modülün o anki
+    inbound RC4 durumuyla şifreleyip `Data()`'ya verir ve üretilen CMSG'yi basar. Böylece
+    check içeriği düzenlenip aynı RC4 konumunda yeniden oynatılabilir.
+  - `--account <name>`: `.zdata` hesap adı (canlı `LORADONAA`); yanlış ad 18 baytlık hesap
+    cevabını 15 bayta düşürüyordu.
+- `Engine/Source/Os/WardenEmu.h/.cpp`: yalnızca tanı için `CopyInboundRc4(state[0x102])`
+  (sunucu modüllerinin `object+0x122` inbound stream'i).
+
+### Doğrulama (canlı oturum 71, PID 27892, anahtar `Logs/warden-session-key.bin`)
+```
+WARDEN_CLIENT_EXE="/Volumes/Yaman SSD/wow3.3.5a/Wow.exe" \
+  Tools/Wardendump/WardenSmoke --account LORADONAA - \
+  "/Volumes/Yaman SSD/wow3.3.5a/Logs/warden-traffic.log" \
+  "/Volumes/Yaman SSD/wow3.3.5a/Logs/warden-session-key.bin"
+```
+(Repo kökünden çalıştırın: emülatörün tanı logu `./warden.log`'a gider; oyun dizininden
+çalıştırılırsa canlı `Logs/warden.log`'a eklenir.)
+Sonuç: **32/32 CMSG birebir** (02:52; 69 sunucu paketi). 02:45'teki 15/15 koşusu da birebir;
+ilk `fa`, 18284 baytlık blob → 28780 baytlık image, 21 baytlık `26aedd...`, 18 baytlık
+`eea93028...4c4f5241444f4e4141` (son 9 bayt `LORADONAA`) dahil.
+
+Aynı gün 03:04'te canlı oturum 73 (54 sunucu paketi, 17 cevap) **17/17 birebir** oynadı.
+Sunucu bu oturumda 341/364/400/384/310 baytlık **dosya check'leri** gönderdi; replay'in
+ürettiği 57/77/117/117/66/63 baytlık cevaplar canlı CMSG'lerle aynı (ADT SHA1'leri dahil).
+`warden.log`'daki "payload bytes=62" satırları kısaltmadır: trace'te aynı cevap 63, 70, 77…
+bayt; örneğin 310'luk check'in canlı logu 62 bayt gösterirken trace ve replay 63 bayt
+(`...4f975c`). Oturum 73 ayrıca ikinci bir modül indirmesi (`cb9e43d6...`, 18575 → 31718)
+içeriyor; replay onu da canlı gibi işledi.
+
+Tek check feed testi (aynı oturum):
+```
+... --session 71 --until 38 --dump-plain /tmp/plain - ...
+# PLAIN #38: 058411f31dd8ed0efee10e3621e9e33105
+... --session 71 --until 37 --feed @/tmp/plain/packet-038.plain - ...
+# MODULE OUTPUT: 26aedd8b26999b77e58228073fdd62375a370a0265  (canlıyla aynı)
+```
+Plaintext'te 1 bayt değiştirilince cevap da değişiyor (`26f4eeba...`), yani feed gerçekten
+modülü sürüyor.
+
+### 314 baytlık check (oturum 70) — blokaj: oturum anahtarı
+- Oturum 70: 63 sunucu paketi / 24 cevap. Hedef **packet[62] = 314 bayt**, beklenen cevap
+  **output[23] = 70 bayt**: `234e00b1...d510eb1def322190`.
+- `warden.log` satırı "payload bytes=62" yalnızca **kısaltma** (`WardenLogHex` 62'de kesiyor);
+  tam payload 70 bayt, `realm-packets.log` CMSG `size=74` = 4 opcode + 70.
+- Oturum 70'in 40 baytlık anahtarı yok: `Logs/warden-session-key.bin` 02:39:20'de oturum 71
+  tarafından üzerine yazıldı; oturum 70 482267129'da DISCONNECTED, süreci çıktı. Aynı dosyayla
+  oturum 70 oynatılınca `packet[0] 37 bytes, consumed 0` (yerleşik modül ilk paketi bile çözemiyor).
+  Trace + `warden-module-473d97b0.bin` + `ModuleUse key=ef7f...` yeterli, eksik olan tek şey
+  o oturumun 40 baytlık session key'i.
+- Gereken dump: 314'lük check'i alan oturumun `warden-session-key.bin` kopyası (bir sonraki
+  girişten **önce**). Anahtar hazır olunca:
+```
+WARDEN_CLIENT_EXE="/Volumes/Yaman SSD/wow3.3.5a/Wow.exe" \
+  Tools/Wardendump/WardenSmoke --session 70 --until 62 --trailing 1200 --dump-plain /tmp/p70 \
+  - "/Volumes/Yaman SSD/wow3.3.5a/Logs/warden-traffic.log" /tmp/warden-session-key-session70.bin
+# /tmp/p70/packet-062.plain = 314 baytlık check; cevap yukarıdaki 70 baytla karşılaştırılır.
+# İçeriği değiştirip aynı konumda denemek için:
+#   --session 70 --until 61 --feed @/tmp/p70/packet-062-edited.plain
+```
+`--feed` sunucu modülü için kalibre edildi (builtin modülün RC4 alanı farklı offsette).

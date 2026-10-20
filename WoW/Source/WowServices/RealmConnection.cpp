@@ -4,6 +4,7 @@
 #include "Engine/Source/Os/TimeManager.h"
 #include "Engine/Source/Storm/H/storm.h"
 #include "Engine/Source/Tempest/CRandom.h"
+#include "WoW/Source/Autologin.h"
 #include "WoW/Source/DB/DBClient/DBCacheInstances.h"
 #include "WoW/Source/Net/NetClient/BuckData.h"
 #include "WoW/Source/UIUtil/AddOns.h"
@@ -110,6 +111,7 @@ int32_t RealmConnection::HandleCharEnum(uint32_t msgId, uint32_t time, CDataStor
     }
 
     this->m_realmResponse->CharacterListReceived(this, this->m_characterList, success);
+    AutologinNotifyCharacterList();
 
     return 1;
 }

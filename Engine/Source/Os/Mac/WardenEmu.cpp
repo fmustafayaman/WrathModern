@@ -270,6 +270,11 @@ struct WardenEmu::Impl {
     uint32_t m_tlsValues[TLS_SLOT_COUNT] = { 0 };
     bool m_tlsUsed[TLS_SLOT_COUNT] = { false };
 
+    // The module asks GetLastError after the VM-device checks; Windows sets ERROR_FILE_NOT_FOUND
+    // (2) when QueryDosDeviceA names a device that does not exist. Returning zero made the
+    // module's 85-byte check answer differ from the official client's.
+    uint32_t m_lastError = 0;
+
     // The unhandled-exception filter the module installs (SetUnhandledExceptionFilter).
     uint32_t m_unhandledFilter = 0;
 
@@ -291,6 +296,7 @@ struct WardenEmu::Impl {
     uint32_t m_nextFileHandle = 0x0B000000;
     void* FileForHandle(uint32_t handle) const;
     uint32_t AddOpenFile(void* file);
+    void ReleaseOpenFiles(const char* why);
 
     // The address space as Windows describes it to the module (VirtualQuery), page granular,
     // sorted and non-overlapping; anything not listed is free. It describes the process the
@@ -747,6 +753,8 @@ void WardenEmu::Impl::MapClientImage() {
 }
 
 void WardenEmu::Impl::Teardown() {
+    ReleaseOpenFiles("module unloaded");
+
     if (machine) {
         uc_close(machine);
         machine = nullptr;
@@ -1756,16 +1764,32 @@ uint32_t WardenEmu::Impl::RunImport(const ImportStub& stub, uint32_t* arguments,
         return stubAddress;
     }
 
+    if (strcasecmp(stub.name, "GetLastError") == 0) {
+        WardenLog("GetLastError -> %u", m_lastError);
+        return m_lastError;
+    }
+
+    if (strcasecmp(stub.name, "SetLastError") == 0) {
+        m_lastError = argumentCount >= 1 ? arguments[0] : 0;
+        return 0;
+    }
+
     if (strcasecmp(stub.name, "QueryDosDeviceA") == 0 && argumentCount >= 3) {
         char name[128] = { 0 };
 
         if (!ReadGuestString(arguments[0], name, sizeof(name))) {
+            m_lastError = 2; // ERROR_FILE_NOT_FOUND
+            WriteWord(TEB_BASE + 0x34, m_lastError); // TEB LastErrorValue the CRT reads through fs:
             return 0;
         }
 
         // The emulated process has no Windows device namespace; an unknown device is what the
-        // API returns for a device that does not exist.
+        // API returns for a device that does not exist. GetLastError (and the TEB field the
+        // module's CRT reads through fs:) must report the same ERROR_FILE_NOT_FOUND a Windows
+        // client would, or the module hashes a different answer.
         WardenLog("QueryDosDeviceA(%s): no device namespace in the emulated environment", name);
+        m_lastError = 2; // ERROR_FILE_NOT_FOUND
+        WriteWord(TEB_BASE + 0x34, m_lastError);
         return 0;
     }
 
@@ -1923,12 +1947,37 @@ bool WardenEmu::Impl::CallGuest(uint32_t address, const uint32_t* stackArguments
         outDecryptValid = ReadMemory(moduleObject + 0x20, outDecryptState, sizeof(outDecryptState));
     }
 
+    // The module hashes whole map files inside one Process call. At 50M instructions the two
+    // large file checks in a session (3.7 MB and 4.4 MB of input) ran out mid-file: the module
+    // stopped on a full 16 KB read, never closed the file, and sent a partial reply the server
+    // rejected. Keep a bound for runaway code, but high enough for the largest check.
+    uint64_t stepLimit = 500000000;
+
+    if (const char* limit = getenv("WARDEN_STEP_LIMIT")) {
+        stepLimit = strtoull(limit, nullptr, 0);
+    }
+
     m_faulted = false;
-    uc_err error = uc_emu_start(machine, address, STOP_ADDRESS, 0, 50000000);
+    uc_err error = uc_emu_start(machine, address, STOP_ADDRESS, 0, stepLimit);
 
     uc_reg_read(machine, UC_X86_REG_EAX, &(eax = 0));
 
     if (!m_faulted && error == UC_ERR_OK) {
+        uint32_t eip = 0;
+        uc_reg_read(machine, UC_X86_REG_EIP, &eip);
+
+        if (eip != STOP_ADDRESS) {
+            WardenLog("%s at %08x: instruction budget exhausted at %08x (%llu steps)", what, address,
+                eip, static_cast<unsigned long long>(stepLimit));
+            DumpTrace("instruction budget exhausted");
+            ReleaseOpenFiles("instruction budget exhausted");
+
+            // The guest never reached the sentinel: this call produced no valid result. Do not
+            // hand a half-built reply to the server.
+            m_faulted = true;
+            return false;
+        }
+
         return true;
     }
 
@@ -1978,6 +2027,23 @@ uint32_t WardenEmu::Impl::AddOpenFile(void* file) {
     OpenFile entry = { handle, file };
     m_openFiles.push_back(entry);
     return handle;
+}
+
+// The module is re-entered at its export, never at the EIP where a budget cut stopped it, so
+// any file it had open at that point can no longer be closed by the module. Close them here or
+// the host SFileImpl (and the WardenClient digest entry) leaks for the rest of the session.
+void WardenEmu::Impl::ReleaseOpenFiles(const char* why) {
+    if (m_openFiles.empty()) {
+        return;
+    }
+
+    WardenLog("closing %u file(s) the module left open (%s)", (uint32_t)m_openFiles.size(), why);
+
+    for (size_t i = 0; i < m_openFiles.size(); i++) {
+        services->FileClose(m_openFiles[i].file);
+    }
+
+    m_openFiles.clear();
 }
 
 // The module branched into the client executable. A bridged client function runs as this
@@ -2158,6 +2224,12 @@ void WardenEmu::Impl::HandleClientCode(uint32_t address) {
                 void* file = FileForHandle(frame[1]);
                 uint32_t size = file ? services->FileSize(file) : 0;
 
+                // Storm reports a dead unit as -1; passing that through makes the module compute
+                // a 4 GiB remaining and abandon the file after its first short read.
+                if (size == 0xFFFFFFFF) {
+                    size = 0;
+                }
+
                 if (frame[2]) {
                     WriteWord(frame[2], 0); // files in a 32-bit client never need the high half
                 }
@@ -2193,7 +2265,11 @@ void WardenEmu::Impl::HandleClientCode(uint32_t address) {
                     WriteWord(bytesReadPointer, read);
                 }
 
-                result = read == count ? 1 : 0;
+                // Storm's SFileReadFile returns TRUE for any successful read, including the
+                // short read at EOF (the caller checks bytesRead); FALSE only when nothing was
+                // read. Returning FALSE for the final partial chunk made the module skip those
+                // bytes and hash an incomplete file, which the server's MpqCheck rejected.
+                result = read ? 1 : 0;
                 WardenLog("client SFileReadFile(%08x, %u) -> %u bytes", frame[1], count, read);
                 break;
             }
@@ -3241,6 +3317,18 @@ bool WardenEmu::ReplaySnapshot(const char* path) {
 
     WardenLog("replay %s: eax %08x", ok ? "completed" : "failed", eax);
     return ok;
+}
+
+bool WardenEmu::CopyInboundRc4(uint8_t state[0x102]) const {
+    const Impl& impl = *m_impl;
+
+    if (!impl.moduleCreated || !impl.moduleObject) {
+        return false;
+    }
+
+    // The server modules keep the outbound stream at object +0x20 and the inbound one right
+    // behind it; the WARDEN_TRACE_PACKETS diagnostics read the same pair.
+    return impl.ReadMemory(impl.moduleObject + 0x20 + 0x102, state, 0x102);
 }
 
 bool WardenEmu::ImageLoaded() const {

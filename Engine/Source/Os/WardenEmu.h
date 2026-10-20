@@ -103,6 +103,12 @@ public:
     // a failure seen once in a live session can be studied offline as often as needed.
     bool ReplaySnapshot(const char* path);
 
+    // Diagnostics: copy the module's inbound RC4 stream (256-byte S-box followed by i and j).
+    // The offset is the server modules' object layout (+0x122); the 24576-byte built-in module
+    // uses a different one. WardenSmoke uses it to decrypt a captured packet for inspection and
+    // to encrypt a plaintext check before Data(), so it can iterate on one check offline.
+    bool CopyInboundRc4(uint8_t state[0x102]) const;
+
 private:
     struct Impl;
     Impl* m_impl;

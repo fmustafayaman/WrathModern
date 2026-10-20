@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <cstring>
 #include "Client.h"
+#include "Autologin.h"
 #include "Engine/Source/Base/Base.h"
 #include "Engine/Source/Base/CmdLine.h"
 #include "Engine/Source/BlizzardCore/OggDecompress.h"
@@ -982,6 +983,10 @@ static int32_t Packet_SMSG_LOGIN_VERIFY_WORLD(void* param, NETMESSAGE msgId, uin
     msg->Get(position.y);
     msg->Get(position.z);
     msg->Get(rotation);
+
+    // The server accepted CMSG_PLAYER_LOGIN; stop the unattended login's retry loop before the
+    // (possibly long) map load starts.
+    AutologinNotifyWorldVerified();
 
     if (zoneID == ClntObjMgrGetMapID()) {
         return 1;

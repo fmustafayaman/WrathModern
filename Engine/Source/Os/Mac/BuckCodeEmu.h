@@ -75,8 +75,16 @@ public:
 
     // Runs a delivered data handler (the 0x41C/0x41D segments) with a message positioned like
     // the client's dispatch: the handler may patch or write client globals. No reply is expected.
+    // The 0x41D handler also installs a hook into the client image (a relative branch at
+    // 0x00405544); hookOffset runs that hook afterwards, which is what parses the decompressed
+    // table the 84-byte challenge reads. Zero skips it.
     bool RunDataHandler(const uint8_t* handler, uint32_t handlerSize, const uint8_t* payload,
-        uint32_t size, uint32_t token);
+        uint32_t size, uint32_t token, uint32_t hookOffset = 0);
+
+    // Writes the ten dwords the delivered 0x41D/0x41C handlers keep at 0x00DD0FD8. The 84-byte
+    // challenge copies those 40 bytes into its reply; this is used by the compatibility test to
+    // see which layout the server accepts.
+    void SetDataTable(const uint32_t* values);
 
     // Decodes a challenge without running it: header, code length and the decoded message.
     // Used by diagnostics to compare against the official client's traffic.

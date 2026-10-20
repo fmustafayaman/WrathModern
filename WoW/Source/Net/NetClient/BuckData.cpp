@@ -53,6 +53,13 @@ uint32_t s_challengeKey;
 // reconstructing the framing) is what produces the reply on the wire.
 std::vector<uint8_t> s_challengeHandler;
 
+// The 0x41D/0x41C handlers from the same delivery. Warmane's 0x41C code fills the 40-byte table
+// at 0x00DD0FD8 that the 84-byte challenge reads; without it that reply is all zeros, which the
+// server now answers with "Unauthorized software". Keeping the delivered segments and running
+// them is the same thing the official client does.
+std::vector<uint8_t> s_dataHandler41D;
+std::vector<uint8_t> s_dataHandler41C;
+
 void BuckLog(const char* format, ...) {
     FILE* log = fopen("Logs/buck-data.log", "a");
 
@@ -338,6 +345,42 @@ int32_t HandleChallenge(NetClient* connection, const uint8_t* data, uint32_t siz
     return 1;
 }
 
+// Warmane delivers its data handlers in the 0x4B8 install blob and then sends SMSG 0x41D/0x41C.
+// Run the delivered segment with the message positioned exactly as the client's dispatch would;
+// the 0x41C handler writes the table the later 84-byte challenge reads. The handler addresses are
+// the ones the official client installs (0x03D00000/0x03D10000); the machine maps them.
+int32_t RunDeliveredDataHandler(uint32_t opcode, const uint8_t* data, uint32_t size) {
+    const std::vector<uint8_t>& handler = opcode == BUCK_OPCODE_DATA ? s_dataHandler41D : s_dataHandler41C;
+
+    if (handler.empty()) {
+        BuckLog("SMSG %03x (%u bytes): no delivered data handler", opcode, size);
+        return 1;
+    }
+
+    uint32_t address = opcode == BUCK_OPCODE_DATA ? 0x03D00000u : 0x03D10000u;
+    bool ran = Emulator().RunDataHandler(handler.data(), static_cast<uint32_t>(handler.size()), data, size,
+        address);
+
+    BuckLog("ran the delivered 0x%03X data handler (%u bytes) on %u bytes: %s", opcode,
+        static_cast<uint32_t>(handler.size()), size, ran ? "ok" : "failed");
+
+    // Compatibility test: the official client's 0x41D/0x41C handlers leave these ten dwords at
+    // 0x00DD0FD8. Until the handler's client-side parser (the hook it installs into the Wow.exe
+    // image) runs in this machine, the table only has the delivered code's partial writes. The
+    // override isolates whether the 84-byte check is what the server calls unauthorized.
+    if (opcode == BUCK_OPCODE_CLEAR && getenv("WRATHMODERN_BUCK_TABLE_OVERRIDE")) {
+        static const uint32_t official[10] = {
+            0x09987F00, 0x05660000, 0x00000003, 0x03D20000, 0x00000000,
+            0x099A9838, 0x000000C8, 0x03D00000, 0x03D10000, 0x03CD0000,
+        };
+
+        Emulator().SetDataTable(official);
+        BuckLog("table override applied");
+    }
+
+    return 1;
+}
+
 }  // namespace
 
 int32_t BuckDataHandleCustomCode(NetClient* connection, const uint8_t* data, uint32_t size) {
@@ -370,6 +413,19 @@ int32_t BuckDataHandleCustomCode(NetClient* connection, const uint8_t* data, uin
             s_challengeHandler = handler;
             BuckLog("installed the delivered 0x41B handler (%u bytes) at token %08x",
                 static_cast<uint32_t>(handler.size()), value);
+        }
+    } else if (request == BUCK_OPCODE_DATA || request == BUCK_OPCODE_CLEAR) {
+        std::vector<uint8_t> handler;
+
+        if (ExtractChallengeHandler(data, size, handler)) {
+            if (request == BUCK_OPCODE_DATA) {
+                s_dataHandler41D = handler;
+            } else {
+                s_dataHandler41C = handler;
+            }
+
+            BuckLog("stored the delivered 0x%03X data handler (%u bytes)", request,
+                static_cast<uint32_t>(handler.size()));
         }
     }
 
@@ -421,10 +477,12 @@ int32_t BuckDataProcessMessage(NetClient* connection, uint32_t msgId, CDataStore
             result = HandleLuaScript(data, size);
             break;
 
-        case BUCK_OPCODE_CLEAR: // 0x41C: data for the delivered handlers
-        case BUCK_OPCODE_DATA: // 0x41D: data for the delivered handlers
-            BuckLog("SMSG %03x (%u bytes) left to the client: %s", msgId, size, ToHex(data, size).c_str());
-            result = 1;
+        case BUCK_OPCODE_CLEAR: // 0x41C: data for the delivered 0x41C handler
+            result = RunDeliveredDataHandler(BUCK_OPCODE_CLEAR, data, size);
+            break;
+
+        case BUCK_OPCODE_DATA: // 0x41D: data for the delivered 0x41D handler
+            result = RunDeliveredDataHandler(BUCK_OPCODE_DATA, data, size);
             break;
 
         default:

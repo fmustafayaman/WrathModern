@@ -32,10 +32,13 @@
 #include "WoW/Source/WowServices/WDataStore.h"
 #include "ThirdParty/zlib/zlib.h"
 #include "WoW/Source/Game/GameClient/WardenModuleData.h"
+#include <CommonCrypto/CommonDigest.h>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <new>
+#include <string>
 #include <vector>
 
 namespace {
@@ -324,12 +327,33 @@ public:
     // SFile2 bridging: the module opens a game file and hashes the bytes it reads, exactly as
     // the Windows client's Storm API returns them. Paths arrive in the client's own form (the
     // module builds them from the challenge), so hand them to SFileOpenFile unchanged.
+    //
+    // The digest kept here is diagnostic: the module's file checks are rejected when Storm
+    // hands it bytes from a different archive version than the official client reads, and the
+    // hash names the archive without needing another live Warden failure.
+    struct FileDigest {
+        CC_SHA1_CTX context;
+        std::string path;
+        uint32_t total;
+    };
+
+    std::map<void*, FileDigest> m_digests;
+
     void* FileOpen(const char* name) override {
         SFileImpl* file = nullptr;
         int32_t opened = SFileOpenFile(name, &file);
 
         WardenClientLog("SFileOpenFile('%s') -> %d %s", name ? name : "(null)", opened,
             opened ? "opened" : "failed");
+
+        if (opened && file) {
+            FileDigest digest;
+            CC_SHA1_Init(&digest.context);
+            digest.path = name ? name : "";
+            digest.total = 0;
+            m_digests[file] = digest;
+        }
+
         return opened ? file : nullptr;
     }
 
@@ -348,10 +372,34 @@ public:
             WardenClientLog("SFileReadFile(%p, %u) failed", file, count);
         }
 
+        std::map<void*, FileDigest>::iterator it = m_digests.find(file);
+
+        if (it != m_digests.end() && read) {
+            CC_SHA1_Update(&it->second.context, buffer, read);
+            it->second.total += read;
+        }
+
         return read;
     }
 
     void FileClose(void* file) override {
+        std::map<void*, FileDigest>::iterator it = m_digests.find(file);
+
+        if (it != m_digests.end()) {
+            uint8_t digest[CC_SHA1_DIGEST_LENGTH];
+            CC_SHA1_Final(digest, &it->second.context);
+
+            char hex[CC_SHA1_DIGEST_LENGTH * 2 + 1];
+
+            for (uint32_t i = 0; i < CC_SHA1_DIGEST_LENGTH; i++) {
+                snprintf(hex + i * 2, 3, "%02x", digest[i]);
+            }
+
+            WardenClientLog("SFileHash '%s' %u bytes sha1=%s", it->second.path.c_str(), it->second.total,
+                hex);
+            m_digests.erase(it);
+        }
+
         if (file) {
             SFileCloseFile(static_cast<SFileImpl*>(file));
         }

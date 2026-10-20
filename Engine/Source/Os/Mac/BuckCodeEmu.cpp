@@ -127,6 +127,68 @@ uint32_t RotateRight(uint32_t value, uint32_t count) {
     return (value >> count) | (value << (32 - count));
 }
 
+// The modules a 32-bit Wine-hosted 3.3.5a client reports through Module32First/Next. The bases
+// and sizes are the ones the Wine loader assigns to the same DLLs (the first two entries match
+// the official capture: wow.exe at 0x00400000/0x9FD000 and ntdll at 0x7BF30000/0xB9000); the
+// game DLL bases are their PE ImageBase values. The module scan the server sends after login
+// walks this list, and a single-entry list is visibly not a Windows client.
+struct EmulatedModule {
+    uint32_t base;
+    uint32_t size;
+    const char* name;
+    bool system;
+};
+
+const EmulatedModule EMULATED_MODULES[] = {
+    { 0x00400000, 0x009FD000, "wow.exe", false },
+    { 0x7BF30000, 0x000B9000, "ntdll.dll", true },
+    { 0x7BEA0000, 0x0005C000, "kernel32.dll", true },
+    { 0x7BD50000, 0x00131000, "kernelbase.dll", true },
+    { 0x7BC60000, 0x000DA000, "ucrtbase.dll", true },
+    { 0x7BA90000, 0x001B9000, "user32.dll", true },
+    { 0x7BA40000, 0x00040000, "advapi32.dll", true },
+    { 0x7B980000, 0x000A8000, "msvcrt.dll", true },
+    { 0x7B950000, 0x0001F000, "sechost.dll", true },
+    { 0x7B8C0000, 0x0007F000, "gdi32.dll", true },
+    { 0x7B870000, 0x00035000, "win32u.dll", true },
+    { 0x7B840000, 0x0001F000, "imm32.dll", true },
+    { 0x7B7A0000, 0x00088000, "rpcrt4.dll", true },
+    { 0x7B780000, 0x0000D000, "cryptbase.dll", true },
+    { 0x7B6B0000, 0x000B8000, "ole32.dll", true },
+    { 0x7B650000, 0x00050000, "combase.dll", true },
+    { 0x7B620000, 0x00019000, "coml2.dll", true },
+    { 0x7B550000, 0x000BD000, "oleaut32.dll", true },
+    { 0x7B4F0000, 0x0004B000, "winmm.dll", true },
+    { 0x7B480000, 0x00029000, "ws2_32.dll", true },
+    { 0x7B360000, 0x0010B000, "comctl32.dll", true },
+    { 0x7AA70000, 0x008D9000, "shell32.dll", true },
+    { 0x7AA10000, 0x00047000, "shlwapi.dll", true },
+    { 0x7A9E0000, 0x00019000, "shcore.dll", true },
+    { 0x7A9C0000, 0x0000D000, "version.dll", true },
+    { 0x7A970000, 0x00036000, "uxtheme.dll", true },
+    { 0x7A930000, 0x0000A000, "psapi.dll", true },
+    { 0x7A8B0000, 0x00062000, "comdlg32.dll", true },
+    { 0x7A830000, 0x00064000, "wininet.dll", true },
+    { 0x7A800000, 0x00017000, "mpr.dll", true },
+    { 0x7B4C0000, 0x0001C000, "msacm32.dll", true },
+    { 0x7A950000, 0x0000B000, "winemac.drv", true },
+    { 0x7A7C0000, 0x00021000, "secur32.dll", true },
+    { 0x7A6E0000, 0x0002B000, "iphlpapi.dll", true },
+    { 0x7A720000, 0x00017000, "dnsapi.dll", true },
+    { 0x7A5F0000, 0x00091000, "crypt32.dll", true },
+    { 0x7A580000, 0x0005A000, "bcrypt.dll", true },
+    { 0x7A4D0000, 0x00067000, "setupapi.dll", true },
+    { 0x03000000, 0x00115000, "dbghelp.dll", false },
+    { 0x10000000, 0x00069000, "DivxDecoder.dll", false },
+    { 0x60000000, 0x0005D000, "ijl15.dll", false },
+    { 0x7F2D0000, 0x0003D000, "unicows.dll", false },
+    { 0x78130000, 0x0009B000, "msvcr80.dll", false },
+    { 0x373F0000, 0x0001F000, "scan.dll", false },
+    { 0x6E1C0000, 0x00008000, "libDllLdr.dll", false },
+    { 0x3C8F0000, 0x00EF3EE1, "battle.net.dll", false },
+    { 0x62440000, 0x00340000, "d3d9.dll", false },
+};
+
 }  // namespace
 
 struct BuckCodeEmu::Impl {
@@ -175,7 +237,11 @@ struct BuckCodeEmu::Impl {
     bool RunFunction(uint32_t address, const uint32_t* stackArguments, uint32_t argumentCount, uint32_t ecx, uint32_t& eax);
 
     bool HandleClientCall(uint32_t address);
+    bool FillModuleEntry(uint32_t entry, uint32_t index);
     void HandleInvalidMemory(uc_mem_type type, uint64_t address, int size);
+
+    // Module32First/Next walk position. CreateToolhelp32Snapshot resets it.
+    uint32_t s_moduleIndex = 0;
 
     bool BuildMessage(const std::vector<uint8_t>& decoded, uint32_t readPosition);
     bool BuildReply(uint32_t& replySize);
@@ -509,6 +575,40 @@ void BuckCodeEmu::Impl::StoreGetArray(uint32_t store, uint32_t destination, uint
 // Client function calls
 // =====================================================================
 
+bool BuckCodeEmu::Impl::FillModuleEntry(uint32_t entry, uint32_t index) {
+    const uint32_t count = sizeof(EMULATED_MODULES) / sizeof(EMULATED_MODULES[0]);
+
+    if (index >= count) {
+        return false;
+    }
+
+    const EmulatedModule& module = EMULATED_MODULES[index];
+
+    // MODULEENTRY32: base at +0x14, size at +0x18, module name at +0x20, full path at +0x120.
+    WriteWord(entry + 0x14, module.base);
+    WriteWord(entry + 0x18, module.size);
+    WriteMemory(entry + 0x20, module.name, static_cast<uint32_t>(strlen(module.name)) + 1);
+
+    char path[512];
+
+    if (module.system) {
+        snprintf(path, sizeof(path), "C:\\windows\\system32\\%s", module.name);
+    } else {
+        const char* client = services ? services->ClientPath() : nullptr;
+        const char* slash = client ? strrchr(client, '\\') : nullptr;
+
+        if (slash) {
+            int prefix = static_cast<int>(slash - client);
+            snprintf(path, sizeof(path), "%.*s\\%s", prefix, client, module.name);
+        } else {
+            snprintf(path, sizeof(path), "Z:\\%s", module.name);
+        }
+    }
+
+    WriteMemory(entry + 0x120, path, static_cast<uint32_t>(strlen(path)) + 1);
+    return true;
+}
+
 bool BuckCodeEmu::Impl::HandleClientCall(uint32_t address) {
     if (address == STOP_ADDRESS) {
         uc_emu_stop(machine);
@@ -739,10 +839,23 @@ bool BuckCodeEmu::Impl::HandleClientCall(uint32_t address) {
 
             uLongf outLength = destinationLength;
             int zresult = uncompress(output.data(), &outLength, input.data(), sourceLength);
+            Log("zlib_uncompress dst=%08x dstLen=%u src=%08x srcLen=%u -> %d, out=%u", destination,
+                destinationLength, source, sourceLength, zresult, static_cast<uint32_t>(outLength));
 
             if (zresult == Z_OK) {
                 WriteMemory(destination, output.data(), static_cast<uint32_t>(outLength));
                 WriteWord(destinationLengthAddress, static_cast<uint32_t>(outLength));
+
+                // Diagnostic: the 0x41D payload is the realm's compressed data table. Keeping
+                // the decompressed bytes lets the offline smoke test compare the handler's
+                // output with the official client's 84-byte table check.
+                FILE* dump = fopen("Logs/buck-41d-decompressed.bin", "wb");
+
+                if (dump) {
+                    fwrite(output.data(), 1, outLength, dump);
+                    fclose(dump);
+                }
+
                 result = 0;
             } else {
                 result = zresult;
@@ -919,33 +1032,29 @@ bool BuckCodeEmu::Impl::HandleClientCall(uint32_t address) {
         }
         case CLIENT_TOOLHELP_SNAPSHOT: {
             // CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, 0): a pseudo-handle for the module walk.
+            s_moduleIndex = 0;
             result = 0x03000300;
             finish(0);
             return true;
         }
         case CLIENT_MODULE32_FIRST: {
-            // Module32First fills MODULEENTRY32: base at +0x14, size at +0x18, module name at
-            // +0x20 and the executable path at +0x120. This process has one module: the client
-            // executable the emulator maps at 0x00400000.
-            uint32_t entry = arguments[1];
-            uint32_t base = CLIENT_BASE;
-            uint32_t size = clientSize ? clientSize : 0x9FD000;
-            WriteWord(entry + 0x14, base);
-            WriteWord(entry + 0x18, size);
-            WriteMemory(entry + 0x20, "wow.exe", 8);
+            s_moduleIndex = 0;
+            result = FillModuleEntry(arguments[1], s_moduleIndex) ? 1 : 0;
 
-            const char* path = services ? services->ClientPath() : nullptr;
-
-            if (path && path[0]) {
-                WriteMemory(entry + 0x120, path, static_cast<uint32_t>(strlen(path)) + 1);
+            if (result) {
+                s_moduleIndex++;
             }
 
-            result = 1;
             finish(0);
             return true;
         }
         case CLIENT_MODULE32_NEXT: {
-            result = 0;
+            result = FillModuleEntry(arguments[1], s_moduleIndex) ? 1 : 0;
+
+            if (result) {
+                s_moduleIndex++;
+            }
+
             finish(0);
             return true;
         }
@@ -1230,8 +1339,21 @@ bool BuckCodeEmu::RunHandlerChallenge(const uint8_t* handler, uint32_t handlerSi
     return true;
 }
 
+void BuckCodeEmu::SetDataTable(const uint32_t* values) {
+    Impl& impl = *m_impl;
+
+    if (!impl.Boot()) {
+        return;
+    }
+
+    impl.WriteMemory(0x00DD0FD8, values, 10 * sizeof(uint32_t));
+    impl.Log("data table set; 0xDD0FD8: %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x",
+        values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7], values[8],
+        values[9]);
+}
+
 bool BuckCodeEmu::RunDataHandler(const uint8_t* handler, uint32_t handlerSize, const uint8_t* payload,
-    uint32_t size, uint32_t token) {
+    uint32_t size, uint32_t token, uint32_t hookOffset) {
     Impl& impl = *m_impl;
 
     if (!handler || !handlerSize || handlerSize > 0x1000) {
@@ -1278,6 +1400,31 @@ bool BuckCodeEmu::RunDataHandler(const uint8_t* handler, uint32_t handlerSize, c
     impl.ReadMemory(0x00DD0FD8, table, sizeof(table));
     impl.Log("data handler done; 0xDD0FD8: %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x",
         table[0], table[1], table[2], table[3], table[4], table[5], table[6], table[7], table[8], table[9]);
+
+    if (hookOffset) {
+        // The 0x41D handler patches the client instruction at 0x00405544 to branch here; the
+        // official client reaches it on its next data query, which parses the decompressed
+        // content and fills the table. This client never executes Wow.exe's own code, so run
+        // the installed hook explicitly.
+        uint32_t hookAddress = handlerAddress + hookOffset;
+        uint32_t hookFrame[5] = { STOP_ADDRESS, token, 0, 0, MESSAGE_OBJECT };
+        uint32_t hookEsp = STACK_TOP - 0x800;
+        impl.WriteMemory(hookEsp, hookFrame, sizeof(hookFrame));
+        uc_reg_write(impl.machine, UC_X86_REG_ESP, &hookEsp);
+        impl.faulted = false;
+        uc_err hookError = uc_emu_start(impl.machine, hookAddress, STOP_ADDRESS, 0, 0);
+
+        if (hookError != UC_ERR_OK || impl.faulted) {
+            impl.Log("data handler hook failed%s%s", hookError != UC_ERR_OK ? ": " : "",
+                hookError != UC_ERR_OK ? uc_strerror(hookError) : "");
+            return false;
+        }
+
+        impl.ReadMemory(0x00DD0FD8, table, sizeof(table));
+        impl.Log("data handler hook done; 0xDD0FD8: %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x",
+            table[0], table[1], table[2], table[3], table[4], table[5], table[6], table[7], table[8], table[9]);
+    }
+
     return true;
 }
 
