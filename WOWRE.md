@@ -89,15 +89,32 @@ Dosyalar: `Engine/Source/Gx/CGxDeviceMetal/CGxDeviceMetal.{h,cpp}` (~3.8k satır
 - **Değişir:** sabit fonksiyon üreticisi D3D TSS dizisi yerine doğrudan `CGxDevice` durumundan
   (texture op/arg, texgen, ışıklar, materyal, fog) beslenir.
 
+### `CGxDeviceMetal`'in kullandığı D3D9 yüzeyi (2026-10-21 ölçümü)
+
+`CGxDeviceMetal.cpp` içinde shim'e yapılan çağrılar (sayı = çağrı noktası). Native port bu listenin
+tamamını doğrudan Metal karşılığına bağlayınca `D3D9/Device.h` silinebilir.
+
+| Grup | Çağrılar | Native karşılık |
+|---|---|---|
+| Durum | `SetRenderState` ×40, `SetTextureStageState` ×8, `SetSamplerState` ×7, `SetTransform` ×7, `LightEnable` ×3, `SetLight`, `SetMaterial`, `SetClipPlane`, `SetScissorRect`, `SetViewport` | `MetalStateBlock`: pipeline/depth-stencil/sampler anahtarları + sabit fonksiyon uniform'ları |
+| Kaynak | `CreateTexture` ×4, `CreateCubeTexture`, `CreateRenderTarget`, `CreateDepthStencilSurface`, `CreateVertexBuffer`, `CreateIndexBuffer`, `CreateVertexDeclaration` ×2, `CreateQuery` ×5 | `CGxTex`/`CGxPool`/`CGxQuery` → doğrudan `id<MTLTexture>`/`id<MTLBuffer>`/görünürlük tamponu |
+| Shader | `CreateVertexShader`, `CreatePixelShader`, `SetVertexShader` ×2, `SetPixelShader` ×2, `Set*ShaderConstantF` | `CGxShader` → çevrilmiş MSL fonksiyonu; sabitler uniform tamponuna |
+| Çizim | `SetStreamSource`, `SetIndices` ×2, `SetVertexDeclaration` ×2, `DrawPrimitive`, `DrawIndexedPrimitive`, `Clear`, `BeginScene`/`EndScene` | render encoder |
+| Hedefler | `SetRenderTarget`, `GetRenderTarget`, `SetDepthStencilSurface` ×3, `GetDepthStencilSurface` ×2, `GetBackBuffer` ×2, `StretchRect` ×4 | `CAMetalLayer` drawable + ofscreen dokular, blit/resolve |
+| Swap chain | `CreateDevice`, `Reset` ×2, `TestCooperativeLevel`, `Present`, `SetGammaRamp` ×2, `EvictManagedResources` | `CAMetalLayer`, gamma → son geçiş LUT'u |
+| Adaptör | `CheckDeviceFormat` ×7, `CheckDeviceMultiSampleType` ×2, `CheckDepthStencilMatch`, `GetAdapterIdentifier` ×2, `GetAdapterDisplayMode` ×2, `GetAdapterCount`, `GetDeviceCaps` | `MTLDevice` özellik sorguları, `CGDisplay*` (`Mac/CGxDevice.mm` dahil) |
+| İmleç | `SetCursorProperties`, `ShowCursor` ×3, `SetCursorScale` ×2, `GetCursorImage` | `NSCursor` (zaten native) |
+| Mod | `GetMetalDevice`, `AcquireExternalTargets` | WMModAPI köprüsü |
+
 ## İlerleme günlüğü
 
 ### 2026-10-21 — başlangıç
 
 - `WowRe` dalı + `../WrathModern-WowRe` worktree oluşturuldu (`macos` @ `a3d749f`).
-- Mod deneyi taşındı; temiz yapılandırma ile derlendi (sonuç commit mesajında).
+- Mod deneyi taşındı. Temiz yapılandırma ile `WrathModern` (1443 hedef, 0 hata) ve `DepthFog.dylib` derlendi; `ModsRunHook` ve `GxMetalAcquireTargets` ikilide.
 - Başlangıç commit'i: aşağıdaki "Başlangıç noktası" satırına bakın.
 
-Başlangıç noktası: `WowRe` dalının ilk commit'i (`git log --reverse a3d749f..WowRe | head`).
+Başlangıç noktası: commit `f917b1c`, etiket `wowre-start` (`git diff wowre-start` o andan beri yapılan her şeyi gösterir).
 
 ## Sıradaki adımlar (yarıda kalırsa buradan devam)
 
