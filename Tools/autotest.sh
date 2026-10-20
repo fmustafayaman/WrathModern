@@ -23,6 +23,20 @@ app="${WOWRE_APP:-$game/WrathModern-WowRe.app}"
 binary="$app/Contents/MacOS/WrathModern"
 
 mkdir -p "$out"
+
+# One run at a time: runs share the game directory's WTF and Screenshots folders and the account
+lock="${TMPDIR:-/tmp}/wrathmodern-autotest.lock"
+waited=0
+while ! mkdir "$lock" 2>/dev/null; do
+    if [ "$waited" -ge 900 ]; then
+        echo "autotest: another run holds $lock; giving up"
+        exit 2
+    fi
+    sleep 2
+    waited=$((waited + 2))
+done
+trap 'rmdir "$lock" 2>/dev/null' EXIT
+
 rm -f "$game"/Screenshots/autotest-*.tga
 
 # Keep the player's settings: the client writes WTF on exit
