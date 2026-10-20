@@ -82,6 +82,16 @@ constexpr uint32_t CLIENT_OS_GET_PHYSICAL_MEMORY = 0x0086B4C0;
 constexpr uint32_t CLIENT_OS_GET_NUMBER_OF_PROCESSORS = 0x0086B240;
 constexpr uint32_t CLIENT_OS_GET_COMPUTER_NAME = 0x0086B480;
 constexpr uint32_t CLIENT_OS_GET_USER_NAME = 0x0086B4A0;
+
+// OsFindTextSectionBounds (0x0086B510) caches the .text range it reads from the PE header in
+// these two globals; OsValidateFunctionPointer (0x0086B5A0) compares every function pointer
+// against them and re-derives them only while they are still zero. The official client runs
+// that during startup. This machine never executes Wow.exe's own code, so the same section
+// table is parsed here and the same cached values are stored (see SeedClientGlobals).
+constexpr uint32_t CLIENT_TEXT_START_GLOBAL = 0x00D415B8;
+constexpr uint32_t CLIENT_TEXT_END_GLOBAL = 0x00D415BC;
+constexpr uint32_t CLIENT_OS_FIND_TEXT_SECTION_BOUNDS = 0x0086B510;
+constexpr uint32_t CLIENT_OS_VALIDATE_FUNCTION_POINTER = 0x0086B5A0;
 constexpr uint32_t CLIENT_FIND_DISPLAY_DEVICE = 0x00689EA0;
 constexpr uint32_t CLIENT_TOOLHELP_SNAPSHOT = 0x008A131C;
 constexpr uint32_t CLIENT_MODULE32_FIRST = 0x008A1310;
@@ -127,66 +137,63 @@ uint32_t RotateRight(uint32_t value, uint32_t count) {
     return (value >> count) | (value << (32 - count));
 }
 
-// The modules a 32-bit Wine-hosted 3.3.5a client reports through Module32First/Next. The bases
-// and sizes are the ones the Wine loader assigns to the same DLLs (the first two entries match
-// the official capture: wow.exe at 0x00400000/0x9FD000 and ntdll at 0x7BF30000/0xB9000); the
-// game DLL bases are their PE ImageBase values. The module scan the server sends after login
-// walks this list, and a single-entry list is visibly not a Windows client.
+// A module as Module32First/Next report it: MODULEENTRY32 base, size and full path. The module
+// scan the server sends after login walks this list, and a single-entry list is visibly not a
+// Windows client.
 struct EmulatedModule {
     uint32_t base;
     uint32_t size;
-    const char* name;
-    bool system;
+    const char* path;
 };
 
+// The exact module list the official Wine-hosted HD client reports through Module32First/Next
+// at the login screen (43 entries, read from the live process with the same Toolhelp calls the
+// 192-byte module-scan code uses). The server compares this list, so the bases, sizes and paths
+// are reproduced verbatim, including the launcher mods/libSiliconPatch DLL and mtld3d.
 const EmulatedModule EMULATED_MODULES[] = {
-    { 0x00400000, 0x009FD000, "wow.exe", false },
-    { 0x7BF30000, 0x000B9000, "ntdll.dll", true },
-    { 0x7BEA0000, 0x0005C000, "kernel32.dll", true },
-    { 0x7BD50000, 0x00131000, "kernelbase.dll", true },
-    { 0x7BC60000, 0x000DA000, "ucrtbase.dll", true },
-    { 0x7BA90000, 0x001B9000, "user32.dll", true },
-    { 0x7BA40000, 0x00040000, "advapi32.dll", true },
-    { 0x7B980000, 0x000A8000, "msvcrt.dll", true },
-    { 0x7B950000, 0x0001F000, "sechost.dll", true },
-    { 0x7B8C0000, 0x0007F000, "gdi32.dll", true },
-    { 0x7B870000, 0x00035000, "win32u.dll", true },
-    { 0x7B840000, 0x0001F000, "imm32.dll", true },
-    { 0x7B7A0000, 0x00088000, "rpcrt4.dll", true },
-    { 0x7B780000, 0x0000D000, "cryptbase.dll", true },
-    { 0x7B6B0000, 0x000B8000, "ole32.dll", true },
-    { 0x7B650000, 0x00050000, "combase.dll", true },
-    { 0x7B620000, 0x00019000, "coml2.dll", true },
-    { 0x7B550000, 0x000BD000, "oleaut32.dll", true },
-    { 0x7B4F0000, 0x0004B000, "winmm.dll", true },
-    { 0x7B480000, 0x00029000, "ws2_32.dll", true },
-    { 0x7B360000, 0x0010B000, "comctl32.dll", true },
-    { 0x7AA70000, 0x008D9000, "shell32.dll", true },
-    { 0x7AA10000, 0x00047000, "shlwapi.dll", true },
-    { 0x7A9E0000, 0x00019000, "shcore.dll", true },
-    { 0x7A9C0000, 0x0000D000, "version.dll", true },
-    { 0x7A970000, 0x00036000, "uxtheme.dll", true },
-    { 0x7A930000, 0x0000A000, "psapi.dll", true },
-    { 0x7A8B0000, 0x00062000, "comdlg32.dll", true },
-    { 0x7A830000, 0x00064000, "wininet.dll", true },
-    { 0x7A800000, 0x00017000, "mpr.dll", true },
-    { 0x7B4C0000, 0x0001C000, "msacm32.dll", true },
-    { 0x7A950000, 0x0000B000, "winemac.drv", true },
-    { 0x7A7C0000, 0x00021000, "secur32.dll", true },
-    { 0x7A6E0000, 0x0002B000, "iphlpapi.dll", true },
-    { 0x7A720000, 0x00017000, "dnsapi.dll", true },
-    { 0x7A5F0000, 0x00091000, "crypt32.dll", true },
-    { 0x7A580000, 0x0005A000, "bcrypt.dll", true },
-    { 0x7A4D0000, 0x00067000, "setupapi.dll", true },
-    { 0x03000000, 0x00115000, "dbghelp.dll", false },
-    { 0x10000000, 0x00069000, "DivxDecoder.dll", false },
-    { 0x60000000, 0x0005D000, "ijl15.dll", false },
-    { 0x7F2D0000, 0x0003D000, "unicows.dll", false },
-    { 0x78130000, 0x0009B000, "msvcr80.dll", false },
-    { 0x373F0000, 0x0001F000, "scan.dll", false },
-    { 0x6E1C0000, 0x00008000, "libDllLdr.dll", false },
-    { 0x3C8F0000, 0x00EF3EE1, "battle.net.dll", false },
-    { 0x62440000, 0x00340000, "d3d9.dll", false },
+    { 0x00400000, 0x009FD000, "Z:\\Volumes\\Yaman SSD\\wow3.3.5a\\wow.exe" },
+    { 0x7BF40000, 0x000A2000, "C:\\windows\\system32\\ntdll.dll" },
+    { 0x7BED0000, 0x00053000, "C:\\windows\\system32\\kernel32.dll" },
+    { 0x7BDB0000, 0x0010F000, "C:\\windows\\system32\\kernelbase.dll" },
+    { 0x7BC80000, 0x00120000, "C:\\windows\\system32\\OPENGL32.dll" },
+    { 0x7BC00000, 0x00070000, "C:\\windows\\system32\\gdi32.dll" },
+    { 0x7BA50000, 0x0019B000, "C:\\windows\\system32\\user32.dll" },
+    { 0x7BA20000, 0x0001B000, "C:\\windows\\system32\\sechost.dll" },
+    { 0x7B930000, 0x000DA000, "C:\\windows\\system32\\ucrtbase.dll" },
+    { 0x7B8E0000, 0x00036000, "C:\\windows\\system32\\advapi32.dll" },
+    { 0x7B830000, 0x000A0000, "C:\\windows\\system32\\msvcrt.dll" },
+    { 0x7B7E0000, 0x00033000, "C:\\windows\\system32\\win32u.dll" },
+    { 0x7B780000, 0x00042000, "C:\\windows\\system32\\VERSION.dll" },
+    { 0x7B750000, 0x00015000, "C:\\windows\\system32\\VCRUNTIME140.dll" },
+    { 0x7B720000, 0x0001B000, "C:\\windows\\system32\\IMM32.dll" },
+    { 0x7B6C0000, 0x0004E000, "C:\\windows\\system32\\WININET.dll" },
+    { 0x7B690000, 0x00012000, "C:\\windows\\system32\\mpr.dll" },
+    { 0x7B640000, 0x0003D000, "C:\\windows\\system32\\shlwapi.dll" },
+    { 0x7B610000, 0x00013000, "C:\\windows\\system32\\shcore.dll" },
+    { 0x7AD50000, 0x008AB000, "C:\\windows\\system32\\shell32.dll" },
+    { 0x7AD10000, 0x00022000, "C:\\windows\\system32\\ws2_32.dll" },
+    { 0x7ACC0000, 0x00036000, "C:\\windows\\system32\\DINPUT8.dll" },
+    { 0x7AC90000, 0x00020000, "C:\\windows\\system32\\cfgmgr32.dll" },
+    { 0x7AB90000, 0x000E9000, "C:\\windows\\system32\\comctl32.dll" },
+    { 0x7AAE0000, 0x0009D000, "C:\\windows\\system32\\ole32.dll" },
+    { 0x7AA80000, 0x00047000, "C:\\windows\\system32\\combase.dll" },
+    { 0x7A9F0000, 0x00076000, "C:\\windows\\system32\\rpcrt4.dll" },
+    { 0x7A9D0000, 0x00008000, "C:\\windows\\system32\\cryptbase.dll" },
+    { 0x7A9A0000, 0x00014000, "C:\\windows\\system32\\coml2.dll" },
+    { 0x7A980000, 0x0000C000, "C:\\windows\\system32\\hid.dll" },
+    { 0x10000000, 0x00069000, "Z:\\Volumes\\Yaman SSD\\wow3.3.5a\\DivxDecoder.dll" },
+    { 0x7A920000, 0x00043000, "C:\\windows\\system32\\WINMM.dll" },
+    { 0x7A8F0000, 0x00016000, "C:\\windows\\system32\\msacm32.dll" },
+    { 0x7A880000, 0x00059000, "C:\\windows\\system32\\SETUPAPI.dll" },
+    { 0x7A800000, 0x0006D000, "Z:\\Volumes\\Yaman SSD\\wow3.3.5a\\mods\\libSiliconPatch_WOTLK_3.3.0_preview.dll" },
+    { 0x7A7E0000, 0x00007000, "c:\\windows\\system32\\winemac.drv" },
+    { 0x7A7A0000, 0x0002E000, "C:\\windows\\system32\\uxtheme.dll" },
+    { 0x7A780000, 0x00007000, "Z:\\Volumes\\Yaman SSD\\wow3.3.5a\\libDllLdr.dll" },
+    { 0x7A620000, 0x00146000, "Z:\\Volumes\\Yaman SSD\\wow3.3.5a\\d3d9.dll" },
+    { 0x7A5D0000, 0x00033000, "C:\\windows\\system32\\mtld3d.dll" },
+    { 0x7A560000, 0x00051000, "C:\\windows\\system32\\bcrypt.dll" },
+    { 0x7A520000, 0x00023000, "C:\\windows\\system32\\mmdevapi.dll" },
+    { 0x7A460000, 0x000A5000, "C:\\windows\\system32\\oleaut32.dll" },
 };
 
 }  // namespace
@@ -238,6 +245,7 @@ struct BuckCodeEmu::Impl {
 
     bool HandleClientCall(uint32_t address);
     bool FillModuleEntry(uint32_t entry, uint32_t index);
+    void SeedClientGlobals(const uint8_t* image, uint32_t size);
     void HandleInvalidMemory(uc_mem_type type, uint64_t address, int size);
 
     // Module32First/Next walk position. CreateToolhelp32Snapshot resets it.
@@ -262,6 +270,64 @@ void BuckCodeEmu::Impl::Log(const char* format, ...) {
         services->Log(line);
     } else {
         fprintf(stderr, "%s\n", line);
+    }
+}
+
+// The official client's startup path runs OsFindTextSectionBounds (0x0086B510), which reads the
+// mapped PE header and caches the .text range in the two globals below. OsValidateFunctionPointer
+// (0x0086B5A0) is the guard the server's later code probes: it reads those globals and only
+// re-derives them when both are zero. The machine maps the client image but never executes the
+// client's own startup, so do exactly what 0x0086B510 does, from the same section table.
+void BuckCodeEmu::Impl::SeedClientGlobals(const uint8_t* image, uint32_t size) {
+    auto read16 = [](const uint8_t* p) {
+        uint16_t value;
+        memcpy(&value, p, sizeof(value));
+        return value;
+    };
+    auto read32 = [](const uint8_t* p) {
+        uint32_t value;
+        memcpy(&value, p, sizeof(value));
+        return value;
+    };
+
+    if (!image || size < 0x40) {
+        return;
+    }
+
+    // IMAGE_DOS_HEADER.e_lfanew -> IMAGE_NT_HEADERS; PE32 optional header, so ImageBase is at
+    // +0x34 and the section table follows the optional header.
+    uint32_t header = read32(image + 0x3C);
+
+    if (header + 0x18 > size || read32(image + header) != 0x00004550) {
+        return;
+    }
+
+    uint16_t sectionCount = read16(image + header + 6);
+    uint16_t optionalSize = read16(image + header + 20);
+    uint32_t imageBase = read32(image + header + 0x34);
+    const uint8_t* section = image + header + 0x18 + optionalSize;
+
+    for (uint16_t i = 0; i < sectionCount; i++, section += 0x28) {
+        if (section + 0x28 > image + size) {
+            return;
+        }
+
+        if (memcmp(section, ".text", 5) != 0) {
+            continue;
+        }
+
+        uint32_t virtualSize = read32(section + 8);
+        uint32_t virtualAddress = read32(section + 12);
+        uint32_t start = imageBase + virtualAddress;
+        uint32_t end = start + virtualSize;
+
+        WriteWord(CLIENT_TEXT_START_GLOBAL, start);
+        WriteWord(CLIENT_TEXT_END_GLOBAL, end);
+        Log("client .text %08x..%08x cached at %08x/%08x (OsFindTextSectionBounds %08x, "
+            "OsValidateFunctionPointer %08x)",
+            start, end, CLIENT_TEXT_START_GLOBAL, CLIENT_TEXT_END_GLOBAL,
+            CLIENT_OS_FIND_TEXT_SECTION_BOUNDS, CLIENT_OS_VALIDATE_FUNCTION_POINTER);
+        return;
     }
 }
 
@@ -294,6 +360,7 @@ bool BuckCodeEmu::Impl::Boot() {
             clientBase = base;
             clientSize = size;
             Log("buck client image mapped at %08x (%u bytes)", base, size);
+            SeedClientGlobals(data, size);
         } else {
             Log("buck client image could not be written at %08x", base);
         }
@@ -583,29 +650,16 @@ bool BuckCodeEmu::Impl::FillModuleEntry(uint32_t entry, uint32_t index) {
     }
 
     const EmulatedModule& module = EMULATED_MODULES[index];
+    const char* name = strrchr(module.path, '\\');
+    name = name ? name + 1 : module.path;
 
     // MODULEENTRY32: base at +0x14, size at +0x18, module name at +0x20, full path at +0x120.
+    // The 192-byte scan reads base, size and the path at +0x120; the name keeps the structure
+    // usable by any other Toolhelp consumer.
     WriteWord(entry + 0x14, module.base);
     WriteWord(entry + 0x18, module.size);
-    WriteMemory(entry + 0x20, module.name, static_cast<uint32_t>(strlen(module.name)) + 1);
-
-    char path[512];
-
-    if (module.system) {
-        snprintf(path, sizeof(path), "C:\\windows\\system32\\%s", module.name);
-    } else {
-        const char* client = services ? services->ClientPath() : nullptr;
-        const char* slash = client ? strrchr(client, '\\') : nullptr;
-
-        if (slash) {
-            int prefix = static_cast<int>(slash - client);
-            snprintf(path, sizeof(path), "%.*s\\%s", prefix, client, module.name);
-        } else {
-            snprintf(path, sizeof(path), "Z:\\%s", module.name);
-        }
-    }
-
-    WriteMemory(entry + 0x120, path, static_cast<uint32_t>(strlen(path)) + 1);
+    WriteMemory(entry + 0x20, name, static_cast<uint32_t>(strlen(name)) + 1);
+    WriteMemory(entry + 0x120, module.path, static_cast<uint32_t>(strlen(module.path)) + 1);
     return true;
 }
 
