@@ -236,6 +236,148 @@ Kullanıcı: "Token sınırlı, ajanları çok sık kullanma." Bundan sonra **en
 çalışır; ajan talimatları tutumlu olmayı söyler. Sıra: Faz 3 ajanı (bitiyor) → Faz 1 ajanı (adım 1
 commit'lendi, devam edecek) → spesifikasyon ajanı yalnızca gerekirse. Küçük işler (Lux vb.) ana oturumda.
 
+## Faz 1 — native Metal cihazı: kalan iş listesi (2026-10-21)
+
+**Durum.** `GxMetal` isim alanındaki altyapı hazır ve derleniyor: `MetalContext` (cihaz, kuyruk,
+seri numaraları, komut tamponları, hedefler, temizleme, blit, sunum, okunabilir derinlik, occlusion),
+`MetalResources` (UploadHeap, Buffer, Texture, Target, Query), `MetalPipeline` (Shader, VertexLayout,
+pipeline/depth-stencil/sampler önbelleği), `MetalFixedFunction` (sabit fonksiyon MSL üretimi),
+`MetalFormats`. Cihazın kendisi `CGxDeviceMetalNative` olarak ayrı tutuluyor; varsayılan cihaz hâlâ
+D3D9 shim üzerindeki `CGxDeviceMetal` (bu yüzden istemci çalışmaya devam ediyor).
+
+**Kalan iş:** `CGxDeviceMetalNative.h`'de bildirilen 106 metodun Metal karşılıklarını yazmak
+(`CGxDeviceMetalNative.mm`). Referans: eski `CGxDeviceMetal.cpp` (3 450 satır, D3D9 shim'e delege
+eder) + shim'in `D3D9/Device.mm`'i (Metal'e nasıl çevrildiği) + `CGxDeviceOpenGl.cpp` (D3D'siz
+iskelet). İş büyüklüğü ~1 500–2 000 satır yeni kod + görsel doğrulama; shader yolu (.bls bytecode →
+`GxMetal::Shader`) ve çizim bağlama dahil.
+
+**Seçim anahtarı (yazılınca):** `WRATHMODERN_GX=native` → `CreateCGxDeviceMetal()` native cihazı
+döndürür; karşılaştırma `Tools/autotest.sh` görüntüleriyle yapılır (shim = referans).
+
+**Metod listesi (sırayla; her grup derlenip görsel olarak karşılaştırılacak):**
+
+**1. Yaşam döngüsü ve pencere**
+- [ ] `DeviceDestroy`
+- [ ] `IDestroyMetal`
+- [ ] `ICreateWindowTargets`
+- [ ] `DeviceWindow`
+- [ ] `CapsWindowSize`
+- [ ] `CapsWindowSizeInScreenCoords`
+- [ ] `IPollWindow`
+- [ ] `IResetDevice`
+- [ ] `ISetCaps`
+- [ ] `DeviceEvictResources`
+- [ ] `LogCrashInfo`
+- [ ] `DeviceUnk81`
+- [ ] `DeviceUnk82`
+- [ ] `DeviceUnk83`
+- [ ] `ISetWindowFocus`
+
+**2. Hedefler, temizleme, sunum**
+- [ ] `ISetHwTargets`
+- [ ] `DeviceSetRenderTarget`
+- [ ] `DeviceSaveDepthSurface`
+- [ ] `DeviceRestoreDepthSurface`
+- [ ] `DeviceResolveDepthBuffer`
+- [ ] `ISceneBegin`
+- [ ] `ISceneEnd`
+- [ ] `SceneClear`
+- [ ] `ScenePresent`
+- [ ] `DeviceReadPixels`
+- [ ] `DeviceReadDepths`
+
+**3. Dokular**
+- [ ] `ITexCreate`
+- [ ] `ITexUpload`
+- [ ] `TexDestroy`
+- [ ] `ITexTarget`
+- [ ] `ITexForceRecreation`
+- [ ] `ITexMarkAsUpdated`
+- [ ] `DeviceCopyTex`
+
+**4. Tamponlar ve havuzlar**
+- [ ] `PoolSizeSet`
+- [ ] `PoolDestroy`
+- [ ] `BufLock`
+- [ ] `BufData`
+- [ ] `IBufLock`
+- [ ] `IBufUnlock`
+- [ ] `ICreateBuffer`
+- [ ] `IReleasePool`
+- [ ] `IReleasePools`
+- [ ] `IReleaseResources`
+
+**5. Durum eşlemesi**
+- [ ] `IRsSendToHw`
+- [ ] `IStateSetDefaults`
+- [ ] `IStateSync`
+- [ ] `IStateSyncEnables`
+- [ ] `IStateSyncLights`
+- [ ] `IStateSyncMaterial`
+- [ ] `IStateSyncScissorRect`
+- [ ] `IStateSyncVertexPtrs`
+- [ ] `IStateSyncXforms`
+- [ ] `IStateSyncClipPlanes`
+- [ ] `ISetTexture`
+- [ ] `ISetVertexBuffer`
+- [ ] `ISetColorOp`
+- [ ] `ISetAlphaOp`
+- [ ] `ISetTexCoord`
+- [ ] `ISetTexCoordIndex`
+- [ ] `ISetTexGen`
+- [ ] `IXformSetTex`
+- [ ] `IXformSetWorld`
+- [ ] `IXformSetViewport`
+- [ ] `XformSetView`
+- [ ] `XformSetProjection`
+- [ ] `ISetMaterial`
+
+**6. Shader ve çizim**
+- [ ] `ShaderCreate`
+- [ ] `ShaderDestroy`
+- [ ] `IShaderReload`
+- [ ] `IShaderCreate`
+- [ ] `IShaderCreateVertex`
+- [ ] `IShaderCreatePixel`
+- [ ] `IBindVertexShader`
+- [ ] `IBindPixelShader`
+- [ ] `IShaderConstantsFlush`
+- [ ] `ILayoutFor`
+- [ ] `IReleaseShaders`
+- [ ] `IReleaseLayouts`
+- [ ] `Draw`
+- [ ] `IDraw`
+- [ ] `IDrawPrepare`
+- [ ] `IDrawBindTextures`
+- [ ] `IDrawFixedVertexState`
+
+**7. Sorgular, imleç, stereo**
+- [ ] `QueryCreate`
+- [ ] `QueryDestroy`
+- [ ] `QueryBegin`
+- [ ] `QueryEnd`
+- [ ] `QueryGetParam`
+- [ ] `QueryGetData`
+- [ ] `IReleaseQueries`
+- [ ] `ICursorCreate`
+- [ ] `ICursorDestroy`
+- [ ] `ICursorDraw`
+- [ ] `CursorSetVisible`
+- [ ] `CursorUnlock`
+- [ ] `IUpdateCursor`
+- [ ] `StereoSetConvergence`
+- [ ] `StereoGetConvergence`
+- [ ] `StereoSetSeparation`
+- [ ] `StereoGetSeparation`
+- [ ] `StereoEnabled`
+
+**Sınıflandırılmadı**
+- [ ] `CreateCGxDeviceMetalNative`
+- [ ] `DeviceOverride`
+- [ ] `DeviceSetBaseMipLevel`
+- [ ] `DeviceSetGamma`
+- [ ] `ICreateTextureDepthBuffer`
+
 ## Sıradaki adımlar (yarıda kalırsa buradan devam)
 
 1. [x] Faz 1 tasarımı (yukarıda "Faz 1 tasarımı").
