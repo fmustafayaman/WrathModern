@@ -2491,6 +2491,7 @@ bool CGxDeviceMetalNative::IDrawPrepare(const CGxBatch* batch) {
     GxMetal::ShaderInfo pixelInfo;
 
     if (this->m_hw.m_pixelShader) {
+
         GxMetal::PixelShaderVariant variant;
         pixelInfo = this->m_hw.m_pixelShader->m_info;
 
@@ -2561,7 +2562,7 @@ bool CGxDeviceMetalNative::IDrawPrepare(const CGxBatch* batch) {
         GxMetal::Texture* colorTarget = this->m_metal->ColorTarget().m_texture;
         key.m_samples = static_cast<uint8_t>(colorTarget ? colorTarget->m_samples : this->m_samples);
     }
-    key.m_blendEnable = 0; // TEMP: opaque
+    key.m_blendEnable = this->m_hw.m_blendEnable ? 1 : 0;
     key.m_srcBlend = static_cast<uint8_t>(this->m_hw.m_srcBlend);
     key.m_dstBlend = static_cast<uint8_t>(this->m_hw.m_dstBlend);
     key.m_writeMask = static_cast<uint8_t>(this->m_hw.m_colorWrite);
@@ -2664,6 +2665,7 @@ bool CGxDeviceMetalNative::IDrawPrepare(const CGxBatch* batch) {
     }
 
 
+    
     uint32_t samplerMask = this->m_hw.m_pixelShader ? pixelInfo.m_samplerMask : 0xFF;
     this->IDrawBindTextures(this->m_hw.m_pixelShader ? &pixelInfo : nullptr, samplerMask);
     this->m_metal->MarkTargetsRendered();
