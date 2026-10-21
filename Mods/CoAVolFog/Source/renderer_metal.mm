@@ -29,6 +29,13 @@ constexpr float kWorldDepthMargin = 2.0e-6f;
 constexpr double kMaxNoiseStepSeconds = 0.25;
 constexpr int kRegisterCount = 99;
 constexpr float kHistoryMaxSeconds = 0.25f;
+constexpr uint32_t kRayScale = 4;
+constexpr float kMinGodRayStrength = 0.005f;
+constexpr float kRayFalloff = 8.0f;
+constexpr float kRayThreshold = 0.12f;
+constexpr float kRayStep = 0.075f;
+constexpr float kRayDecay = 0.9f;
+constexpr int kRayTaps = 8;
 constexpr float kHistoryMaxMove = 30.0f;
 constexpr float kHistoryMinForwardDot = 0.70710678f;
 
@@ -124,6 +131,8 @@ struct FogRenderer::Impl
     id<MTLTexture> march = nil;
     id<MTLTexture> history[2] = {nil, nil};
     id<MTLTexture> historyDepth = nil;
+    id<MTLTexture> sceneCopy = nil;
+    id<MTLTexture> rays[2] = {nil, nil};
     id<MTLTexture> densityNoise = nil;
     id<MTLTexture> authoredNoise = nil;
     id<MTLTexture> dummy2d = nil;
@@ -205,6 +214,48 @@ struct FogRenderer::Impl
         remade = true;
         VF_LOG_INFO("fog targets %ux%u: march, history fp16, history depth rgba8", width, height);
         return march && history[0] && history[1] && historyDepth;
+    }
+
+    // CopyWorldViewport: the world before the fog, resolved when multisampled, at the target's size
+    bool CopyScene(id<MTLCommandBuffer> commands, id<MTLTexture> color)
+    {
+        if (!sceneCopy || sceneCopy.width != color.width || sceneCopy.height != color.height ||
+            sceneCopy.pixelFormat != color.pixelFormat)
+        {
+            sceneCopy = Target(color.pixelFormat, static_cast<uint32_t>(color.width), static_cast<uint32_t>(color.height));
+            if (!sceneCopy)
+                return false;
+        }
+
+        if (color.sampleCount > 1)
+        {
+            // An empty pass that keeps the samples and resolves them into the copy
+            MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+            pass.colorAttachments[0].texture = color;
+            pass.colorAttachments[0].resolveTexture = sceneCopy;
+            pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
+            pass.colorAttachments[0].storeAction = MTLStoreActionStoreAndMultisampleResolve;
+            id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
+            encoder.label = @"CoAVolFog scene copy";
+            [encoder endEncoding];
+        }
+        else
+        {
+            id<MTLBlitCommandEncoder> blit = [commands blitCommandEncoder];
+            blit.label = @"CoAVolFog scene copy";
+            [blit copyFromTexture:color toTexture:sceneCopy];
+            [blit endEncoding];
+        }
+        return true;
+    }
+
+    bool EnsureRays(uint32_t width, uint32_t height)
+    {
+        if (rays[0] && rays[0].width == width && rays[0].height == height)
+            return true;
+        rays[0] = Target(MTLPixelFormatRGBA8Unorm, width, height);
+        rays[1] = Target(MTLPixelFormatRGBA8Unorm, width, height);
+        return rays[0] && rays[1];
     }
 
     void EnsureStatic()
@@ -335,13 +386,17 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
 
     float sunPx[2] = {};
     const bool sunInFront = toLightInView[2] > 0.05f;
+    float sunScreenFade = 0.0f;
     if (sunInFront)
     {
         float ndcX = toLightInView[0] / toLightInView[2] * proj[0] + proj[8];
         float ndcY = toLightInView[1] / toLightInView[2] * proj[5] + proj[9];
         sunPx[0] = vp.X + (ndcX * 0.5f + 0.5f) * vp.Width;
         sunPx[1] = vp.Y + (0.5f - ndcY * 0.5f) * vp.Height;
+        sunScreenFade = std::clamp(1.6f - std::max(std::fabs(ndcX), std::fabs(ndcY)), 0.0f, 1.0f);
     }
+    const float rayStrength = cfg.godRays * fog.lightVisibility * sunScreenFade;
+    const bool rays = rayStrength > kMinGodRayStrength;
 
     C[9] = {toLightInView[0], toLightInView[1], toLightInView[2], fog.lightAboveHorizon};
     C[11] = {cfg.temporal > 0.0f ? 1.0f : 0.0f, fog.maxDistance, fog.horizonStart, fog.farClip};
@@ -388,7 +443,15 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
     const double windPeriod = static_cast<double>(kDensityNoiseSize) / std::max(cfg.noiseScale, 0.001f);
     C[78] = {cfg.noiseAmount, cfg.noiseScale, static_cast<float>(std::fmod(now * cfg.noiseWindSpeed, windPeriod)), 0.0f};
 
-    const FogBlend blend = fog.linear ? FogBlend::LinearFixedFunction : FogBlend::GammaFixedFunction;
+    // The blend: over a copy of the scene in linear light, or in gamma when god rays need the copy
+    const bool wantsCopy = fog.linear || rays;
+    const bool copied = wantsCopy && impl.CopyScene(commands, color);
+    FogBlend blend = FogBlend::GammaFixedFunction;
+    if (fog.linear)
+        blend = copied ? FogBlend::LinearOverSceneCopy : FogBlend::LinearFixedFunction;
+    else if (rays && copied)
+        blend = FogBlend::GammaOverSceneCopy;
+    const bool sceneBlend = blend == FogBlend::LinearOverSceneCopy || blend == FogBlend::GammaOverSceneCopy;
     const float blendMode = static_cast<float>(blend);
     if (blendMode != m_loggedBlend)
     {
@@ -412,9 +475,17 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
     id<MTLRenderPipelineState> historyDepthPipeline =
         impl.Pipeline(library, @"vf_history_depth", MTLPixelFormatRGBA8Unorm, 1, false, "historydepth" + variant);
     id<MTLRenderPipelineState> compositePipeline =
-        impl.Pipeline(library, @"vf_composite", color.pixelFormat, color.sampleCount, true,
-                      "composite" + variant + std::to_string(color.pixelFormat) + "x" + std::to_string(color.sampleCount));
-    if (!marchPipeline || !temporalPipeline || !historyDepthPipeline || !compositePipeline)
+        impl.Pipeline(library, @"vf_composite", color.pixelFormat, color.sampleCount, !sceneBlend,
+                      "composite" + variant + std::to_string(color.pixelFormat) + "x" + std::to_string(color.sampleCount) +
+                          (sceneBlend ? "copy" : "blend"));
+    id<MTLRenderPipelineState> downsamplePipeline =
+        impl.Pipeline(library, @"vf_downsample", MTLPixelFormatRGBA8Unorm, 1, false, "downsample" + variant);
+    id<MTLRenderPipelineState> rayMaskPipeline =
+        impl.Pipeline(library, @"vf_ray_mask", MTLPixelFormatRGBA8Unorm, 1, false, "raymask" + variant);
+    id<MTLRenderPipelineState> rayBlurPipeline =
+        impl.Pipeline(library, @"vf_ray_blur", MTLPixelFormatRGBA8Unorm, 1, false, "rayblur" + variant);
+    if (!marchPipeline || !temporalPipeline || !historyDepthPipeline || !compositePipeline || !downsamplePipeline ||
+        !rayMaskPipeline || !rayBlurPipeline)
     {
         impl.failed = true;
         return false;
@@ -438,7 +509,8 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
         [encoder setFragmentBytes:localLights length:sizeof(localLights) atIndex:1];
         [encoder setFragmentTexture:depth atIndex:0];
         [encoder setFragmentTexture:fogResult atIndex:1];
-        [encoder setFragmentTexture:impl.dummy2d atIndex:2];
+        [encoder setFragmentTexture:impl.rays[1] ? impl.rays[1] : impl.dummy2d atIndex:2];
+        [encoder setFragmentTexture:impl.sceneCopy && sceneBlend ? impl.sceneCopy : impl.dummy2d atIndex:3];
         [encoder setFragmentTexture:impl.march atIndex:4];
         [encoder setFragmentTexture:impl.history[m_historyIndex] atIndex:5];
         [encoder setFragmentTexture:impl.historyDepth atIndex:6];
@@ -475,12 +547,79 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
         drawInto(impl.historyDepth, historyDepthPipeline, C, @"CoAVolFog history depth");
     }
 
+    // DrawGodRayMask: the bright sky around the sun, then two radial blurs toward it
+    const bool raysDrawn = rays && copied && impl.EnsureRays(std::max(1u, vp.Width / kRayScale), std::max(1u, vp.Height / kRayScale));
+    if (raysDrawn != m_loggedRays)
+    {
+        m_loggedRays = raysDrawn;
+        VF_LOG_INFO("god rays %s (strength %.2f, sun at %.0f, %.0f)", raysDrawn ? "drawn" : "stopped", rayStrength, sunPx[0], sunPx[1]);
+    }
+    if (raysDrawn)
+    {
+        const uint32_t rayW = static_cast<uint32_t>(impl.rays[0].width);
+        const uint32_t rayH = static_cast<uint32_t>(impl.rays[0].height);
+        {
+            MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+            pass.colorAttachments[0].texture = impl.rays[0];
+            pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+            pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+            id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
+            encoder.label = @"CoAVolFog god ray scene";
+            [encoder setRenderPipelineState:downsamplePipeline];
+            [encoder setFragmentTexture:impl.sceneCopy atIndex:0];
+            [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+            [encoder endEncoding];
+        }
+        Float4 M[kRegisterCount];
+        std::memcpy(M, C, sizeof(M));
+        M[9] = {toLightInView[0], toLightInView[1], toLightInView[2], kRayFalloff};
+        M[10] = {0.0f, kRayThreshold, 1.0f / rayW, 1.0f / rayH};
+        {
+            MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+            pass.colorAttachments[0].texture = impl.rays[1];
+            pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+            pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+            id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
+            encoder.label = @"CoAVolFog god ray mask";
+            [encoder setRenderPipelineState:rayMaskPipeline];
+            bindFog(encoder, M);
+            [encoder setFragmentTexture:impl.rays[0] atIndex:7];
+            [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+            [encoder endEncoding];
+        }
+        float norm = 0.0f;
+        for (int k = 0; k < kRayTaps; ++k)
+            norm += std::pow(kRayDecay, static_cast<float>(k));
+        const float sunUv[2] = {(sunPx[0] - vp.X) / vp.Width, (sunPx[1] - vp.Y) / vp.Height};
+        float step = kRayStep;
+        for (int blurPass = 0; blurPass < 2; ++blurPass)
+        {
+            Float4 B[11] = {};
+            B[9] = {sunUv[0], sunUv[1], step, 1.0f / norm};
+            B[10] = {static_cast<float>(rayW), static_cast<float>(rayH), 1.0f / rayW, 1.0f / rayH};
+            MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+            pass.colorAttachments[0].texture = impl.rays[blurPass == 0 ? 0 : 1];
+            pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+            pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+            id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
+            encoder.label = @"CoAVolFog god ray blur";
+            [encoder setRenderPipelineState:rayBlurPipeline];
+            [encoder setFragmentBytes:B length:sizeof(B) atIndex:0];
+            [encoder setFragmentTexture:impl.rays[blurPass == 0 ? 1 : 0] atIndex:0];
+            [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+            [encoder endEncoding];
+            step /= kRayTaps;
+        }
+    }
+
     // Composite: with local lights its full-resolution march takes the noise at its mean
     const FogParams compositeMarchFog = marchesLocalLights ? WithMeanNoise(fog) : fog;
     std::memcpy(&C[12], &compositeMarchFog.layers[0].start, sizeof(compositeMarchFog.layers));
-    C[96] = {hasAuthored ? cfg.classicExposure : cfg.exposure, 0.0f, static_cast<float>(cfg.debugView), blendMode};
+    C[96] = {hasAuthored ? cfg.classicExposure : cfg.exposure, raysDrawn && sceneBlend ? rayStrength : 0.0f,
+             static_cast<float>(cfg.debugView), blendMode};
     C[97] = {fog.rayColor[0], fog.rayColor[1], fog.rayColor[2], 0.0f};
-    C[98] = {sunPx[0], sunPx[1], cfg.sunMarker && sunInFront ? 1.0f : 0.0f, 0.0f};
+    C[98] = {sunPx[0], sunPx[1], cfg.sunMarker && sunInFront ? 1.0f : 0.0f,
+             cfg.glowCompensation && sceneBlend ? in.clientGlowAmount : 0.0f};
     {
         MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
         pass.colorAttachments[0].texture = color;

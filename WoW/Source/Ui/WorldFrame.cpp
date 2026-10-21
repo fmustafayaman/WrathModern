@@ -1,5 +1,7 @@
 #include "WorldFrame.h"
 #include "Engine/Source/Base/ConvertUTF.h"
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <typeinfo>
 #include "Engine/Source/Base/Coordinate.h"
@@ -1604,6 +1606,21 @@ void CGWorldFrame::UpdateDayNight(float deltaSec) {
             info->m_dayProgression = 0.5f;
         }
     }
+
+#if defined(WOWDECOMP_PLATFORM_MAC)
+    // Testing only (Tools/autotest.sh): WRATHMODERN_TIME_OF_DAY=HH:MM draws the world at that time of day
+    static int32_t s_testMinutes = [] {
+        const char* text = getenv("WRATHMODERN_TIME_OF_DAY");
+        int32_t hours = 0;
+        int32_t minutes = 0;
+        return text && sscanf(text, "%d:%d", &hours, &minutes) == 2 ? ((hours * 60 + minutes) % 1440 + 1440) % 1440 : -1;
+    }();
+
+    if (s_testMinutes >= 0) {
+        info->m_timeOfDay = s_testMinutes;
+        info->m_dayProgression = s_testMinutes * (1.0f / 1440.0f);
+    }
+#endif
 
     info->m_weatherIntensity = World::s_weather->m_densityBlend * World::s_weather->m_fogIntensity;
 }

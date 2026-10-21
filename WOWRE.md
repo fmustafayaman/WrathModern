@@ -413,8 +413,15 @@ taşınabilir C++ olarak aynen alınır. Ayar dosyası `Mods/CoAVolFog.ini` (ayn
   (konum+kesme, renk, zayıflama), `c53` kontrol, lit varyant, kompozitte `WithMeanNoise`. Darkshire: 24 aday →
   8 yüklendi, doğrulama 0 hata (`build/autotest/l-off` ↔ `l-on`, fenerlerin çevresinde sıcak haleler). Panel'e
   LocalLights/Intensity/Phase eklendi.
-- **Sıradaki — dilim 6:** güneş saçılması/god rays (`vf_ray_mask`, `vf_ray_blur`, `vf_ray_composite`), glow
-  telafisi (sahne kopyası gerekir: MSAA çözümlenmiş renk host'tan açılmalı), renk derecelendirme (`vp_grade`).
+- **Dilim 6a — sahne kopyası, god rays, glow telafisi (2026-10-21):** sahne kopyası mod içinde, host değişmeden:
+  MSAA renk hedefi boş bir geçişte `StoreAndMultisampleResolve` ile modun dokusuna çözümleniyor (MSAA yoksa blit).
+  Kompozit artık orijinaldeki gibi "linear light over a scene copy" (`BlendOverSceneCopy`, `FogSceneColour`,
+  `BlendGodRays`). God rays: 1/4 küçültme, `vf_ray_mask`, iki `vf_ray_blur` (sabitler orijinal). Glow telafisi:
+  `GlowScreenEffectAmount` (ffx açık + etkin efekt `CGWorldFrame::ffxEffectGlow` + kendi CVar'ı; m_glow 0–1; sıvıda
+  0). Test için istemciye `WRATHMODERN_TIME_OF_DAY=SS:DD` (yalnız ortam değişkeniyle, `CGWorldFrame`'de gün/gece
+  saati). Doğrulama 0 hata. **Açık:** huzmeler güneş kadraj kenarındayken devreye girdi (güç 0,02, sönümlü);
+  güneş tam kadrajdayken görsel olarak henüz görülmedi — autotest'te kamerayı güneşe çevirmek zor (Lua'da yaw yok).
+- **Sıradaki — dilim 6b:** renk derecelendirme (`vp_grade.hlsl`, `grading_renderer.cpp`, Classic `gradingCurve`).
 
 **Kabul ölçütü:** her dilimde aynı nokta/saat için Windows CoAVolFog (CrossOver) ↔ WowRe karşılaştırması
 (kullanıcı referans kareyi verir), sıfır Metal doğrulama hatası, kare süresi ölçümü (`WRATHMODERN_FRAMESTATS`).

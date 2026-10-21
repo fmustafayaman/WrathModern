@@ -158,6 +158,7 @@ struct Fog
     texture2d<float> fogTexture;    // sFog
     texture2d<float> godRays;       // sGodRays, linear
     texture2d<float> currentMarch;  // sCurrentMarch
+    texture2d<float> sceneBeforeFog; // sSceneBeforeFog, the world resolved before the fog
     texture2d<float> history;       // vf_temporal.hlsl sHistory
     texture2d<float> historyDepth;  // vf_temporal.hlsl sHistoryDepth
     sampler wrapped;
@@ -1106,6 +1107,44 @@ struct Fog
         return rays;
     }
 
+    float3 BlendGodRays(float3 colour, float3 rays) const
+    {
+        if (GodRayStrength() > 0)
+        {
+            float glow = ClientGlowToCompensate();
+            float3 displayed = colour * (1 + glow * colour);
+            displayed += max(1 - displayed, 0.0) * (1 - exp(-max(rays, 0.0)));
+            colour = BeforeClientGlow(displayed, glow);
+        }
+        return colour;
+    }
+
+    float3 FogSceneColour(float3 scene, float4 fog) const
+    {
+        if (!BlendsInLinearLight())
+        {
+            float3 fogColour = RollOffHighlights(fog.rgb / max(fog.a, 1e-4), float3(kHighlightKnee));
+            return scene * (1 - fog.a) + fogColour * fog.a;
+        }
+        scene = GammaToLinear(scene);
+        float3 colour = LinearToGamma(RollOffHighlights(scene * (1 - fog.a) + fog.rgb, max(float3(kHighlightKnee), scene)));
+        if (ClientGlowToCompensate() > 0)
+            colour = mix(colour, BeforeClientGlow(colour, ClientGlowToCompensate()), fog.a);
+        return colour;
+    }
+
+    // tex2Dlod(sSceneBeforeFog, viewportUv) with point filtering: the pixel's own scene colour
+    float3 SceneAt(float2 viewportUv) const
+    {
+        float2 size = float2(sceneBeforeFog.get_width(), sceneBeforeFog.get_height());
+        return sceneBeforeFog.read(uint2(clamp(floor(viewportUv * size), float2(0), size - 1))).rgb;
+    }
+
+    float4 BlendOverSceneCopy(float2 viewportUv, float4 fog, float3 rays) const
+    {
+        return float4(BlendGodRays(FogSceneColour(SceneAt(viewportUv), fog), rays), 1);
+    }
+
     float4 PremultipliedForFixedFunctionBlend(float4 fog, float3 rays, bool linearLight) const
     {
         float opacity = max(fog.a, 1e-4);
@@ -1115,7 +1154,6 @@ struct Fog
         return float4(unpremultiplied * fog.a + rays, fog.a);
     }
 
-    // The scene-copy blends (BlendOverSceneCopy) join in the slice that copies the scene
     float4 CompositeAtDepth(float2 pixel, float depth) const
     {
         float viewZ = LinearDepth(depth);
@@ -1138,6 +1176,8 @@ struct Fog
         if (SunMarkerEnabled() && distance(pixel, SunPixel()) < kSunMarkerRadius)
             return kSunMarkerColour;
 
+        if (BlendsOverSceneCopy())
+            return BlendOverSceneCopy(viewportUv, fog, rays);
         return PremultipliedForFixedFunctionBlend(fog, rays, linearLight);
     }
 };
@@ -1160,6 +1200,7 @@ vertex Varyings vf_fullscreen(uint vid [[vertex_id]])
     constant float4* C [[buffer(0)]], constant float4* localLights [[buffer(1)]],                              \
         DepthTexture depthTexture [[texture(0)]], texture2d<float> fogTexture [[texture(1)]],                  \
         texture2d<float> godRays [[texture(2)]], texture2d<float> currentMarch [[texture(4)]],                 \
+        texture2d<float> sceneBeforeFog [[texture(3)]],                                                        \
         texture2d<float> history [[texture(5)]], texture2d<float> historyDepth [[texture(6)]],                 \
         texture3d<float> densityNoise [[texture(9)]], texture3d<float> authoredNoise [[texture(10)]]
 
@@ -1167,7 +1208,7 @@ vertex Varyings vf_fullscreen(uint vid [[vertex_id]])
     constexpr sampler wrappedSampler(filter::linear, address::repeat);                                          \
     constexpr sampler linearSampler(filter::linear, address::clamp_to_edge);                                    \
     Fog fog = {C, localLights, depthTexture, densityNoise, authoredNoise, fogTexture, godRays, currentMarch,     \
-               history, historyDepth, wrappedSampler, linearSampler}
+               sceneBeforeFog, history, historyDepth, wrappedSampler, linearSampler}
 
 // vf_march.hlsl: lowResTexel is ps_3_0's VPOS, the integer texel
 fragment float4 vf_march(Varyings in [[stage_in]], FOG_ARGUMENTS)
@@ -1197,4 +1238,50 @@ fragment float4 vf_history_depth(Varyings in [[stage_in]], FOG_ARGUMENTS)
 {
     MAKE_FOG;
     return fog.HistoryDepthAt(floor(in.position.xy));
+}
+
+// CopySceneForGodRays: StretchRect with linear filtering of the world into the ray target
+fragment float4 vf_downsample(Varyings in [[stage_in]], texture2d<float> source [[texture(0)]])
+{
+    constexpr sampler linearSampler(filter::linear, address::clamp_to_edge);
+    float2 size = float2(source.get_width(), source.get_height());
+    float2 target = float2(max(1.0, floor(size.x / 4)), max(1.0, floor(size.y / 4)));
+    return float4(source.sample(linearSampler, in.position.xy / target, level(0)).rgb, 1);
+}
+
+// vf_ray_mask.hlsl: cRayMask c9, cRaySource c10; sDownsampledScene linear
+fragment float4 vf_ray_mask(Varyings in [[stage_in]], FOG_ARGUMENTS, texture2d<float> downsampled [[texture(7)]])
+{
+    MAKE_FOG;
+    const float3 kLumaWeights = float3(0.299, 0.587, 0.114);
+    const float kThresholdRampSlope = 4;
+    float2 rayTexel = floor(in.position.xy);
+    float2 rayTexelSize = C[10].zw;
+    float2 fullPixelsPerRayTexel = fog.ViewportSize() * rayTexelSize;
+    float2 pixel = min(fog.ViewportOrigin() + (rayTexel + 0.5) * fullPixelsPerRayTexel, fog.ViewportLastPixelCentre());
+    float skyMask = fog.IsSky(fog.SampleDepth(pixel)) ? 1 : 0;
+    float3 viewDirection = normalize(fog.ViewRayAtUnitDepth(pixel));
+    float sunFalloff = pow(saturate(dot(viewDirection, C[9].xyz)), C[9].w);
+    float3 scene = downsampled.sample(linearSampler, (rayTexel + 0.5) * rayTexelSize, level(0)).rgb;
+    float luminance = dot(scene, kLumaWeights);
+    float brightSky = skyMask * sunFalloff * saturate((luminance - C[10].y) * kThresholdRampSlope);
+    return float4(scene * brightSky, 1);
+}
+
+// vf_ray_blur.hlsl: cRadialBlur c9, cRayTarget c10; sSource linear
+fragment float4 vf_ray_blur(Varyings in [[stage_in]], constant float4* C [[buffer(0)]], texture2d<float> source [[texture(0)]])
+{
+    constexpr sampler linearSampler(filter::linear, address::clamp_to_edge);
+    const int kTaps = 8;
+    const float kDecayPerTap = 0.9;
+    float2 uv = (floor(in.position.xy) + 0.5) * C[10].zw;
+    float2 tapStep = (C[9].xy - uv) * C[9].z;
+    float3 sum = 0;
+    float tapWeight = 1;
+    for (int k = 0; k < kTaps; k++)
+    {
+        sum += source.sample(linearSampler, uv + tapStep * k, level(0)).rgb * tapWeight;
+        tapWeight *= kDecayPerTap;
+    }
+    return float4(sum * C[9].w, 1);
 }

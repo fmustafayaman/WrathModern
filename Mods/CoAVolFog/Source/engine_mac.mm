@@ -7,8 +7,11 @@
 #include <cmath>
 #include <cstring>
 #include "WMModAPI.h"
+#include "Engine/Source/ConsoleBase/ConsoleVar.h"
+#include "Engine/Source/FFX/FFX.h"
 #include "Engine/Source/Model2/M2Light.h"
 #include "Engine/Source/Model2/M2Scene.h"
+#include "WoW/Source/Ui/WorldFrame.h"
 #include "WoW/Source/WorldClient/DayNight.h"
 #include "WoW/Source/WorldClient/DayNight__DNInfo.h"
 #include "WoW/Source/WorldClient/MapObj.h"
@@ -176,9 +179,18 @@ bool BuildFrameInputs(const WMWorldState& world, uint32_t width, uint32_t height
     in.directColor = Argb(info.m_bands.m_diffuse);
     in.sunColor = Argb(info.m_bands.m_sunCloudColors[0]);
 
-    // 0xD38C1C (light float band 0), 0xD38C2C (glow)
+    // 0xD38C1C (light float band 0)
     in.zoneFogDistance = info.m_bands.m_fogEnd;
-    in.clientGlowAmount = info.m_bands.m_glow;
+
+    // GlowScreenEffectAmount: the day/night glow (0xD38C2C) clamped to 0..1 while the glow screen effect runs
+    // (the ffx CVar 0xD45774 on, the current effect 0xD45780 the glow effect 0xB74364 with its CVar on), and
+    // nothing in liquid (UseDeliveredGlow); the byte the glow composite receives is the Windows build's
+    // ForeverGlow path, which this port does not override
+    FFX::Effect* effect = FFX::s_effect;
+    bool glowRuns = FFX::s_cvarFFX && FFX::s_cvarFFX->m_intValue && effect && effect == CGWorldFrame::ffxEffectGlow &&
+                    effect->m_cvar && effect->m_cvar->m_intValue;
+    float glow = info.m_bands.m_glow;
+    in.clientGlowAmount = glowRuns && std::isfinite(glow) && !world.cameraInLiquid ? std::fmin(std::fmax(glow, 0.0f), 1.0f) : 0.0f;
 
     // From the projection
     in.farClip = world.farClip;

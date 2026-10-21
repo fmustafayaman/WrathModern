@@ -29,6 +29,8 @@ local SETTINGS = {
     {"Ambient", "Ambient light"},
     {"Exposure", "Exposure"},
     {"ClassicExposure", "Classic exposure"},
+    {"GodRays", "God rays"},
+    {"GlowCompensation", "Glow compensation"},
     {"Local lights"},
     {"LocalLights", "Lamps and fires light the fog"},
     {"LocalLightIntensity", "Light intensity"},

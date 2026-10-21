@@ -51,4 +51,5 @@ private:
     int m_historyIndex = 0;
     float m_loggedBlend = -1.0f;
     bool m_loggedFrame = false;
+    bool m_loggedRays = false;
 };
