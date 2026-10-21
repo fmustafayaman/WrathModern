@@ -432,6 +432,11 @@ taşınabilir C++ olarak aynen alınır. Ayar dosyası `Mods/CoAVolFog.ini` (ayn
   çevresi); mod `water_classify.h` aynen + `ClassifyWaterSettings` (`CSettingsBank::s_settings` sırası →
   `g_liquidTypeDB` → `m_materialID`/`m_soundBank` + `m_textureNames[0]`), `water_metal.mm` etiketleme +
   `WaterDebugView=5`. Kanıt: Lakeshire gölü "lake" (mavi), iskele önünde doğru kesiliyor (`build/autotest/w-class`).
+- **7.2 FFT kararı:** D3D9 sürümü FFT'yi pixel shader'larla (atlas, birleştirilmiş geçişler, MRT çiftleri) yapıyor;
+  Metal'de aynı matematik compute kernel'lerle: evolve (`vw_fft_evolve`: Forever spektrumu, Hermitian katlama,
+  döngü saati `MakeWaterLoopClock`), satır/sütun butterfly (`WaterButterflyTexels` tablosu), displacement birleştirme,
+  yüzey + köpük (`vw_fft_surface`, `WaterFoamStep`), mip (`vw_fft_mip`). CPU tabloları `water_spectrum.cpp`'den aynen.
+  Doğrulama: orijinalin `WaterReferenceDisplacement`/`WaterReferenceSurface` CPU referansıyla GPU sonucunu karşılaştır.
 - **Sıradaki — 7.2:** su öncesi sahne + doğrusal derinlik kopyası, `water_fft`/`water_spectrum` (GPU FFT, Forever
   karoları), `vw_*.hlsl` → MSL, sınıf başına stencil testli `vw_water` geçişi; `LiquidDepth` (sıvı geçişinde derinlik
   yazımı zorlama).
