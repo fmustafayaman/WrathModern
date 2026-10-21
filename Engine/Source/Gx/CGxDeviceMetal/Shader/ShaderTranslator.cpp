@@ -9,7 +9,7 @@
 #include <map>
 #include <vector>
 
-namespace D3D9Metal {
+namespace GxMetal {
 
 const char* const kVertexFunctionName = "d3d_vertex_main";
 const char* const kFragmentFunctionName = "d3d_fragment_main";

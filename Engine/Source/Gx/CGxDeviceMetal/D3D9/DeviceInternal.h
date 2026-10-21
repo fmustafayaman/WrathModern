@@ -13,8 +13,8 @@
 
 #include "Device.h"
 #include "FixedFunction.h"
-#include "ShaderBytecode.h"
-#include "ShaderTranslator.h"
+#include "Engine/Source/Gx/CGxDeviceMetal/Shader/ShaderBytecode.h"
+#include "Engine/Source/Gx/CGxDeviceMetal/Shader/ShaderTranslator.h"
 
 #include <cstring>
 #include <memory>

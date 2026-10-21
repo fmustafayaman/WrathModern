@@ -6,14 +6,14 @@
 // Every vertex function writes the same varyings struct and every fragment function reads a
 // subset of it, so any vertex function links with any fragment function, as in Direct3D 9.
 
-#ifndef ENGINE_SOURCE_GX_CGXDEVICEMETAL_D3D9_SHADERTRANSLATOR_H
-#define ENGINE_SOURCE_GX_CGXDEVICEMETAL_D3D9_SHADERTRANSLATOR_H
+#ifndef ENGINE_SOURCE_GX_CGXDEVICEMETAL_SHADER_SHADERTRANSLATOR_H
+#define ENGINE_SOURCE_GX_CGXDEVICEMETAL_SHADER_SHADERTRANSLATOR_H
 
 #include "ShaderBytecode.h"
 #include <cstdint>
 #include <string>
 
-namespace D3D9Metal {
+namespace GxMetal {
 
 // Vertex attribute indices. The client builds vertex declarations from a fixed set of usages, so
 // each (usage, usage index) pair it uses has its own attribute index.

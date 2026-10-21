@@ -7,7 +7,7 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
-#include "../../Engine/Source/Gx/CGxDeviceMetal/D3D9/ShaderTranslator.h"
+#include "../../Engine/Source/Gx/CGxDeviceMetal/Shader/ShaderTranslator.h"
 
 #include <cstdio>
 #include <cstring>
@@ -15,7 +15,7 @@
 #include <string>
 #include <vector>
 
-using namespace D3D9Metal;
+using namespace GxMetal;
 
 static bool ReadFile(const char* path, std::vector<uint8_t>& data) {
     FILE* file = fopen(path, "rb");

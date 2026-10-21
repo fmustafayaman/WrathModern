@@ -6,12 +6,14 @@
 #ifndef ENGINE_SOURCE_GX_CGXDEVICEMETAL_D3D9_FIXEDFUNCTION_H
 #define ENGINE_SOURCE_GX_CGXDEVICEMETAL_D3D9_FIXEDFUNCTION_H
 
-#include "ShaderTranslator.h"
+#include "Engine/Source/Gx/CGxDeviceMetal/Shader/ShaderTranslator.h"
 #include <cstdint>
 #include <cstring>
 #include <string>
 
 namespace D3D9Metal {
+
+using namespace GxMetal;
 
 struct FixedVertexKey {
     uint8_t m_attributes[ATTRIB_COUNT];   // AttributeClass per attribute
