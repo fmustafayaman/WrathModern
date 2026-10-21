@@ -236,6 +236,35 @@ Kullanıcı: "Token sınırlı, ajanları çok sık kullanma." Bundan sonra **en
 çalışır; ajan talimatları tutumlu olmayı söyler. Sıra: Faz 3 ajanı (bitiyor) → Faz 1 ajanı (adım 1
 commit'lendi, devam edecek) → spesifikasyon ajanı yalnızca gerekirse. Küçük işler (Lux vb.) ana oturumda.
 
+## Faz 1 — native Metal cihazı: TAMAMLANDI (2026-10-21)
+
+**Durum: native cihaz artık varsayılan.** `CGxDeviceMetalNative` (MetalContext/Resources/Pipeline/
+FixedFunction/Formats + `Shader/` çevirici) istemcinin giriş ekranını, karakter seçimini ve dünyayı
+`.bls` shader'larıyla çiziyor; modlar (`Lux`, `AwesomeWotlk`) `GxMetalDevice`/`GxMetalAcquireTargets`
+üzerinden native cihazı görüyor ve çalışıyor. `WRATHMODERN_GX=shim` eski D3D9 shim cihazını
+karşılaştırma için açık tutuyor.
+
+**Doğrulama (autotest, kendi sunucu, karakter Rhon):**
+- `glue@12` → tam giriş ekranı (logo, panel, düğmeler, sürüm yazısı) — shader yolu.
+- `world@18` → dünya: karakter, NPC + görev işareti, ağaçlar, arayüz, minimap; modlar yüklü ve
+  omuz kamerası etkin.
+- `Logs/Mods.log` temiz; ekran görüntüleri `Screenshots/autotest-*.tga` üzerinden alınıyor.
+
+**Bu işi bitiren hatalar (hepsi commit'lerde):**
+1. Vertex sabitleri: `ShaderInfo` hiç doldurulmadığı için GPU'ya yalnızca 16 bayt gidiyordu (c0),
+   shader ise c2..c5 ve c31+ okuyordu → geometri çöküyordu. Artık bağlı shader'ın kendi sayısı.
+2. `ISetTexture`, dokuyu `ITexMarkAsUpdated`'den **önce** önbelleğe alıyordu → ilk bağlamada siyah
+   yer tutucu kalıcı oluyordu. Sıra düzeltildi, dokular retain ediliyor.
+3. Pipeline örnek sayısı pencere yerine gerçek renk hedefinden; doku hedeflerine kendi 1× derinlik
+   tamponu.
+4. İndeksli çizim eksikti (`drawIndexedPrimitives`), sabitler çizimden önce aynaya kopyalanmıyordu,
+   `m_context`/`DeviceWM`/`ScenePresent` eksikleri, `m_texTarget` boştu.
+5. Mipmap üretimi ve bağlı durum aynası (nil başlangıç) eklendi.
+
+**Kalan iş (Faz 1 dışı / sonraki fazlar):** görsel farkların ince ayarı (logo/buton gibi tek tük
+öğeler), `D3D9/` dizininin tamamen silinmesi (şimdilik yedek cihaz), CoAVolFog/Lexara için derinlik
+ve font işleri.
+
 ## Faz 1 — native Metal cihazı: kalan iş listesi (2026-10-21)
 
 **Durum.** `GxMetal` isim alanındaki altyapı hazır ve derleniyor: `MetalContext` (cihaz, kuyruk,
