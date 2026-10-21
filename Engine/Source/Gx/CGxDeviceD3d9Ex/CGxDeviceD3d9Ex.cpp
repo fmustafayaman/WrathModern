@@ -1388,7 +1388,7 @@ void CGxDeviceD3d9Ex::IStateSyncLights() {
         this->DsSet(Ds_Lighting, this->m_appMasterEnables & 0x1);
         this->DsSet(Ds_Ambient, 0);
 
-        for (uint32_t i = 0; i < 4; i++) {
+        for (uint32_t i = 0; i < GxMaxLights; i++) {
             CGxApiLight& light = this->m_lights[i];
 
             if (!light.m_flags) {
@@ -1455,7 +1455,7 @@ void CGxDeviceD3d9Ex::IStateSyncLights() {
         if (!this->m_ambientOnlyMode) {
             this->m_ambientOnlyMode = 1;
 
-            for (uint32_t i = 0; i < 4; i++) {
+            for (uint32_t i = 0; i < GxMaxLights; i++) {
                 this->m_d3dDevice->LightEnable(i, FALSE);
 
                 if (this->m_lights[i].m_enable) {

@@ -6,6 +6,15 @@
 #include "Engine/Source/Tempest/C3Vector.h"
 #include "Engine/Source/Tempest/C4Vector.h"
 
+// Light slots of the graphics device. The original has four: the sun and three point lights for the path without
+// shaders. St0ny #67 "lights" gives the device eight (the sun and seven point lights); D3D9 and OpenGL fixed function
+// both support eight.
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+static const uint32_t GxMaxLights = 8;
+#else
+static const uint32_t GxMaxLights = 4;
+#endif
+
 class CGxLight {
     public:
     /* 0000 */ uint32_t m_flags;

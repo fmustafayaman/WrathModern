@@ -865,6 +865,11 @@ void CWorldScene::SetupLighting(CM2Lighting* lighting, C3Vector* view) {
             LocalLights localLights;
             CShaderEffect::ComputeLocalLights(&localLights, CWorldScene::s_fogPermute, lighting->m_lights, view);
             g_theGxDevicePtr->ShaderConstantsSet(GxSh_Vertex, 17, reinterpret_cast<float*>(&localLights), 11);
+
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+            // St0ny #67 "lights": lights 5 to 8 in c236-c246 (0x7A91A9)
+            CShaderEffect::SetExtraLocalLights(lighting, view);
+#endif
         }
     } else {
         lighting->SetupGxLights(view);
@@ -2290,7 +2295,7 @@ void CMapObj::SetRenderModeLight() {
     g_theGxDevicePtr->LightEnable(0, 1);
     g_theGxDevicePtr->LightEnable(0, 1);
 
-    for (int i = 1; i < 4; i++)
+    for (uint32_t i = 1; i < GxMaxLights; i++)
         g_theGxDevicePtr->LightEnable(i, 0);
 
     GxRsSet(GxRs_Lighting, static_cast<int32_t>(1));

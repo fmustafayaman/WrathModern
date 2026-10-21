@@ -240,7 +240,7 @@ static void GxuLightApplyImpl(float x, float y, int32_t unused, const C3Vector& 
         }
     }
 
-    for (; index != 4; index++) {
+    for (; index < GxMaxLights; index++) {
         g_theGxDevicePtr->LightEnable(index, 0);
     }
 

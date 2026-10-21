@@ -235,8 +235,17 @@ void CM2Lighting::AddLight(CM2Light* light) {
 
     if (count >= capacity) {
         if (dist >= this->m_lightDist[capacity - 1]) {
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+            // St0ny #67 "lights": a light that does not make the nearest four is kept as one of the next four (0x834FC7)
+            this->AddExtraLight(light, dist);
+#endif
             return;
         }
+
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+        // St0ny #67 "lights": the fourth light makes room for a nearer one and becomes the nearest extra (0x834FCD)
+        this->AddExtraLight(this->m_lights[capacity - 1], this->m_lightDist[capacity - 1]);
+#endif
 
         count--;
     }
@@ -254,6 +263,41 @@ void CM2Lighting::AddLight(CM2Light* light) {
     }
 }
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+// St0ny #67 "lights": keeps the four nearest of the lights beyond the first four, nearest first, as AddLight does for
+// those. Every light here is at least as far as the fourth main light: it was either turned away by it or pushed out
+// by a nearer one.
+void CM2Lighting::AddExtraLight(CM2Light* light, float dist) {
+    // Distances that are not finite would never sort; the exe patch skips them the same way
+    if (!(dist < INFINITY)) {
+        return;
+    }
+
+    uint32_t count = this->m_extraLightCount;
+    const uint32_t capacity = sizeof(this->m_extraLights) / sizeof(this->m_extraLights[0]);
+
+    if (count >= capacity) {
+        if (dist >= this->m_extraLightDist[capacity - 1]) {
+            return;
+        }
+
+        count--;
+    }
+
+    for (; count && dist <= this->m_extraLightDist[count - 1]; count--) {
+        this->m_extraLights[count] = this->m_extraLights[count - 1];
+        this->m_extraLightDist[count] = this->m_extraLightDist[count - 1];
+    }
+
+    this->m_extraLightDist[count] = dist;
+    this->m_extraLights[count] = light;
+
+    if (this->m_extraLightCount < capacity) {
+        this->m_extraLightCount++;
+    }
+}
+#endif
+
 // VERIFY: 58f9ffa3 manual
 // OFFSET: 0x008350A0
 void CM2Lighting::CameraSpace() {
@@ -265,6 +309,13 @@ void CM2Lighting::CameraSpace() {
         for (uint32_t i = 0; i < this->m_lightCount; i++) {
             this->m_lights[i]->m_viewPos = this->m_lights[i]->m_pos * this->m_scene->m_view;
         }
+
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+        // St0ny #67 "lights": the extra lights are uploaded in view space as well (0x83510E)
+        for (uint32_t i = 0; i < this->m_extraLightCount; i++) {
+            this->m_extraLights[i]->m_viewPos = this->m_extraLights[i]->m_pos * this->m_scene->m_view;
+        }
+#endif
 
         if ((this->m_flags & 0x60) == 0x60) {
             float d = -this->m_liquidPlane.d;
@@ -334,8 +385,27 @@ void CM2Lighting::SetupGxLights(const C3Vector* origin) {
 
     uint32_t index = 1;
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // St0ny #67 "lights": the seven nearest lights, nearest first, in device slots 1 to 7 (0x835483, 0x8354CB). The
+    // original went from the farthest of its four lights and stopped at slot 3, so with four lights the nearest was the
+    // one left out.
+    CM2Light* points[GxMaxLights - 1];
+    uint32_t pointCount = 0;
+
+    for (uint32_t i = 0; i < this->m_lightCount && pointCount < GxMaxLights - 1; i++) {
+        points[pointCount++] = this->m_lights[i];
+    }
+
+    for (uint32_t i = 0; i < this->m_extraLightCount && pointCount < GxMaxLights - 1; i++) {
+        points[pointCount++] = this->m_extraLights[i];
+    }
+
+    for (uint32_t i = 0; i < pointCount; i++) {
+        CM2Light* point = points[i];
+#else
     for (uint32_t i = this->m_lightCount; i > 0 && index < 4; i--) {
         CM2Light* point = this->m_lights[i - 1];
+#endif
 
         if (origin) {
             light.m_dir = point->m_pos - *origin;
@@ -353,7 +423,7 @@ void CM2Lighting::SetupGxLights(const C3Vector* origin) {
         index++;
     }
 
-    for (; index < 4; index++) {
+    for (; index < GxMaxLights; index++) {
         g_theGxDevicePtr->LightEnable(index, 0);
     }
 }
