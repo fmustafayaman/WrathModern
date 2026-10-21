@@ -154,6 +154,12 @@ class CGxDeviceMetalNative : public CGxDevice {
     bool m_fixedKeysDirty;
     bool m_stagesDirty;
     uint8_t m_samplerDirty[16];
+    // The integer and boolean constant files the translated shaders declare; the client never sets
+    // them, but every generated function takes them
+    int32_t m_vsIntConstants[16 * 4];
+    uint8_t m_vsBoolConstants[16];
+    int32_t m_psIntConstants[16 * 4];
+    uint8_t m_psBoolConstants[16];
     bool m_vsConstantsDirty;
     bool m_psConstantsDirty;
     bool m_vertexStateDirty;
@@ -213,6 +219,9 @@ class CGxDeviceMetalNative : public CGxDevice {
     virtual int32_t BufUnlock(CGxBuf* buf, uint32_t size);
     virtual void BufData(CGxBuf* buf, const void* data, uint32_t size, uint32_t offset);
     virtual void ITexMarkAsUpdated(CGxTex* texId);
+    virtual void Draw(CGxBatch* batch, int32_t count);
+    virtual void ShaderCreate(CGxShader** shaders, EGxShTarget target, const char* path, const char* name, uint32_t permutations);
+    virtual void ShaderDestroy(CGxShader*& shader);
     virtual void TexDestroy(CGxTex* texId);
     virtual void DeviceCopyTex(CGxTex* source, uint32_t sourcePlane, CGxTex* dest, uint32_t destPlane);
     virtual void DeviceResolveDepthBuffer(CGxTex* texture);
@@ -284,6 +293,19 @@ class CGxDeviceMetalNative : public CGxDevice {
     void ISetMaterial(CImVector diffuse, CImVector emissive, CImVector specular, float specularExp);
     void IXformSetTex(uint32_t tmu);
     void IXformSetWorld();
+    // Shaders and draws (slice 5)
+    void IShaderCreateVertex(CGxShader* shader);
+    void IShaderCreatePixel(CGxShader* shader);
+    void IBindVertexShader(CGxShader* shader);
+    void IBindPixelShader(CGxShader* shader);
+    void IShaderConstantsFlush();
+    GxMetal::VertexLayout* ILayoutFor();
+    void IReleaseShaders(int32_t freeShaders);
+    void IReleaseLayouts();
+    bool IDrawPrepare(const CGxBatch* batch);
+    void IDrawBindTextures(const GxMetal::ShaderInfo* pixelInfo, uint32_t samplerMask);
+    void IDrawFixedVertexState();
+    void IDraw(const CGxBatch* batch, uint32_t baseVertexIndex, uint32_t primitiveCount);
     void IXformSetViewport();
     void IPollWindow();
     // The window's client size in pixels

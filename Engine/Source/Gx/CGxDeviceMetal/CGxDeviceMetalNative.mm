@@ -52,6 +52,16 @@ CGxDeviceMetalNative::CGxDeviceMetalNative() {
 
     this->m_indexBuf = nullptr;
     this->m_streamPassId = 0;
+    this->m_defaultTexture = nullptr;
+
+    for (uint32_t i = 0; i < GxVertexBufferFormats_Last; i++) {
+        this->m_formatLayouts[i] = nullptr;
+    }
+
+    // The two stream buffers the client's BufStream hands out; the old device creates them in its
+    // constructor too, before any Metal device exists (the pools allocate on first lock)
+    this->DeviceCreatePools();
+    this->DeviceCreateStreamBufs();
 }
 
 CGxDeviceMetalNative::~CGxDeviceMetalNative() {
@@ -163,6 +173,14 @@ void CGxDeviceMetalNative::ISetCaps(const CGxFormat& format) {
     this->m_caps.m_generateMipMaps = 1;
     this->m_caps.m_texMaxSize[GxTex_2d] = 16384;
     this->m_caps.m_texMaxSize[GxTex_CubeMap] = 16384;
+    this->m_caps.m_texMaxSize[GxTex_Rectangle] = 16384;
+    this->m_caps.m_texMaxSize[GxTex_NonPow2] = 16384;
+
+    // The client refuses to create a texture whose target the device does not advertise
+    this->m_caps.m_texTarget[GxTex_2d] = 1;
+    this->m_caps.m_texTarget[GxTex_CubeMap] = 1;
+    this->m_caps.m_texTarget[GxTex_Rectangle] = 1;
+    this->m_caps.m_texTarget[GxTex_NonPow2] = 1;
     this->m_caps.m_texNonPow2 = 1;
     this->m_caps.m_texFilterTrilinear = 1;
     this->m_caps.m_texFilterAnisotropic = 1;
@@ -186,8 +204,12 @@ void CGxDeviceMetalNative::ISetCaps(const CGxFormat& format) {
     }
 
     // The client checks these before it sends lights past the fourth (St0ny's #67 uses 8)
-    this->m_caps.m_shaderTargets[GxSh_Vertex] = 1;
-    this->m_caps.m_shaderTargets[GxSh_Pixel] = 1;
+    // The translator handles vs_1_1 to vs_3_0 and ps_1_1 to ps_3_0; report the highest profile so the
+    // client loads the same .bls set the Windows client does (the Reforged data ships SM3)
+    // The translator handles vs_1_1 to vs_3_0 and ps_1_1 to ps_3_0; report the highest profile so the
+    // client loads the same .bls set the Windows client does
+    this->m_caps.m_shaderTargets[GxSh_Vertex] = 3;
+    this->m_caps.m_shaderTargets[GxSh_Pixel] = 4;
     this->m_caps.m_shaderConstants[GxSh_Vertex] = 256;
     this->m_caps.m_shaderConstants[GxSh_Pixel] = 256;
 }
@@ -221,6 +243,10 @@ bool CGxDeviceMetalNative::ICreateWindowTargets(const CGxFormat& format) {
     if (!this->m_backBuffer || !this->m_depthBuffer) {
         return false;
     }
+
+    // The texture decides the real sample count: a format or size that cannot be multisampled comes
+    // back single-sample, and the pipeline must match the attachment
+    this->m_samples = this->m_backBuffer->m_samples;
 
     this->ISetHwTargets(this->m_backBuffer ? GxMetal::Target { this->m_backBuffer, 0, 0 } : GxMetal::Target(), this->m_depthBuffer ? GxMetal::Target { this->m_depthBuffer, 0, 0 } : GxMetal::Target());
     return true;
@@ -264,6 +290,12 @@ int32_t CGxDeviceMetalNative::DeviceCreate(void* window, const CGxFormat& format
 
     CAMetalLayer* layer = (__bridge CAMetalLayer*)OsMacGetMetalLayer(window);
     this->m_metal->SetLayer(layer);
+    // The client drops render states while m_context is 0 (CGxDevice::GxRsSet), so nothing would
+    // reach the device at all without this
+    this->m_api = GxApi_Metal;
+    this->m_context = 1;
+    this->m_windowVisible = 1;
+    this->m_windowFocus = 1;
     this->ISetCaps(format);
 
     if (!this->ICreateWindowTargets(format)) {
@@ -272,6 +304,7 @@ int32_t CGxDeviceMetalNative::DeviceCreate(void* window, const CGxFormat& format
 
     this->IResetDevice();
     this->IStateSetDefaults();
+    this->DeviceSetGamma(this->m_gammaRamp);
     GxMetal::Log("metal: window %dx%d, %u samples", format.m_size.x, format.m_size.y, this->m_samples);
     return 1;
 }
@@ -298,6 +331,7 @@ void CGxDeviceMetalNative::DeviceDestroy() {
 
     this->m_hwnd = nullptr;
     this->m_ownhwnd = 0;
+    this->m_context = 0;
 }
 
 void CGxDeviceMetalNative::DeviceEvictResources() {
@@ -381,25 +415,49 @@ void CGxDeviceMetalNative::DeviceRestoreDepthSurface() {
 int32_t CGxDeviceMetalNative::DeviceWM(EGxWM wm, uintptr_t param1, uintptr_t param2) {
     switch (wm) {
         case GxWM_Size: {
-            CRect* rect = reinterpret_cast<CRect*>(param1);
+            if (param2 == 1 || param2 == 2) {
+                this->m_windowVisible = 0;
+                break;
+            }
 
-            if (!rect || !this->m_hwnd) {
+            this->m_windowVisible = 1;
+
+            if (!param1) {
                 return 0;
             }
 
-            if (this->m_metal) {
+            // The client sizes its viewport and screenshots from this rectangle
+            this->DeviceSetDefWindow(*reinterpret_cast<const CRect*>(param1));
+
+            if (this->m_metal && this->m_context) {
                 this->ICreateWindowTargets(this->m_format);
             }
 
-            return 0;
+            this->m_viewportDirty = 1;
+            break;
         }
         case GxWM_DisplayChange:
-        case GxWM_Destroy:
+            if (this->m_windowVisible && param1) {
+                this->DeviceSetDefWindow(*reinterpret_cast<const CRect*>(param1));
+                this->m_viewportDirty = 1;
+            }
+
+            break;
+
         case GxWM_SetFocus:
+            this->m_windowFocus = 1;
+            break;
+
+        case GxWM_Destroy:
         case GxWM_KillFocus:
+            this->m_windowFocus = 0;
+            break;
+
         default:
-            return 0;
+            break;
     }
+
+    return 0;
 }
 
 void CGxDeviceMetalNative::IPollWindow() {
@@ -415,6 +473,7 @@ void CGxDeviceMetalNative::SceneClear(uint32_t mask, CImVector color) {
     DrawableSize(this->m_hwnd, &width, &height);
 
     // CImVector is the client's 8-bit b, g, r, a; Metal wants 0-1 r, g, b, a
+
     float rgba[4] = { color.r / 255.0f, color.g / 255.0f, color.b / 255.0f, color.a / 255.0f };
     GxMetal::Rect area = { 0, 0, width, height };
     this->m_metal->Clear(area, (mask & 0x1) != 0, (mask & 0x2) != 0, rgba, 1.0f);
@@ -438,9 +497,18 @@ void CGxDeviceMetalNative::ScenePresent() {
         return;
     }
 
+    // The client requests a screenshot by setting m_scrShotClick before presenting; the pixels are
+    // read from the back buffer before it goes to the layer (CGxDeviceMetal.cpp:2906)
+    int32_t screenShotClick = this->m_scrShotClick;
+    CGxDevice::ScenePresent();
+    this->ISceneEnd();
+
+    if (screenShotClick) {
+        this->DeviceScreenShot();
+    }
+
     this->m_metal->MarkTargetsRendered();
     this->m_metal->Present(this->m_backBuffer);
-    this->ISceneEnd();
 }
 
 void CGxDeviceMetalNative::DeviceSetGamma(float gamma) {
@@ -801,9 +869,272 @@ void CGxDeviceMetalNative::DeviceSetBaseMipLevel(uint32_t level) {
 }
 
 void CGxDeviceMetalNative::IShaderCreate(CGxShader* shader) {
+    if (shader->m_target == GxSh_Vertex) {
+        this->IShaderCreateVertex(shader);
+    } else if (shader->m_target == GxSh_Pixel) {
+        this->IShaderCreatePixel(shader);
+    }
+}
+
+void CGxDeviceMetalNative::IShaderCreateVertex(CGxShader* shader) {
+    shader->m_valid = 0;
+
+    if (!this->m_metal) {
+        return;
+    }
+
+    shader->m_loaded = 1;
+
+    if (shader->m_code.Count()) {
+        GxMetal::Shader* created = GxMetal::Shader::Create(reinterpret_cast<const uint32_t*>(shader->m_code.m_data), shader->m_code.Count(), true);
+
+        if (created) {
+            shader->m_apiSpecific = created;
+            shader->m_valid = 1;
+        }
+    }
+}
+
+void CGxDeviceMetalNative::IShaderCreatePixel(CGxShader* shader) {
+    shader->m_valid = 0;
+
+    if (!this->m_metal) {
+        return;
+    }
+
+    shader->m_loaded = 1;
+
+    if (shader->m_code.Count()) {
+        GxMetal::Shader* created = GxMetal::Shader::Create(reinterpret_cast<const uint32_t*>(shader->m_code.m_data), shader->m_code.Count(), false);
+
+        if (created) {
+            shader->m_apiSpecific = created;
+            shader->m_valid = 1;
+        }
+    }
+}
+
+void CGxDeviceMetalNative::ShaderCreate(CGxShader** shaders, EGxShTarget target, const char* path, const char* name, uint32_t permutations) {
+    CGxDevice::ShaderCreate(shaders, target, path, name, permutations);
+
+    // Only a single-permutation shader is compiled up front; the rest wait for their first bind
+    if (permutations == 1 && !shaders[0]->m_loaded) {
+        this->IShaderCreate(shaders[0]);
+    }
+}
+
+void CGxDeviceMetalNative::ShaderDestroy(CGxShader*& shader) {
+    if (!shader) {
+        return;
+    }
+
+    if (shader->m_refCount == 1 && shader->m_apiSpecific) {
+        GxMetal::Shader* native = static_cast<GxMetal::Shader*>(shader->m_apiSpecific);
+
+        if (this->m_hw.m_vertexShader == native) {
+            GxMetal::Clear(this->m_hw.m_vertexShader);
+        }
+
+        if (this->m_hw.m_pixelShader == native) {
+            GxMetal::Clear(this->m_hw.m_pixelShader);
+        }
+
+        native->Release();
+        shader->m_apiSpecific = nullptr;
+        shader->m_loaded = 0;
+    }
+
+    CGxDevice::ShaderDestroy(shader);
 }
 
 void CGxDeviceMetalNative::IShaderReload(CGxShader* shader, const char* path, const char* name) {
+    if (!shader || shader->m_refCount != 1) {
+        return;
+    }
+
+    if (shader->m_apiSpecific) {
+        static_cast<GxMetal::Shader*>(shader->m_apiSpecific)->Release();
+        shader->m_apiSpecific = nullptr;
+        shader->m_loaded = 0;
+    }
+
+    EGxShTarget target = shader->m_target == GxSh_Vertex ? GxSh_Vertex : GxSh_Pixel;
+    this->IShaderLoad(&shader, target, path, name, 1);
+    this->IShaderCreate(shader);
+}
+
+void CGxDeviceMetalNative::IBindVertexShader(CGxShader* shader) {
+    GxMetal::Shader* native = nullptr;
+
+    if (shader) {
+        if (!shader->m_loaded) {
+            this->IShaderCreateVertex(shader);
+        }
+
+        native = shader->m_valid ? static_cast<GxMetal::Shader*>(shader->m_apiSpecific) : nullptr;
+    }
+
+    if (native != this->m_hw.m_vertexShader) {
+        GxMetal::Assign(this->m_hw.m_vertexShader, native);
+        this->m_fixedVertexDirty = 1;
+        this->m_fixedKeysDirty = 1;
+        this->m_vsConstantsDirty = 1;
+        this->m_pipelineDirty = 1;
+    }
+
+    this->m_hw.m_textures[0] = this->m_hw.m_textures[0];
+}
+
+void CGxDeviceMetalNative::IBindPixelShader(CGxShader* shader) {
+    GxMetal::Shader* native = nullptr;
+
+    if (shader) {
+        if (!shader->m_loaded) {
+            this->IShaderCreatePixel(shader);
+        }
+
+        native = shader->m_valid ? static_cast<GxMetal::Shader*>(shader->m_apiSpecific) : nullptr;
+    }
+
+    if (native != this->m_hw.m_pixelShader) {
+        GxMetal::Assign(this->m_hw.m_pixelShader, native);
+        this->m_psConstantsDirty = 1;
+        this->m_pixelStateDirty = 1;
+        this->m_stagesDirty = 1;
+        this->m_pipelineDirty = 1;
+    }
+}
+
+// CGxDeviceMetal.cpp:1929 - the client's dirty constant ranges, index 1 is the vertex file and
+// index 0 the pixel file
+void CGxDeviceMetalNative::IShaderConstantsFlush() {
+    ShadowConstants& vertex = CGxDevice::s_shadowConstants[1];
+
+    if (vertex.dirtyMin <= vertex.dirtyMax && vertex.dirtyMax < 256) {
+        uint32_t count = vertex.dirtyMax - vertex.dirtyMin + 1;
+        memcpy(&this->m_hw.m_vsConstants[vertex.dirtyMin * 4], &vertex.constants[vertex.dirtyMin * 4], count * 16);
+        this->m_vsConstantsDirty = 1;
+    }
+
+    vertex.dirtyMin = 255;
+    vertex.dirtyMax = 0;
+
+    ShadowConstants& pixel = CGxDevice::s_shadowConstants[0];
+
+    if (pixel.dirtyMin <= pixel.dirtyMax && pixel.dirtyMax < 256) {
+        uint32_t count = pixel.dirtyMax - pixel.dirtyMin + 1;
+        memcpy(&this->m_hw.m_psConstants[pixel.dirtyMin * 4], &pixel.constants[pixel.dirtyMin * 4], count * 16);
+        this->m_psConstantsDirty = 1;
+    }
+
+    pixel.dirtyMin = 255;
+    pixel.dirtyMax = 0;
+}
+
+// The vertex layout of the draw: one per predefined format, or a cached custom one built from the
+// client's attribute declarations (CGxDeviceMetal.cpp:1697)
+GxMetal::VertexLayout* CGxDeviceMetalNative::ILayoutFor() {
+    if (this->m_primVertexFormat < GxVertexBufferFormats_Last) {
+        GxMetal::VertexLayout* layout = this->m_formatLayouts[this->m_primVertexFormat];
+
+        if (layout) {
+            this->m_hw.m_layout = layout;
+            return layout;
+        }
+    }
+
+    GxMetal::VertexElement elements[GxVAs_Last];
+    CGxBuf* streamBufs[16] = {};
+    uint32_t count = 0;
+    uint32_t streamCount = 0;
+
+    for (uint32_t i = 0; i < GxVAs_Last; i++) {
+        if (!(this->m_primVertexMask & (1 << i))) {
+            continue;
+        }
+
+        CGxBuf* buffer = this->m_primVertexFormatBuf[i];
+
+        if (!buffer) {
+            continue;
+        }
+
+        uint32_t stream = 0;
+
+        for (; stream < streamCount; stream++) {
+            if (streamBufs[stream] == buffer) {
+                break;
+            }
+        }
+
+        if (stream == streamCount) {
+            streamBufs[streamCount++] = buffer;
+        }
+
+        const CGxVertexAttrib& attrib = this->m_primVertexFormatAttrib[i];
+        elements[count].m_attribute = attrib.m_attrib;
+        elements[count].m_stream = stream;
+        elements[count].m_offset = attrib.m_offset;
+        elements[count].m_type = attrib.m_type;
+        count++;
+    }
+
+    for (uint32_t i = 0; i < this->m_customLayouts.Count(); i++) {
+        if (this->m_customLayouts.m_data[i]->Matches(elements, count)) {
+            this->m_hw.m_layout = this->m_customLayouts.m_data[i];
+            return this->m_customLayouts.m_data[i];
+        }
+    }
+
+    GxMetal::VertexLayout* layout = new GxMetal::VertexLayout();
+
+    if (!layout->Init(elements, count, this->m_pipelines->NextId())) {
+        delete layout;
+        return nullptr;
+    }
+
+    uint32_t index = this->m_customLayouts.Count();
+    this->m_customLayouts.SetCount(index + 1);
+    this->m_customLayouts.m_data[index] = layout;
+
+    if (this->m_primVertexFormat < GxVertexBufferFormats_Last) {
+        this->m_formatLayouts[this->m_primVertexFormat] = layout;
+    }
+
+    this->m_hw.m_layout = layout;
+    return layout;
+}
+
+void CGxDeviceMetalNative::IReleaseShaders(int32_t freeShaders) {
+    for (uint32_t list = 0; list < 2; list++) {
+        TSHashTable<CGxShader, HASHKEY_STRI>& table = this->m_shaderList[list == 0 ? GxSh_Vertex : GxSh_Pixel];
+
+        for (CGxShader* shader = table.m_fulllist.Head(); shader; shader = table.m_fulllist.Next(shader)) {
+            if (shader->m_apiSpecific) {
+                static_cast<GxMetal::Shader*>(shader->m_apiSpecific)->Release();
+                shader->m_apiSpecific = nullptr;
+                shader->m_loaded = 0;
+            }
+        }
+    }
+
+    GxMetal::Clear(this->m_hw.m_vertexShader);
+    GxMetal::Clear(this->m_hw.m_pixelShader);
+}
+
+void CGxDeviceMetalNative::IReleaseLayouts() {
+    for (uint32_t i = 0; i < GxVertexBufferFormats_Last; i++) {
+        delete this->m_formatLayouts[i];
+        this->m_formatLayouts[i] = nullptr;
+    }
+
+    for (uint32_t i = 0; i < this->m_customLayouts.Count(); i++) {
+        delete this->m_customLayouts.m_data[i];
+        this->m_customLayouts.m_data[i] = nullptr;
+    }
+
+    this->m_customLayouts.SetCount(0);
+    this->m_hw.m_layout = nullptr;
 }
 
 namespace {
@@ -1081,10 +1412,12 @@ void CGxDeviceMetalNative::IRsSendToHw(EGxRenderState which) {
         }
 
         case GxRs_VertexShader:
+            this->IBindVertexShader(static_cast<CGxShader*>(value.m_data.p));
             this->m_pipelineDirty = 1;
             break;
 
         case GxRs_PixelShader:
+            this->IBindPixelShader(static_cast<CGxShader*>(value.m_data.p));
             this->m_pipelineDirty = 1;
             this->m_stagesDirty = 1;
             break;
@@ -1540,6 +1873,7 @@ int32_t CGxDeviceMetalNative::TexStretch(CGxTex* dest, const CiRect* destRect, c
 }
 
 void CGxDeviceMetalNative::XformSetView(const C44Matrix& matrix) {
+
     CGxDevice::XformSetView(matrix);
     this->m_fixedVertexDirty = 1;
 }
@@ -1575,6 +1909,7 @@ void CGxDeviceMetalNative::XformSetProjection(const C44Matrix& matrix) {
         scale.c2 = 0.2f;
         projNative = projNative * scale;
     }
+
 
     this->m_xforms[GxXform_Projection].m_dirty = 1;
     this->m_projNative = projNative;
@@ -1626,6 +1961,13 @@ void CGxDeviceMetalNative::IStateSetDefaults() {
     // The client's IRsInit values run through the same translation as the frame's own state
     this->IRsForceUpdate();
     this->IRsSync(0);
+
+    // The client may have set its matrices before the device existed; fill the native state once
+    for (uint32_t i = 0; i < 11; i++) {
+        this->m_xforms[i].m_dirty = 1;
+    }
+
+    this->IStateSyncXforms();
 }
 
 // CGxDeviceMetal.cpp:1790 - everything the draw needs, in the order the old device syncs it
@@ -1634,6 +1976,8 @@ void CGxDeviceMetalNative::IStateSync() {
         return;
     }
 
+    // The client writes its constant files through dirty ranges; copy them before the state sync
+    this->IShaderConstantsFlush();
     this->IRsSync(0);
 
     bool hardwareVertexShader = this->m_hwRenderStates[GxRs_VertexShader].m_data.i[0] != 0;
@@ -2019,6 +2363,457 @@ void CGxDeviceMetalNative::IXformSetViewport() {
     this->m_hw.m_viewport[4] = minZ;
     this->m_hw.m_viewport[5] = maxZ;
     this->m_vertexStateDirty = 1;
+}
+
+// CGxDeviceMetal.cpp:2790 - the client's batch; count != 0 means indexed
+void CGxDeviceMetalNative::Draw(CGxBatch* batch, int32_t count) {
+    if (!this->m_metal || this->m_intF5C) {
+        return;
+    }
+
+
+    this->IStateSync();
+
+    uint32_t baseVertexIndex = 0;
+
+    if (!this->m_caps.m_streamOffset && this->m_primVertexFormatBuf[0] && this->m_primVertexFormatBuf[0]->m_itemSize) {
+        baseVertexIndex = this->m_primVertexFormatBuf[0]->m_index / this->m_primVertexFormatBuf[0]->m_itemSize;
+    }
+
+    uint32_t primitiveCount = this->PrimCalcCount(batch->m_primType, batch->m_count);
+
+    if (!this->IDrawPrepare(batch)) {
+        return;
+    }
+
+
+    this->IDraw(batch, baseVertexIndex, primitiveCount);
+}
+
+// The state block the translated shaders read is built from HwState; see the header for the fields
+bool CGxDeviceMetalNative::IDrawPrepare(const CGxBatch* batch) {
+    GxMetal::VertexLayout* layout = this->ILayoutFor();
+
+    if (!layout) {
+        return false;
+    }
+
+    id<MTLRenderCommandEncoder> encoder = this->m_metal->RenderEncoder();
+
+    if (!encoder) {
+        return false;
+    }
+
+    if (this->m_metal->PassId() != this->m_bound.m_passId) {
+        this->m_bound.m_passId = this->m_metal->PassId();
+        this->m_bound.m_vertexFunction = 0;
+        this->m_bound.m_fragmentFunction = 0;
+        this->m_bound.m_pipeline = nil;
+        memset(this->m_bound.m_textures, 0, sizeof(this->m_bound.m_textures));
+        memset(this->m_bound.m_samplers, 0, sizeof(this->m_bound.m_samplers));
+        this->m_vsConstantsDirty = true;
+        this->m_psConstantsDirty = true;
+        this->m_vertexStateDirty = true;
+        this->m_pixelStateDirty = true;
+        this->m_fixedVertexDirty = true;
+
+        for (uint32_t i = 0; i < 16; i++) {
+            this->m_samplerDirty[i] = 1;
+        }
+    }
+
+    GxMetal::CompiledFunction vertex;
+    GxMetal::ShaderInfo vertexInfo;
+
+    if (this->m_hw.m_vertexShader) {
+        vertex = this->m_pipelines->VertexShaderFunction(this->m_hw.m_vertexShader, layout->m_signature);
+    } else {
+        GxMetal::FixedVertexKey key;
+        memcpy(key.m_attributes, layout->m_signature.m_class, GxMetal::ATTRIB_COUNT);
+        memcpy(key.m_texcoordComponents, layout->m_texcoordComponents, 8);
+        key.m_lighting = this->m_hw.m_lighting ? 1 : 0;
+
+        for (uint32_t i = 0; i < GxMetal::kMaxLights; i++) {
+            key.m_lightTypes[i] = this->m_hw.m_lights[i].m_enabled ? this->m_hw.m_lights[i].m_type : static_cast<uint8_t>(GxMetal::LightType_None);
+        }
+
+        key.m_diffuseSource = this->m_hw.m_diffuseSource;
+        key.m_ambientSource = this->m_hw.m_ambientSource;
+        key.m_specularSource = this->m_hw.m_specularSource;
+        key.m_emissiveSource = this->m_hw.m_emissiveSource;
+        key.m_normalizeNormals = this->m_hw.m_normalizeNormals ? 1 : 0;
+
+        for (uint32_t i = 0; i < 8; i++) {
+            key.m_texcoordIndex[i] = this->m_hw.m_stages[i].m_texcoordIndex;
+            key.m_texgen[i] = this->m_hw.m_stages[i].m_texGen;
+            key.m_transformCount[i] = this->m_hw.m_stages[i].m_transformCount;
+        }
+
+        key.m_fog = this->m_hw.m_fog ? 1 : 0;
+        key.m_pointScale = this->m_hw.m_pointScale ? 1 : 0;
+        vertex = this->m_pipelines->FixedVertexFunction(key);
+    }
+
+    if (!vertex.m_function) {
+        return false;
+    }
+
+    GxMetal::CompiledFunction fragment;
+    GxMetal::ShaderInfo pixelInfo;
+
+    if (this->m_hw.m_pixelShader) {
+        GxMetal::PixelShaderVariant variant;
+        pixelInfo = this->m_hw.m_pixelShader->m_info;
+
+        for (uint32_t i = 0; i < 16; i++) {
+            GxMetal::SamplerKind kind = GxMetal::SAMPLERKIND_2D;
+            GxMetal::Texture* texture = this->m_hw.m_textures[i];
+
+            if (pixelInfo.m_major >= 2) {
+                kind = static_cast<GxMetal::SamplerKind>((pixelInfo.m_declaredKinds >> (i * 2)) & 3);
+
+                if (kind == GxMetal::SAMPLERKIND_2D && texture && texture->Kind() == GxMetal::SAMPLERKIND_DEPTH) {
+                    kind = GxMetal::SAMPLERKIND_DEPTH;
+                }
+            } else if (texture) {
+                kind = texture->Kind();
+            }
+
+            variant.m_samplerKinds |= static_cast<uint32_t>(kind) << (i * 2);
+
+            if (this->m_hw.m_stages[i].m_projected && i < 4) {
+                variant.m_projected |= static_cast<uint16_t>(this->m_hw.m_stages[i].m_projected & 7) << (i * 3);
+            }
+        }
+
+        variant.m_pointSprite = this->m_hw.m_pointSprite ? 1 : 0;
+        fragment = this->m_pipelines->PixelShaderFunction(this->m_hw.m_pixelShader, variant);
+    } else {
+        GxMetal::FixedPixelKey key;
+
+        for (uint32_t i = 0; i < 8; i++) {
+            GxMetal::FixedPixelStage& stage = key.m_stages[i];
+            stage.m_colorOp = this->m_hw.m_stages[i].m_colorOp;
+            stage.m_alphaOp = this->m_hw.m_stages[i].m_alphaOp;
+
+            if (this->m_hw.m_textures[i]) {
+                stage.m_textureBound = 1;
+                stage.m_samplerKind = static_cast<uint8_t>(this->m_hw.m_textures[i]->Kind());
+            }
+
+            stage.m_projected = this->m_hw.m_stages[i].m_projected;
+        }
+
+        key.m_specularEnable = this->m_hw.m_specularEnable ? 1 : 0;
+        key.m_pointSprite = this->m_hw.m_pointSprite ? 1 : 0;
+        fragment = this->m_pipelines->FixedPixelFunction(key);
+    }
+
+    if (!fragment.m_function) {
+        return false;
+    }
+
+    GxMetal::PipelineKey key;
+    key.m_vertexFunction = vertex.m_id;
+    key.m_fragmentFunction = fragment.m_id;
+    key.m_layout = layout->m_id;
+
+    for (uint32_t i = 0; i < 16; i++) {
+        key.m_strides[i] = static_cast<uint16_t>(this->m_streamStrides[i]);
+    }
+
+    id<MTLTexture> colorTexture = this->m_metal->ColorTarget().m_texture ? this->m_metal->ColorTarget().m_texture->m_texture : nil;
+    id<MTLTexture> depthTexture = this->m_metal->DepthTarget().m_texture ? this->m_metal->DepthTarget().m_texture->m_texture : nil;
+    key.m_colorFormat = colorTexture ? static_cast<uint32_t>(colorTexture.pixelFormat) : 0;
+    key.m_depthFormat = depthTexture ? static_cast<uint32_t>(depthTexture.pixelFormat) : 0;
+    key.m_samples = static_cast<uint8_t>(this->m_samples);
+    key.m_blendEnable = this->m_hw.m_blendEnable ? 1 : 0;
+    key.m_srcBlend = static_cast<uint8_t>(this->m_hw.m_srcBlend);
+    key.m_dstBlend = static_cast<uint8_t>(this->m_hw.m_dstBlend);
+    key.m_writeMask = static_cast<uint8_t>(this->m_hw.m_colorWrite);
+
+    id<MTLRenderPipelineState> pipeline = this->m_pipelines->Pipeline(key, vertex, fragment, *layout);
+
+    if (!pipeline) {
+        return false;
+    }
+
+    [encoder setRenderPipelineState:pipeline];
+    [encoder setDepthStencilState:this->m_pipelines->DepthStencil(this->m_hw.m_depthCompare, this->m_hw.m_depthWrite)];
+    [encoder setCullMode:this->m_hw.m_cullMode];
+    [encoder setTriangleFillMode:this->m_hw.m_fillMode];
+    [encoder setDepthBias:this->m_hw.m_depthBias slopeScale:0.0f clamp:0.0f];
+    [encoder setBlendColorRed:this->m_hw.m_blendColor[0] green:this->m_hw.m_blendColor[1] blue:this->m_hw.m_blendColor[2] alpha:this->m_hw.m_blendColor[3]];
+
+    MTLViewport viewport;
+    viewport.originX = this->m_hw.m_viewport[0];
+    viewport.originY = this->m_hw.m_viewport[1];
+    viewport.width = this->m_hw.m_viewport[2] > 0.0f ? this->m_hw.m_viewport[2] : 1.0f;
+    viewport.height = this->m_hw.m_viewport[3] > 0.0f ? this->m_hw.m_viewport[3] : 1.0f;
+    viewport.znear = this->m_hw.m_viewport[4];
+    viewport.zfar = this->m_hw.m_viewport[5];
+    [encoder setViewport:viewport];
+
+    if (this->m_hw.m_scissorTest) {
+        MTLScissorRect scissor;
+        scissor.x = static_cast<NSUInteger>(this->m_hw.m_scissor.left < 0 ? 0 : this->m_hw.m_scissor.left);
+        scissor.y = static_cast<NSUInteger>(this->m_hw.m_scissor.top < 0 ? 0 : this->m_hw.m_scissor.top);
+        scissor.width = static_cast<NSUInteger>(this->m_hw.m_scissor.right > this->m_hw.m_scissor.left ? this->m_hw.m_scissor.right - this->m_hw.m_scissor.left : 1);
+        scissor.height = static_cast<NSUInteger>(this->m_hw.m_scissor.bottom > this->m_hw.m_scissor.top ? this->m_hw.m_scissor.bottom - this->m_hw.m_scissor.top : 1);
+        [encoder setScissorRect:scissor];
+    }
+
+    for (uint32_t stream = 0; stream < 16; stream++) {
+        if (!(layout->m_streamMask & (1u << stream))) {
+            continue;
+        }
+
+        GxMetal::Buffer* buffer = this->m_streamBufs[stream];
+
+        if (!buffer || !buffer->Valid()) {
+            return false;
+        }
+
+        [encoder setVertexBuffer:buffer->m_buffer offset:this->m_streamOffsets[stream] atIndex:stream];
+        buffer->m_use.m_lastUse = buffer->m_use.m_lastRenderUse = this->m_metal->CurrentSerial();
+    }
+
+    uint32_t vertexConstants = this->m_hw.m_vertexShader ? (vertexInfo.m_constantCount ? vertexInfo.m_constantCount : 1) : 1;
+
+    if (this->m_vsConstantsDirty || this->m_bound.m_vertexFunction != vertex.m_id) {
+        [encoder setVertexBytes:this->m_hw.m_vsConstants length:vertexConstants * 16 atIndex:GxMetal::VS_BUFFER_FLOAT_CONSTANTS];
+        [encoder setVertexBytes:this->m_vsIntConstants length:sizeof(this->m_vsIntConstants) atIndex:GxMetal::VS_BUFFER_INT_CONSTANTS];
+        [encoder setVertexBytes:this->m_vsBoolConstants length:sizeof(this->m_vsBoolConstants) atIndex:GxMetal::VS_BUFFER_BOOL_CONSTANTS];
+        this->m_vsConstantsDirty = false;
+        this->m_bound.m_vertexFunction = vertex.m_id;
+    }
+
+    uint32_t pixelConstants = this->m_hw.m_pixelShader ? (pixelInfo.m_constantCount ? pixelInfo.m_constantCount : 1) : 1;
+
+    if (this->m_psConstantsDirty || this->m_bound.m_fragmentFunction != fragment.m_id) {
+        [encoder setFragmentBytes:this->m_hw.m_psConstants length:pixelConstants * 16 atIndex:GxMetal::PS_BUFFER_FLOAT_CONSTANTS];
+        [encoder setFragmentBytes:this->m_psIntConstants length:sizeof(this->m_psIntConstants) atIndex:GxMetal::PS_BUFFER_INT_CONSTANTS];
+        [encoder setFragmentBytes:this->m_psBoolConstants length:sizeof(this->m_psBoolConstants) atIndex:GxMetal::PS_BUFFER_BOOL_CONSTANTS];
+        this->m_psConstantsDirty = false;
+        this->m_bound.m_fragmentFunction = fragment.m_id;
+    }
+
+    if (this->m_vertexStateDirty || this->m_bound.m_vertexFunction != vertex.m_id) {
+        GxMetal::VertexStateBlock block = {};
+        block.m_posFixup[2] = this->m_hw.m_depthBias;
+        memcpy(block.m_clipPlanes, this->m_hw.m_clipPlanes, sizeof(block.m_clipPlanes));
+        block.m_flags[0] = this->m_hw.m_clipPlaneMask;
+        block.m_pointSize[0] = this->m_hw.m_pointSize;
+        block.m_pointSize[1] = this->m_hw.m_pointSizeMin;
+        block.m_pointSize[2] = this->m_hw.m_pointSizeMax;
+        [encoder setVertexBytes:&block length:sizeof(block) atIndex:GxMetal::VS_BUFFER_STATE];
+        this->m_vertexStateDirty = false;
+    }
+
+    if (!this->m_hw.m_vertexShader) {
+        this->IDrawFixedVertexState();
+    }
+
+    if (this->m_pixelStateDirty || this->m_bound.m_fragmentFunction != fragment.m_id) {
+        GxMetal::PixelStateBlock block = {};
+        memcpy(block.m_fogColor, this->m_hw.m_fogColor, sizeof(block.m_fogColor));
+        bool fog = this->m_hw.m_fog && (!this->m_hw.m_pixelShader || pixelInfo.m_major < 3);
+        block.m_flags[0] = fog ? 1 : 0;
+        block.m_flags[1] = GxMetal::SHADERCOMPARE_GREATEREQUAL;
+        block.m_flags[2] = this->m_hw.m_alphaRef;
+        block.m_textureFactor[0] = 1.0f;
+        block.m_textureFactor[1] = 1.0f;
+        block.m_textureFactor[2] = 1.0f;
+        block.m_textureFactor[3] = 1.0f;
+        [encoder setFragmentBytes:&block length:sizeof(block) atIndex:GxMetal::PS_BUFFER_STATE];
+        this->m_pixelStateDirty = false;
+    }
+
+
+    uint32_t samplerMask = this->m_hw.m_pixelShader ? pixelInfo.m_samplerMask : 0xFF;
+    this->IDrawBindTextures(this->m_hw.m_pixelShader ? &pixelInfo : nullptr, samplerMask);
+    this->m_metal->MarkTargetsRendered();
+    return true;
+}
+
+// The samplers a pixel shader reads; a stage without a texture of the expected kind gets the
+// context's opaque placeholder, as the shim does
+void CGxDeviceMetalNative::IDrawBindTextures(const GxMetal::ShaderInfo* pixelInfo, uint32_t samplerMask) {
+    id<MTLRenderCommandEncoder> encoder = this->m_metal->RenderEncoder();
+
+    if (!encoder) {
+        return;
+    }
+
+    for (uint32_t i = 0; i < 16; i++) {
+        if (!(samplerMask & (1u << i))) {
+            continue;
+        }
+
+        GxMetal::Texture* texture = this->m_hw.m_textures[i];
+        GxMetal::SamplerKind expected = texture ? texture->Kind() : GxMetal::SAMPLERKIND_2D;
+
+        if (pixelInfo && pixelInfo->m_major >= 2) {
+            expected = static_cast<GxMetal::SamplerKind>((pixelInfo->m_declaredKinds >> (i * 2)) & 3);
+
+            if (expected == GxMetal::SAMPLERKIND_2D && texture && texture->Kind() == GxMetal::SAMPLERKIND_DEPTH) {
+                expected = GxMetal::SAMPLERKIND_DEPTH;
+            }
+        }
+
+        id<MTLTexture> bound = (texture && texture->Kind() == expected) ? texture->SampleTexture() : this->m_metal->DummyTexture(expected);
+        id<MTLSamplerState> sampler = this->m_pipelines->Sampler(this->m_hw.m_samplers[i]);
+
+        if (this->m_samplerDirty[i] || this->m_bound.m_textures[i] != bound) {
+            [encoder setFragmentTexture:bound atIndex:i];
+            this->m_bound.m_textures[i] = bound;
+        }
+
+        if (this->m_samplerDirty[i] || this->m_bound.m_samplers[i] != sampler) {
+            [encoder setFragmentSamplerState:sampler atIndex:i];
+            this->m_bound.m_samplers[i] = sampler;
+        }
+
+        this->m_samplerDirty[i] = 0;
+
+        if (texture) {
+            texture->m_use.m_lastUse = texture->m_use.m_lastRenderUse = this->m_metal->CurrentSerial();
+        }
+    }
+}
+
+// The fixed-function vertex block: matrices, material, eight lights in view space, fog and point size
+void CGxDeviceMetalNative::IDrawFixedVertexState() {
+    if (!this->m_fixedVertexDirty) {
+        return;
+    }
+
+    id<MTLRenderCommandEncoder> encoder = this->m_metal->RenderEncoder();
+
+    if (!encoder) {
+        return;
+    }
+
+    GxMetal::FixedVertexStateBlock block = {};
+    C44Matrix world;
+    C44Matrix view;
+    memcpy(&world, this->m_hw.m_world, sizeof(world));
+    memcpy(&view, this->m_hw.m_view, sizeof(view));
+    C44Matrix worldView = world * view;
+    C44Matrix normal = worldView.Inverse().Transpose();
+
+    memcpy(block.m_world, this->m_hw.m_world, sizeof(block.m_world));
+    memcpy(block.m_worldView, &worldView, sizeof(block.m_worldView));
+    memcpy(block.m_normal, &normal, sizeof(block.m_normal));
+    memcpy(block.m_projection, this->m_hw.m_projection, sizeof(block.m_projection));
+
+    for (uint32_t i = 0; i < 8; i++) {
+        memcpy(block.m_texture[i], this->m_hw.m_stages[i].m_transform, sizeof(block.m_texture[i]));
+    }
+
+    memcpy(block.m_globalAmbient, this->m_hw.m_globalAmbient, sizeof(block.m_globalAmbient));
+    memcpy(block.m_materialDiffuse, this->m_hw.m_materialDiffuse, sizeof(block.m_materialDiffuse));
+    memcpy(block.m_materialAmbient, this->m_hw.m_materialAmbient, sizeof(block.m_materialAmbient));
+    memcpy(block.m_materialSpecular, this->m_hw.m_materialSpecular, sizeof(block.m_materialSpecular));
+    memcpy(block.m_materialEmissive, this->m_hw.m_materialEmissive, sizeof(block.m_materialEmissive));
+    block.m_materialPower[0] = this->m_hw.m_materialPower;
+
+    for (uint32_t i = 0; i < GxMetal::kMaxLights; i++) {
+        const HwLight& light = this->m_hw.m_lights[i];
+        GxMetal::FixedLightBlock& target = block.m_lights[i];
+        memcpy(target.m_diffuse, light.m_diffuse, sizeof(target.m_diffuse));
+        memcpy(target.m_specular, light.m_specular, sizeof(target.m_specular));
+        memcpy(target.m_ambient, light.m_ambient, sizeof(target.m_ambient));
+
+        // Positions and directions reach the shader in view space
+        if (light.m_type == GxMetal::LightType_Point) {
+            C3Vector position(light.m_direction[0], light.m_direction[1], light.m_direction[2]);
+            C3Vector transformed = position * view;
+            target.m_position[0] = transformed.x;
+            target.m_position[1] = transformed.y;
+            target.m_position[2] = transformed.z;
+            target.m_position[3] = 1.0f;
+        }
+
+        C3Vector direction(light.m_direction[0], light.m_direction[1], light.m_direction[2]);
+        C3Vector rotated = direction * view;
+        target.m_direction[0] = rotated.x;
+        target.m_direction[1] = rotated.y;
+        target.m_direction[2] = rotated.z;
+        target.m_direction[3] = 0.0f;
+        target.m_range = 10000.0f;
+        memcpy(target.m_attenuation, light.m_attenuation, sizeof(target.m_attenuation));
+    }
+
+    float fogRange = this->m_hw.m_fogEnd - this->m_hw.m_fogStart;
+    block.m_fog[0] = this->m_hw.m_fogStart;
+    block.m_fog[1] = this->m_hw.m_fogEnd;
+    block.m_fog[2] = fabsf(fogRange) > 0.0001f ? 1.0f / fogRange : 0.0f;
+    block.m_pointScale[0] = this->m_hw.m_pointScaleAttenuation[0];
+    block.m_pointScale[1] = this->m_hw.m_pointScaleAttenuation[1];
+    block.m_pointScale[2] = this->m_hw.m_pointScaleAttenuation[2];
+    block.m_pointScale[3] = this->m_hw.m_viewport[3];
+
+    [encoder setVertexBytes:&block length:sizeof(block) atIndex:GxMetal::VS_BUFFER_FIXED_FUNCTION];
+    this->m_fixedVertexDirty = false;
+}
+
+// CGxDeviceMetal.cpp:2790 / Device.mm:1755 - one draw; Metal has no triangle fans, so those are
+// expanded into an index list in the upload heap
+void CGxDeviceMetalNative::IDraw(const CGxBatch* batch, uint32_t baseVertexIndex, uint32_t primitiveCount) {
+    id<MTLRenderCommandEncoder> encoder = this->m_metal->RenderEncoder();
+
+    if (!encoder || !primitiveCount && batch->m_primType != GxPrim_Points && batch->m_primType != GxPrim_LineStrip) {
+        return;
+    }
+
+    GxMetal::Buffer* indices = this->m_indexBuf;
+    uint32_t start = batch->m_start;
+
+    if (batch->m_primType == GxPrim_TriangleFan) {
+        GxMetal::UploadAllocation fan = this->m_metal->AllocateUpload(primitiveCount * 3 * 4, 4);
+
+        if (!fan.m_data) {
+            return;
+        }
+
+        uint32_t* out = reinterpret_cast<uint32_t*>(fan.m_data);
+        const uint16_t* shadow = indices ? reinterpret_cast<const uint16_t*>(indices->m_shadow.data()) : nullptr;
+        uint32_t available = indices ? indices->m_length / 2 : 0;
+        uint32_t first = start + (this->m_primIndexBuf ? (this->m_primIndexBuf->m_index >> 1) : 0);
+
+        for (uint32_t i = 0; i < primitiveCount; i++) {
+            uint32_t a = first;
+            uint32_t b = first + i + 1;
+            uint32_t c = first + i + 2;
+            out[i * 3 + 0] = (shadow && a < available) ? shadow[a] : a;
+            out[i * 3 + 1] = (shadow && b < available) ? shadow[b] : b;
+            out[i * 3 + 2] = (shadow && c < available) ? shadow[c] : c;
+        }
+
+        [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:primitiveCount * 3];
+        return;
+    }
+
+    switch (batch->m_primType) {
+        case GxPrim_Points:
+            [encoder drawPrimitives:MTLPrimitiveTypePoint vertexStart:start vertexCount:primitiveCount];
+            break;
+        case GxPrim_Lines:
+            [encoder drawPrimitives:MTLPrimitiveTypeLine vertexStart:start vertexCount:primitiveCount * 2];
+            break;
+        case GxPrim_LineStrip:
+            [encoder drawPrimitives:MTLPrimitiveTypeLineStrip vertexStart:start vertexCount:primitiveCount + 1];
+            break;
+        case GxPrim_Triangles:
+            [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:start vertexCount:primitiveCount * 3];
+            break;
+        case GxPrim_TriangleStrip:
+            [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:start vertexCount:primitiveCount + 2];
+            break;
+        default:
+            break;
+    }
 }
 
 bool CGxDeviceMetalNative::QueryBegin(CGxQuery* query) {
