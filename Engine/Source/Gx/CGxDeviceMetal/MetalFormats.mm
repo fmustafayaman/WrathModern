@@ -138,8 +138,11 @@ bool WindowFormatInfo(CGxFormat::Format format, FormatInfo& info) {
         case CGxFormat::Fmt_Ds24X:
         case CGxFormat::Fmt_Ds248:
         case CGxFormat::Fmt_Ds320:
-            // The client never enables stencil, so no stencil plane is allocated
+            // The client never enables stencil itself; the plane carries the tags code drawing with Metal
+            // (mods) sets through GxMetalSetStencilTag, such as the water classes of CoAVolFog
             Depth(info);
+            info.m_pixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+            info.m_bytesPerUnit = 8;
             return true;
 
         default:

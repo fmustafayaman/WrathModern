@@ -68,6 +68,10 @@ struct GxMetalTargets {
 };
 void* GxMetalDevice();
 int32_t GxMetalAcquireTargets(GxMetalTargets& targets);
+// While tag is not 0, every draw that passes the depth test writes it to the stencil plane of the window's depth
+// target (Depth32Float_Stencil8), which clears to 0 with the depth; 0 stops tagging. For mods that tag the
+// pixels of a pass (CoAVolFog's water classes) and test them in their own passes.
+void GxMetalSetStencilTag(uint32_t tag);
 CGxDevice* CreateGxDevice(EGxApi api, GxWindowProc windowProc, const CGxFormat& format);
 int32_t GxAdapterDesktopMode(CGxMonitorMode& mode);
 int32_t GxAdapterID(uint16_t& vendorID, uint16_t& deviceID, uint32_t& driverVersionHi, uint32_t& driverVersionLo);

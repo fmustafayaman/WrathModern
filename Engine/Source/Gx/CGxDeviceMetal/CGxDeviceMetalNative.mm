@@ -2684,7 +2684,14 @@ bool CGxDeviceMetalNative::IDrawPrepare(const CGxBatch* batch) {
     }
 
     [encoder setRenderPipelineState:pipeline];
-    [encoder setDepthStencilState:this->m_pipelines->DepthStencil(this->m_hw.m_depthCompare, this->m_hw.m_depthWrite)];
+    // A stencil tag (GxMetalSetStencilTag) applies where the depth target has a stencil plane
+    GxMetal::Texture* depthTarget = this->m_metal->DepthTarget().m_texture;
+    bool stencilTag = this->m_stencilTag != 0 && depthTarget &&
+                      depthTarget->m_format.m_pixelFormat == MTLPixelFormatDepth32Float_Stencil8;
+    [encoder setDepthStencilState:this->m_pipelines->DepthStencil(this->m_hw.m_depthCompare, this->m_hw.m_depthWrite, stencilTag)];
+    if (stencilTag) {
+        [encoder setStencilReferenceValue:this->m_stencilTag];
+    }
     [encoder setCullMode:this->m_hw.m_cullMode];
     [encoder setTriangleFillMode:this->m_hw.m_fillMode];
     [encoder setDepthBias:this->m_hw.m_depthBias slopeScale:0.0f clamp:0.0f];
@@ -3278,6 +3285,14 @@ void GxCursorSetScale(float scale) {
     if (device && device->m_hwCursor) {
         device->m_hwCursorDirty = 1;
         device->ICursorDraw();
+    }
+}
+
+void GxMetalSetStencilTag(uint32_t tag) {
+    CGxDeviceMetalNative* device = dynamic_cast<CGxDeviceMetalNative*>(g_theGxDevicePtr);
+
+    if (device) {
+        device->m_stencilTag = tag & 0xFF;
     }
 }
 

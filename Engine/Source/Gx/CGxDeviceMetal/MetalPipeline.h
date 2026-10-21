@@ -129,7 +129,7 @@ class PipelineCache {
     CompiledFunction FixedPixelFunction(const FixedPixelKey& key);
 
     id<MTLRenderPipelineState> Pipeline(const PipelineKey& key, const CompiledFunction& vertex, const CompiledFunction& fragment, const VertexLayout& layout);
-    id<MTLDepthStencilState> DepthStencil(MTLCompareFunction compare, bool write);
+    id<MTLDepthStencilState> DepthStencil(MTLCompareFunction compare, bool write, bool stencilTag = false);
     id<MTLSamplerState> Sampler(const SamplerKey& key);
 
     private:

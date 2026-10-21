@@ -248,6 +248,9 @@ id<MTLRenderPipelineState> PipelineCache::Pipeline(const PipelineKey& key, const
     }
 
     descriptor.depthAttachmentPixelFormat = static_cast<MTLPixelFormat>(key.m_depthFormat);
+    if (key.m_depthFormat == MTLPixelFormatDepth32Float_Stencil8) {
+        descriptor.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+    }
 
     NSError* error = nil;
     id<MTLRenderPipelineState> pipeline = [this->m_device newRenderPipelineStateWithDescriptor:descriptor error:&error];
@@ -259,8 +262,8 @@ id<MTLRenderPipelineState> PipelineCache::Pipeline(const PipelineKey& key, const
     return pipeline;
 }
 
-id<MTLDepthStencilState> PipelineCache::DepthStencil(MTLCompareFunction compare, bool write) {
-    uint32_t key = static_cast<uint32_t>(compare) | (write ? 0x100u : 0u);
+id<MTLDepthStencilState> PipelineCache::DepthStencil(MTLCompareFunction compare, bool write, bool stencilTag) {
+    uint32_t key = static_cast<uint32_t>(compare) | (write ? 0x100u : 0u) | (stencilTag ? 0x200u : 0u);
 
     auto found = this->m_depthStates.find(key);
     if (found != this->m_depthStates.end()) {
@@ -270,6 +273,19 @@ id<MTLDepthStencilState> PipelineCache::DepthStencil(MTLCompareFunction compare,
     MTLDepthStencilDescriptor* descriptor = [MTLDepthStencilDescriptor new];
     descriptor.depthCompareFunction = compare;
     descriptor.depthWriteEnabled = write;
+
+    if (stencilTag) {
+        // Every fragment that passes the depth test writes the encoder's reference (GxMetalSetStencilTag)
+        MTLStencilDescriptor* stencil = [MTLStencilDescriptor new];
+        stencil.stencilCompareFunction = MTLCompareFunctionAlways;
+        stencil.stencilFailureOperation = MTLStencilOperationKeep;
+        stencil.depthFailureOperation = MTLStencilOperationKeep;
+        stencil.depthStencilPassOperation = MTLStencilOperationReplace;
+        stencil.readMask = 0xFF;
+        stencil.writeMask = 0xFF;
+        descriptor.frontFaceStencil = stencil;
+        descriptor.backFaceStencil = stencil;
+    }
 
     id<MTLDepthStencilState> state = [this->m_device newDepthStencilStateWithDescriptor:descriptor];
     this->m_depthStates[key] = state;

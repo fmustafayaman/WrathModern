@@ -461,6 +461,17 @@ bool Context::BeginPass() {
             pass.depthAttachment.loadAction = MTLLoadActionLoad;
         }
 
+        // The window's depth carries a stencil plane for the tags of GxMetalSetStencilTag; it clears with the
+        // depth, so tags never outlive the frame that drew them
+        if (depth->m_format.m_pixelFormat == MTLPixelFormatDepth32Float_Stencil8) {
+            pass.stencilAttachment.texture = depth->m_texture;
+            pass.stencilAttachment.level = this->m_depth.m_level;
+            pass.stencilAttachment.slice = this->m_depth.m_face;
+            pass.stencilAttachment.storeAction = MTLStoreActionStore;
+            pass.stencilAttachment.loadAction = this->m_pendingClearDepth ? MTLLoadActionClear : MTLLoadActionLoad;
+            pass.stencilAttachment.clearStencil = 0;
+        }
+
         depth->m_use.m_lastUse = this->m_serial;
         depth->MarkWritten(this->m_depth.m_level);
     }
@@ -532,6 +543,9 @@ id<MTLRenderPipelineState> Context::UtilityPipeline(uint64_t key, NSString* frag
     descriptor.colorAttachments[0].pixelFormat = color;
     descriptor.colorAttachments[0].writeMask = writeColor ? MTLColorWriteMaskAll : MTLColorWriteMaskNone;
     descriptor.depthAttachmentPixelFormat = depth;
+    if (depth == MTLPixelFormatDepth32Float_Stencil8) {
+        descriptor.stencilAttachmentPixelFormat = depth;
+    }
     descriptor.rasterSampleCount = samples;
 
     NSError* error = nil;
