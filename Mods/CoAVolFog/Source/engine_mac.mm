@@ -7,6 +7,8 @@
 #include <cmath>
 #include <cstring>
 #include "WMModAPI.h"
+#include "Engine/Source/Model2/M2Light.h"
+#include "Engine/Source/Model2/M2Scene.h"
 #include "WoW/Source/WorldClient/DayNight.h"
 #include "WoW/Source/WorldClient/DayNight__DNInfo.h"
 #include "WoW/Source/WorldClient/MapObj.h"
@@ -74,6 +76,59 @@ void WriteStockFog(const StockFog& fog)
     info.m_fog.m_end = fog.end[0];
     info.m_fogInterior.m_start = fog.start[1];
     info.m_fogInterior.m_end = fog.end[1];
+}
+
+void CaptureLocalPointLights(const LocalLightCamera& camera, const PointLightUpload& upload, LocalLightInputs& lights)
+{
+    constexpr uint32_t kPointLightBucketCount = 4096;
+    LocalLightInputs captured;
+    captured.interiorBlend = lights.interiorBlend;
+    captured.cameraInterior = lights.cameraInterior;
+
+    for (int i = 0; i < 3; ++i)
+    {
+        if (!std::isfinite(camera.position[i]) || std::fabs(camera.position[i]) > 1000000.0f)
+        {
+            lights = captured;
+            lights.capture = LocalLightCapture::CameraOutOfRange;
+            return;
+        }
+    }
+
+    CM2Scene* scene = World::s_m2Scene;
+
+    if (scene && scene->m_lightGrid)
+    {
+        for (uint32_t bucket = 0; bucket < kPointLightBucketCount; ++bucket)
+        {
+            for (CM2Light* native = scene->m_lightGrid[bucket]; native; native = native->m_lightNext)
+            {
+                if (native->m_type != M2LIGHT_POINT)
+                    ++captured.skippedNonPoint;
+                else if (!native->m_visible)
+                    ++captured.skippedDisabled;
+                else
+                {
+                    LocalPointLight light;
+                    light.position[0] = native->m_pos.x;
+                    light.position[1] = native->m_pos.y;
+                    light.position[2] = native->m_pos.z;
+                    light.color[0] = native->m_dirColor.x;
+                    light.color[1] = native->m_dirColor.y;
+                    light.color[2] = native->m_dirColor.z;
+                    light.attenuation[0] = native->m_constantAttenuation;
+                    light.attenuation[1] = native->m_linearAttenuation;
+                    light.attenuation[2] = native->m_quadraticAttenuation;
+                    light.enabled = native->m_visible;
+                    light.nativeId = reinterpret_cast<uintptr_t>(native);
+                    SelectLocalPointLightInView(captured, light, camera, upload);
+                }
+            }
+        }
+    }
+
+    captured.capture = LocalLightCapture::Captured;
+    lights = captured;
 }
 
 bool CameraInLiquid()

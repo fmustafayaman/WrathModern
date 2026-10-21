@@ -407,8 +407,14 @@ taşınabilir C++ olarak aynen alınır. Ayar dosyası `Mods/CoAVolFog.ini` (ayn
   sıfırlanıyor). `SaveConfig` ini'yi yorum ve sırayı koruyarak yazıyor; değeri değişmeyen satırın yazımı
   korunuyor (kayıt sonrası md5 birebir aynı — test edildi). Panelde yalnızca şu ana kadar etkili ayarlar var;
   her yeni dilim kendi ayarlarını ekler. Oyun içinde Enable kapatılırsa stok sis kare sonunda yine geri konuyor.
-- **Sıradaki — dilim 5:** yerel ışıklar (8 slot, `local_light_stabiliser.cpp`, ışık tablosu motordan:
-  `CM2Scene` ışıkları; `vf_local_lights` zaten MSL'de, lit varyant hazır).
+- **Dilim 5 — TAMAM (2026-10-21):** yerel ışıklar. `engine_lights.cpp` Windows bellek okumasından arındırıldı (seçim,
+  sıralama, görüş testi aynen), `local_light_stabiliser` aynen; yakalama `engine_mac.mm`'de `CM2Scene::m_lightGrid`
+  (4096 kova, `CM2Light` = orijinal `NativePointLight` alan alan) üzerinden. Renderer: 8 ışık görüş uzayında
+  (konum+kesme, renk, zayıflama), `c53` kontrol, lit varyant, kompozitte `WithMeanNoise`. Darkshire: 24 aday →
+  8 yüklendi, doğrulama 0 hata (`build/autotest/l-off` ↔ `l-on`, fenerlerin çevresinde sıcak haleler). Panel'e
+  LocalLights/Intensity/Phase eklendi.
+- **Sıradaki — dilim 6:** güneş saçılması/god rays (`vf_ray_mask`, `vf_ray_blur`, `vf_ray_composite`), glow
+  telafisi (sahne kopyası gerekir: MSAA çözümlenmiş renk host'tan açılmalı), renk derecelendirme (`vp_grade`).
 
 **Kabul ölçütü:** her dilimde aynı nokta/saat için Windows CoAVolFog (CrossOver) ↔ WowRe karşılaştırması
 (kullanıcı referans kareyi verir), sıfır Metal doğrulama hatası, kare süresi ölçümü (`WRATHMODERN_FRAMESTATS`).

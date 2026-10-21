@@ -26,6 +26,8 @@ wrathmodern_add_mod(CoAVolFog
     Source/water_data.cpp
     Source/fog_model.cpp
     Source/noise_volume.cpp
+    Source/engine_lights.cpp
+    Source/local_light_stabiliser.cpp
     Source/engine_mac.mm
     Source/renderer_metal.mm
 )

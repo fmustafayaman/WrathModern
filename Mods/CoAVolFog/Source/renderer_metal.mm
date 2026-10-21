@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <string>
 #include "WMModAPI.h"
@@ -282,6 +283,17 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
     if (!WorldViewFromCameraRelative(in, viewToWorld, worldToView))
         return false;
 
+    // CaptureLocalLightInputs and the stabiliser step (engine.cpp BuildFrameInputsUnsafe)
+    if (cfg.localLights)
+    {
+        LocalLightCamera lightCamera;
+        std::memcpy(lightCamera.position, in.camPos, sizeof(lightCamera.position));
+        std::memcpy(lightCamera.cameraRelativeView, in.cameraRelativeView, sizeof(lightCamera.cameraRelativeView));
+        std::memcpy(lightCamera.glProjection, in.glProjection, sizeof(lightCamera.glProjection));
+        engine::CaptureLocalPointLights(lightCamera, LocalLightUpload(cfg), in.localLights);
+        m_stabiliser.Step(lightCamera, in.mapId, m_frame, world->time, in.localLights);
+    }
+
     AuthoredFog authored = {};
     const bool hasAuthored = cfg.dataMode == 1 && data.Loaded() &&
                              data.Resolve(in.mapId, in.camPos, in.dayFraction, in.lightParams, authored);
@@ -343,8 +355,35 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
     m_noiseScroll.Registers(fog, noise);
     std::memcpy(&C[36], noise, sizeof(noise));
 
-    // No local lights before slice 5
-    C[53] = {0.0f, 0.0f, cfg.localLightPhase, 0.0f};
+    // The uploaded point lights: view-space position and cutoff radius, colour, attenuation (32 float4)
+    uint32_t pointLightCount = cfg.localLights ? std::min(in.localLights.pointLightCount, kMaxLocalPointLights) : 0;
+    Float4 localLights[32] = {};
+    for (uint32_t i = 0; i < pointLightCount; ++i)
+    {
+        const LocalPointLight& light = in.localLights.pointLights[i];
+        float relative[3] = {light.position[0] - in.camPos[0], light.position[1] - in.camPos[1],
+                             light.position[2] - in.camPos[2]};
+        float position[3];
+        TransformDirection(relative, in.cameraRelativeView, position);
+        localLights[i * 3] = {position[0], position[1], position[2], light.cutoff};
+        localLights[i * 3 + 1] = {light.uploadedColor[0], light.uploadedColor[1], light.uploadedColor[2], 0.0f};
+        localLights[i * 3 + 2] = {light.attenuation[0], light.attenuation[1], light.attenuation[2], 0.0f};
+    }
+    float marchLightLimit = 0.0f;
+    for (uint32_t i = 0; i < pointLightCount; ++i)
+    {
+        const Float4& positionRadius = localLights[i * 3];
+        const double x = positionRadius.x;
+        const double y = positionRadius.y;
+        const double z = positionRadius.z;
+        const float limit = static_cast<float>(std::sqrt(x * x + y * y + z * z) + positionRadius.w + 0.001);
+        marchLightLimit = std::max(marchLightLimit, std::nextafter(limit, std::numeric_limits<float>::infinity()));
+    }
+    const bool marchesLocalLights = pointLightCount > 0;
+    if (pointLightCount != m_prevLocalLightCount && (pointLightCount == 0 || m_prevLocalLightCount == 0))
+        VF_LOG_INFO("local lights: %u uploaded (%u candidates, %u disabled, %u not point lights)", pointLightCount,
+                    in.localLights.candidateCount, in.localLights.skippedDisabled, in.localLights.skippedNonPoint);
+    C[53] = {static_cast<float>(pointLightCount), marchLightLimit, cfg.localLightPhase, 0.0f};
 
     const double windPeriod = static_cast<double>(kDensityNoiseSize) / std::max(cfg.noiseScale, 0.001f);
     C[78] = {cfg.noiseAmount, cfg.noiseScale, static_cast<float>(std::fmod(now * cfg.noiseWindSpeed, windPeriod)), 0.0f};
@@ -357,16 +396,15 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
         VF_LOG_INFO("fog blend: %s", FogBlendName(blend));
     }
 
-    Float4 localLights[32] = {};
     const int steps = cfg.quality == 1 ? 16 : cfg.quality == 2 ? 24 : 32;
-    id<MTLLibrary> library = impl.Library(steps, false, samplesNoise, depthMs);
+    id<MTLLibrary> library = impl.Library(steps, marchesLocalLights, samplesNoise, depthMs);
     if (!library)
     {
         impl.failed = true;
         return false;
     }
 
-    std::string variant = std::to_string(steps) + (samplesNoise ? "N" : "") + (depthMs ? "M" : "");
+    std::string variant = std::to_string(steps) + (marchesLocalLights ? "L" : "") + (samplesNoise ? "N" : "") + (depthMs ? "M" : "");
     id<MTLRenderPipelineState> marchPipeline =
         impl.Pipeline(library, @"vf_march", MTLPixelFormatRGBA16Float, 1, false, "march" + variant);
     id<MTLRenderPipelineState> temporalPipeline =
@@ -425,7 +463,8 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
 
     // FilterWithHistory: the temporal pass replaces c9..c13 with the reprojection and its settings, then
     // the history depth of this frame is written for the next one
-    const bool adaptiveLightingHistory = m_prevLocalLightCount > 0 || cfg.noiseAmount > 0.0f || samplesNoise;
+    const bool adaptiveLightingHistory =
+        pointLightCount > 0 || m_prevLocalLightCount > 0 || cfg.noiseAmount > 0.0f || samplesNoise;
     if (temporalFiltering)
     {
         Float4 T[kRegisterCount];
@@ -436,7 +475,9 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
         drawInto(impl.historyDepth, historyDepthPipeline, C, @"CoAVolFog history depth");
     }
 
-    // Composite, with the march's fog (no local lights, so WithMeanNoise does not apply)
+    // Composite: with local lights its full-resolution march takes the noise at its mean
+    const FogParams compositeMarchFog = marchesLocalLights ? WithMeanNoise(fog) : fog;
+    std::memcpy(&C[12], &compositeMarchFog.layers[0].start, sizeof(compositeMarchFog.layers));
     C[96] = {hasAuthored ? cfg.classicExposure : cfg.exposure, 0.0f, static_cast<float>(cfg.debugView), blendMode};
     C[97] = {fog.rayColor[0], fog.rayColor[1], fog.rayColor[2], 0.0f};
     C[98] = {sunPx[0], sunPx[1], cfg.sunMarker && sunInFront ? 1.0f : 0.0f, 0.0f};
@@ -462,7 +503,7 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
     m_prevConfig = cfg;
     m_prevMap = in.mapId;
     m_prevLightSlot = in.lightParams.screenEffectSlot;
-    m_prevLocalLightCount = 0;
+    m_prevLocalLightCount = pointLightCount;
     m_prevSeconds = now;
     m_historyValid = temporalFiltering;
     if (temporalFiltering)

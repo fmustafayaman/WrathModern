@@ -7,6 +7,7 @@
 #include "config.h"
 #include "fog_data.h"
 #include "fog_model.h"
+#include "local_light_stabiliser.h"
 
 struct WMModHost;
 struct WMWorldState;
@@ -30,6 +31,7 @@ private:
     struct Impl;
     Impl* m_impl = nullptr;
     AuthoredNoiseScroll m_noiseScroll;
+    LocalLightStabiliser m_stabiliser;
     double m_noiseSeconds = 0.0;
     uint32_t m_frame = 0;
 

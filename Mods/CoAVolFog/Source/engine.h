@@ -65,6 +65,11 @@ void WriteStockFog(const StockFog& fog);
 // 0xCD8794, the liquid the camera is in
 bool CameraInLiquid();
 
+// CaptureLocalLightInputs on macOS: the point lights of the world's M2 scene (CM2Scene::m_lightGrid, the
+// Windows build's [0xCD754C] + 0x24) offered to lights through SelectLocalPointLightInView, as the Windows
+// capture walks its table. The interior members of lights are left as BuildFrameInputs set them.
+void CaptureLocalPointLights(const LocalLightCamera& camera, const PointLightUpload& upload, LocalLightInputs& lights);
+
 // The inputs of the frame being drawn, from the world state the client captured after the opaque pass and
 // the frame's target size (the world viewport covers the whole target)
 bool BuildFrameInputs(const WMWorldState& world, uint32_t width, uint32_t height, FrameInputs& out);
