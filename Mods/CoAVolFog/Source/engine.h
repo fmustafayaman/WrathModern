@@ -64,6 +64,8 @@ StockFog ReadStockFog();
 void WriteStockFog(const StockFog& fog);
 // 0xCD8794, the liquid the camera is in
 bool CameraInLiquid();
+// The current screen effect (0xD45780) is the death effect (0xB74368)
+bool GhostEffectRuns();
 
 // CaptureLocalLightInputs on macOS: the point lights of the world's M2 scene (CM2Scene::m_lightGrid, the
 // Windows build's [0xCD754C] + 0x24) offered to lights through SelectLocalPointLightInView, as the Windows

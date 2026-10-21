@@ -106,6 +106,14 @@ void Normalize3(float* v)
     }
 }
 
+// forever_look.cpp: the Classic lights' share of the blend above kMinimumClassicCoverage, as a 0..1 weight
+float ForeverLookWeight(float coverage)
+{
+    if (!(coverage > kMinimumClassicCoverage))
+        return 0.0f;
+    return std::min((coverage - kMinimumClassicCoverage) / (1.0f - kMinimumClassicCoverage), 1.0f);
+}
+
 id<MTLTexture> MakeVolume(id<MTLDevice> device, uint32_t size, const std::vector<uint8_t>& texels)
 {
     MTLTextureDescriptor* descriptor = [[MTLTextureDescriptor alloc] init];
@@ -133,6 +141,7 @@ struct FogRenderer::Impl
     id<MTLTexture> historyDepth = nil;
     id<MTLTexture> sceneCopy = nil;
     id<MTLTexture> rays[2] = {nil, nil};
+    id<MTLTexture> gradingCopy = nil;
     id<MTLTexture> densityNoise = nil;
     id<MTLTexture> authoredNoise = nil;
     id<MTLTexture> dummy2d = nil;
@@ -214,6 +223,17 @@ struct FogRenderer::Impl
         remade = true;
         VF_LOG_INFO("fog targets %ux%u: march, history fp16, history depth rgba8", width, height);
         return march && history[0] && history[1] && historyDepth;
+    }
+
+    // The resolved world after the fog, for the colour grading
+    bool CopyGraded(id<MTLCommandBuffer> commands, id<MTLTexture> color)
+    {
+        id<MTLTexture> saved = sceneCopy;
+        sceneCopy = gradingCopy;
+        bool copied = CopyScene(commands, color);
+        gradingCopy = sceneCopy;
+        sceneCopy = saved;
+        return copied;
     }
 
     // CopyWorldViewport: the world before the fog, resolved when multisampled, at the target's size
@@ -478,6 +498,9 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
         impl.Pipeline(library, @"vf_composite", color.pixelFormat, color.sampleCount, !sceneBlend,
                       "composite" + variant + std::to_string(color.pixelFormat) + "x" + std::to_string(color.sampleCount) +
                           (sceneBlend ? "copy" : "blend"));
+    id<MTLRenderPipelineState> gradePipeline =
+        impl.Pipeline(library, @"vf_grade", color.pixelFormat, color.sampleCount, false,
+                      "grade" + variant + std::to_string(color.pixelFormat) + "x" + std::to_string(color.sampleCount));
     id<MTLRenderPipelineState> downsamplePipeline =
         impl.Pipeline(library, @"vf_downsample", MTLPixelFormatRGBA8Unorm, 1, false, "downsample" + variant);
     id<MTLRenderPipelineState> rayMaskPipeline =
@@ -485,7 +508,7 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
     id<MTLRenderPipelineState> rayBlurPipeline =
         impl.Pipeline(library, @"vf_ray_blur", MTLPixelFormatRGBA8Unorm, 1, false, "rayblur" + variant);
     if (!marchPipeline || !temporalPipeline || !historyDepthPipeline || !compositePipeline || !downsamplePipeline ||
-        !rayMaskPipeline || !rayBlurPipeline)
+        !rayMaskPipeline || !rayBlurPipeline || !gradePipeline)
     {
         impl.failed = true;
         return false;
@@ -629,6 +652,35 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
         encoder.label = @"CoAVolFog composite";
         [encoder setRenderPipelineState:compositePipeline];
         bindFog(encoder, C);
+        [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+        [encoder endEncoding];
+    }
+
+    // PrepareGrading and Grade (forever_look.cpp, grading_renderer.cpp): the Classic light's curve over the
+    // fogged world, by ColorGrading times the Classic lights' share of the blend; never under the ghost effect
+    // or in liquid (this pass does not run in liquid)
+    const float gradingStrength = hasAuthored ? cfg.colorGrading * ForeverLookWeight(authored.coverage) : 0.0f;
+    const bool grading = gradingStrength > 0.0f && authored.hasGradingCurve && !engine::GhostEffectRuns() &&
+                         impl.CopyGraded(commands, color);
+    if (grading != m_loggedGrading)
+    {
+        m_loggedGrading = grading;
+        VF_LOG_INFO("colour grading %s (strength %.2f)", grading ? "drawn" : "idle", gradingStrength);
+    }
+    if (grading)
+    {
+        Float4 G[2] = {{static_cast<float>(vp.X), static_cast<float>(vp.Y), 1.0f / vp.Width, 1.0f / vp.Height},
+                       {gradingStrength, 0.0f, 0.0f, 0.0f}};
+        MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+        pass.colorAttachments[0].texture = color;
+        pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
+        pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+        id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
+        encoder.label = @"CoAVolFog colour grading";
+        [encoder setRenderPipelineState:gradePipeline];
+        [encoder setFragmentBytes:G length:sizeof(G) atIndex:0];
+        [encoder setFragmentBytes:authored.gradingCurve length:sizeof(authored.gradingCurve) atIndex:1];
+        [encoder setFragmentTexture:impl.gradingCopy atIndex:0];
         [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
         [encoder endEncoding];
     }

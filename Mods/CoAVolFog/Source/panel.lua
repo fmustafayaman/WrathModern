@@ -31,6 +31,7 @@ local SETTINGS = {
     {"ClassicExposure", "Classic exposure"},
     {"GodRays", "God rays"},
     {"GlowCompensation", "Glow compensation"},
+    {"ColorGrading", "Colour grading"},
     {"Local lights"},
     {"LocalLights", "Lamps and fires light the fog"},
     {"LocalLightIntensity", "Light intensity"},

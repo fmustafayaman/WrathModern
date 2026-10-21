@@ -134,6 +134,11 @@ void CaptureLocalPointLights(const LocalLightCamera& camera, const PointLightUpl
     lights = captured;
 }
 
+bool GhostEffectRuns()
+{
+    return CGWorldFrame::ffxEffectDeath && FFX::s_effect == CGWorldFrame::ffxEffectDeath;
+}
+
 bool CameraInLiquid()
 {
     return s_liquidTypeId != 0;

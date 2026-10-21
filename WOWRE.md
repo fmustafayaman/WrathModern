@@ -421,7 +421,13 @@ taşınabilir C++ olarak aynen alınır. Ayar dosyası `Mods/CoAVolFog.ini` (ayn
   0). Test için istemciye `WRATHMODERN_TIME_OF_DAY=SS:DD` (yalnız ortam değişkeniyle, `CGWorldFrame`'de gün/gece
   saati). Doğrulama 0 hata. **Açık:** huzmeler güneş kadraj kenarındayken devreye girdi (güç 0,02, sönümlü);
   güneş tam kadrajdayken görsel olarak henüz görülmedi — autotest'te kamerayı güneşe çevirmek zor (Lua'da yaw yok).
-- **Sıradaki — dilim 6b:** renk derecelendirme (`vp_grade.hlsl`, `grading_renderer.cpp`, Classic `gradingCurve`).
+- **Dilim 6b — renk derecelendirme TAMAM (2026-10-21):** `vf_grade` (vp_grade.hlsl; eğri tampondan), sisten sonraki
+  ikinci sahne kopyası üzerine; güç = `ColorGrading × ForeverLookWeight(kapsama)`, Classic ışığın eğrisi varken,
+  hayalet efektinde değil (`CGWorldFrame::ffxEffectDeath`), sıvıda değil. Goldshire 14:00: 0,5 güçle çiziliyor,
+  doğrulama 0 hata (`build/autotest/cg-off` ↔ `cg-on`). `ForeverGlow` (glow baytını değiştirme) henüz yok —
+  kullanıcı ayarında 0.
+- **Sıradaki — dilim 7:** Forever suyu (`water_renderer.cpp` 1517 + `water_fft.cpp` 759 + spektrum/dalga/temas,
+  `vw_*.hlsl` ~800 satır): sıvı geçişinde sınıf etiketleme (stencil), GPU FFT, gölgelendirme, köpük, SSR.
 
 **Kabul ölçütü:** her dilimde aynı nokta/saat için Windows CoAVolFog (CrossOver) ↔ WowRe karşılaştırması
 (kullanıcı referans kareyi verir), sıfır Metal doğrulama hatası, kare süresi ölçümü (`WRATHMODERN_FRAMESTATS`).

@@ -52,4 +52,5 @@ private:
     float m_loggedBlend = -1.0f;
     bool m_loggedFrame = false;
     bool m_loggedRays = false;
+    bool m_loggedGrading = false;
 };

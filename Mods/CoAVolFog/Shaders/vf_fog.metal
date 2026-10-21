@@ -1285,3 +1285,23 @@ fragment float4 vf_ray_blur(Varyings in [[stage_in]], constant float4* C [[buffe
     }
     return float4(sum * C[9].w, 1);
 }
+
+// vp_grade.hlsl: cGradedViewport c0 (origin, 1/size), cGrading c1 (x strength); the 32-entry curve, point
+// sampled in the HLSL, is read here from its buffer
+fragment float4 vf_grade(Varyings in [[stage_in]], constant float4* C [[buffer(0)]], constant float* curve [[buffer(1)]],
+                         texture2d<float> scene [[texture(0)]])
+{
+    const float kCurveEntries = 32;
+    float2 size = float2(scene.get_width(), scene.get_height());
+    float2 viewportUv = (in.position.xy - C[0].xy) * C[0].zw;
+    float3 colour = scene.read(uint2(clamp(floor(viewportUv * size), float2(0), size - 1))).rgb;
+    float3 graded;
+    for (int c = 0; c < 3; ++c)
+    {
+        float position = saturate(colour[c]) * (kCurveEntries - 1);
+        float lower = floor(position);
+        float upper = min(lower + 1, kCurveEntries - 1);
+        graded[c] = mix(curve[int(lower)], curve[int(upper)], position - lower);
+    }
+    return float4(mix(colour, graded, C[1].x), 1);
+}
