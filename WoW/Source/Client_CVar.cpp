@@ -376,8 +376,19 @@ static bool GammaCallback(CVar* var, const char* oldValue, const char* value, vo
 // VERIFY: 134f8295 manual
 // OFFSET: 0x00401A80
 static bool DesktopGammaCallback(CVar* var, const char* oldValue, const char* value, void* arg) {
-    // WoWFix335 windowed-mode-gamma-fix: desktopGamma ignored, original applies the desktop ramp when set
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // St0ny #82 "windowfix" (Robinsch; WoWFix335 windowed-mode-gamma-fix): DesktopGamma always takes the game gamma
+    // path (je -> jmp at 0x401A94). Applying the saved desktop ramp is what turned the screen black when switching to
+    // windowed mode.
     SStrToInt(value);
+#else
+    if (SStrToInt(value)) {
+        CGxGammaRamp ramp;
+        g_theGxDevicePtr->DeviceGamma(ramp);
+        g_theGxDevicePtr->DeviceSetGamma(ramp);
+        return true;
+    }
+#endif
 
     float gamma = s_gammaCvar ? s_gammaCvar->m_floatValue : 1.0f;
 
