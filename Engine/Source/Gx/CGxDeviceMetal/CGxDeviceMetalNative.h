@@ -124,9 +124,9 @@ class CGxDeviceMetalNative : public CGxDevice {
 
     // What the open render encoder already has, valid while the context's pass id matches
     struct Bound {
-        uint64_t m_passId;
-        id<MTLRenderPipelineState> m_pipeline;
-        id<MTLDepthStencilState> m_depthStencil;
+        uint64_t m_passId = 0;
+        id<MTLRenderPipelineState> m_pipeline = nil;
+        id<MTLDepthStencilState> m_depthStencil = nil;
         int32_t m_cull;
         int32_t m_fill;
         float m_depthBias;
@@ -135,10 +135,10 @@ class CGxDeviceMetalNative : public CGxDevice {
         MTLViewport m_viewport;
         MTLScissorRect m_scissor;
         bool m_viewportSet;
-        id<MTLBuffer> m_vertexBuffers[16];
-        uint32_t m_vertexOffsets[16];
-        id<MTLTexture> m_textures[16];
-        id<MTLSamplerState> m_samplers[16];
+        id<MTLBuffer> m_vertexBuffers[16] = {};
+        uint32_t m_vertexOffsets[16] = {};
+        id<MTLTexture> m_textures[16] = {};
+        id<MTLSamplerState> m_samplers[16] = {};
         uint64_t m_vertexFunction;
         uint64_t m_fragmentFunction;
     };

@@ -111,6 +111,13 @@ void CGxDeviceMetalNative::IDestroyMetal() {
 
     GxMetal::Clear(this->m_indexBuf);
     this->m_streamPassId = 0;
+
+    for (uint32_t i = 0; i < 16; i++) {
+        GxMetal::Clear(this->m_hw.m_textures[i]);
+    }
+
+    GxMetal::Clear(this->m_defaultTexture);
+    GxMetal::Clear(this->m_textureDepthBuffer);
 }
 
 int32_t CGxDeviceMetalNative::ICreateWindow(CGxFormat& format) {
@@ -758,6 +765,13 @@ void CGxDeviceMetalNative::ITexUpload(CGxTex* texId) {
                 if (Blit(size, BlitAlpha_0, source, texelStrideInBytes, GxGetBlitFormat(texId->m_dataFormat), staging.m_data, pitch, GxGetBlitFormat(texId->m_format))) {
                     this->m_metal->CopyToTexture(staging, pitch, pitch * rows, texture->m_texture, face, level, MTLOriginMake(left, top, 0), MTLSizeMake(copyWidth, copyHeight, 1), texture->m_use);
                     texture->MarkWritten(level);
+                } else {
+                    static int blitFailures = 0;
+
+                    if (blitFailures < 8) {
+                        blitFailures++;
+                        GxMetal::Log("upload: Blit failed %d -> %d %ux%u", static_cast<int>(texId->m_dataFormat), static_cast<int>(texId->m_format), copyWidth, copyHeight);
+                    }
                 }
             }
 
@@ -1520,13 +1534,16 @@ void CGxDeviceMetalNative::ISetTexture(uint32_t tmu, CGxTex* texId) {
         return;
     }
 
-    this->m_hw.m_textures[tmu] = texId ? this->ITexData(texId) : nullptr;
+    if (texId) {
+        // A texture the client marks for update is created and uploaded before it is drawn; the state
+        // keeps the GPU texture, so it must be looked up after the creation, not before
+        this->ITexMarkAsUpdated(texId);
+    }
+
+    GxMetal::Assign(this->m_hw.m_textures[tmu], texId ? this->ITexData(texId) : nullptr);
     this->m_samplerDirty[tmu] = 1;
 
     if (texId) {
-        // A texture the client marks for update is created and uploaded before it is drawn
-        this->ITexMarkAsUpdated(texId);
-
         if (tmu < 8) {
             HwStage& stage = this->m_hw.m_stages[tmu];
             GxMetal::Texture* texture = this->ITexData(texId);
@@ -2431,13 +2448,26 @@ bool CGxDeviceMetalNative::IDrawPrepare(const CGxBatch* batch) {
     }
 
     
+    for (uint32_t i = 0; i < 16; i++) {
+        GxMetal::Texture* texture = this->m_hw.m_textures[i];
+
+        if (texture && texture->m_mipsDirty) {
+            this->m_metal->GenerateMipmaps(texture);
+        }
+    }
+
     if (this->m_metal->PassId() != this->m_bound.m_passId) {
         this->m_bound.m_passId = this->m_metal->PassId();
         this->m_bound.m_vertexFunction = 0;
         this->m_bound.m_fragmentFunction = 0;
         this->m_bound.m_pipeline = nil;
-        memset(this->m_bound.m_textures, 0, sizeof(this->m_bound.m_textures));
-        memset(this->m_bound.m_samplers, 0, sizeof(this->m_bound.m_samplers));
+        for (uint32_t i = 0; i < 16; i++) {
+            this->m_bound.m_textures[i] = nil;
+            this->m_bound.m_samplers[i] = nil;
+        }
+
+        this->m_bound.m_pipeline = nil;
+        this->m_bound.m_depthStencil = nil;
         this->m_vsConstantsDirty = true;
         this->m_psConstantsDirty = true;
         this->m_vertexStateDirty = true;
@@ -2613,14 +2643,13 @@ bool CGxDeviceMetalNative::IDrawPrepare(const CGxBatch* batch) {
         buffer->m_use.m_lastUse = buffer->m_use.m_lastRenderUse = this->m_metal->CurrentSerial();
     }
 
-    uint32_t vertexConstants = this->m_hw.m_vertexShader ? (vertexInfo.m_constantCount ? vertexInfo.m_constantCount : 1) : 1;
+    uint32_t vertexConstants = this->m_hw.m_vertexShader ? (this->m_hw.m_vertexShader->m_info.m_constantCount ? this->m_hw.m_vertexShader->m_info.m_constantCount : 1) : 1;
 
     if (this->m_vsConstantsDirty || this->m_bound.m_vertexFunction != vertex.m_id) {
         [encoder setVertexBytes:this->m_hw.m_vsConstants length:vertexConstants * 16 atIndex:GxMetal::VS_BUFFER_FLOAT_CONSTANTS];
         [encoder setVertexBytes:this->m_vsIntConstants length:sizeof(this->m_vsIntConstants) atIndex:GxMetal::VS_BUFFER_INT_CONSTANTS];
         [encoder setVertexBytes:this->m_vsBoolConstants length:sizeof(this->m_vsBoolConstants) atIndex:GxMetal::VS_BUFFER_BOOL_CONSTANTS];
         this->m_vsConstantsDirty = false;
-        this->m_bound.m_vertexFunction = vertex.m_id;
     }
 
     uint32_t pixelConstants = this->m_hw.m_pixelShader ? (pixelInfo.m_constantCount ? pixelInfo.m_constantCount : 1) : 1;
@@ -2630,7 +2659,6 @@ bool CGxDeviceMetalNative::IDrawPrepare(const CGxBatch* batch) {
         [encoder setFragmentBytes:this->m_psIntConstants length:sizeof(this->m_psIntConstants) atIndex:GxMetal::PS_BUFFER_INT_CONSTANTS];
         [encoder setFragmentBytes:this->m_psBoolConstants length:sizeof(this->m_psBoolConstants) atIndex:GxMetal::PS_BUFFER_BOOL_CONSTANTS];
         this->m_psConstantsDirty = false;
-        this->m_bound.m_fragmentFunction = fragment.m_id;
     }
 
     if (this->m_vertexStateDirty || this->m_bound.m_vertexFunction != vertex.m_id) {
@@ -2666,6 +2694,9 @@ bool CGxDeviceMetalNative::IDrawPrepare(const CGxBatch* batch) {
 
 
     
+    this->m_bound.m_vertexFunction = vertex.m_id;
+    this->m_bound.m_fragmentFunction = fragment.m_id;
+
     uint32_t samplerMask = this->m_hw.m_pixelShader ? pixelInfo.m_samplerMask : 0xFF;
     this->IDrawBindTextures(this->m_hw.m_pixelShader ? &pixelInfo : nullptr, samplerMask);
     this->m_metal->MarkTargetsRendered();
@@ -2687,7 +2718,11 @@ void CGxDeviceMetalNative::IDrawBindTextures(const GxMetal::ShaderInfo* pixelInf
         }
 
         GxMetal::Texture* texture = this->m_hw.m_textures[i];
-        GxMetal::SamplerKind expected = texture ? texture->Kind() : GxMetal::SAMPLERKIND_2D;
+        GxMetal::SamplerKind textureKind = texture ? texture->Kind() : GxMetal::SAMPLERKIND_2D;
+        GxMetal::SamplerKind expected = textureKind;
+        static int kindLogs = 0;
+        bool logKind = kindLogs < 8;
+        if (logKind) { kindLogs++; }
 
         if (pixelInfo && pixelInfo->m_major >= 2) {
             expected = static_cast<GxMetal::SamplerKind>((pixelInfo->m_declaredKinds >> (i * 2)) & 3);
@@ -2695,6 +2730,10 @@ void CGxDeviceMetalNative::IDrawBindTextures(const GxMetal::ShaderInfo* pixelInf
             if (expected == GxMetal::SAMPLERKIND_2D && texture && texture->Kind() == GxMetal::SAMPLERKIND_DEPTH) {
                 expected = GxMetal::SAMPLERKIND_DEPTH;
             }
+        }
+
+        if (logKind) {
+            GxMetal::Log("stage %u texture kind %d expected %d size %ux%u", i, static_cast<int>(textureKind), static_cast<int>(expected), texture ? texture->m_width : 0, texture ? texture->m_height : 0);
         }
 
         id<MTLTexture> bound = (texture && texture->Kind() == expected) ? texture->SampleTexture() : this->m_metal->DummyTexture(expected);
