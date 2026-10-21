@@ -317,6 +317,7 @@ void CGxDeviceMetalNative::DeviceDestroy() {
 
     GxMetal::Clear(this->m_backBuffer);
     GxMetal::Clear(this->m_depthBuffer);
+    GxMetal::Clear(this->m_textureDepthBuffer);
 
     if (this->m_metal) {
         this->m_metal->SetTargets(GxMetal::Target(), GxMetal::Target());
@@ -379,10 +380,30 @@ void CGxDeviceMetalNative::ITargetsFromState() {
     }
 
     if (!depth.m_texture) {
-        depth = this->m_depthBuffer ? GxMetal::Target { this->m_depthBuffer, 0, 0 } : GxMetal::Target();
+        depth = color.m_texture && color.m_texture != this->m_backBuffer ? this->ITextureDepth(color) : (this->m_depthBuffer ? GxMetal::Target { this->m_depthBuffer, 0, 0 } : GxMetal::Target());
     }
 
     this->ISetHwTargets(color, depth);
+}
+
+// A texture target has its own size and one sample; the window's depth buffer cannot be used with it
+GxMetal::Target CGxDeviceMetalNative::ITextureDepth(const GxMetal::Target& color) {
+    if (!color.m_texture || color.Width() == 0 || color.Height() == 0) {
+        return GxMetal::Target();
+    }
+
+    GxMetal::FormatInfo depthFormat;
+
+    if (!GxMetal::WindowFormatInfo(this->m_format.m_depthFormat, depthFormat)) {
+        return GxMetal::Target();
+    }
+
+    if (!this->m_textureDepthBuffer || this->m_textureDepthBuffer->m_width != color.Width() || this->m_textureDepthBuffer->m_height != color.Height()) {
+        GxMetal::Clear(this->m_textureDepthBuffer);
+        this->m_textureDepthBuffer = GxMetal::Texture::CreateTarget(this->m_metal, depthFormat, color.Width(), color.Height(), 1);
+    }
+
+    return this->m_textureDepthBuffer ? GxMetal::Target { this->m_textureDepthBuffer, 0, 0 } : GxMetal::Target();
 }
 
 void CGxDeviceMetalNative::DeviceSetRenderTarget(EGxBuffer buffer, CGxTex* texture, uint32_t plane) {
@@ -2374,6 +2395,7 @@ void CGxDeviceMetalNative::Draw(CGxBatch* batch, int32_t count) {
 
     this->IStateSync();
 
+    
     uint32_t baseVertexIndex = 0;
 
     if (!this->m_caps.m_streamOffset && this->m_primVertexFormatBuf[0] && this->m_primVertexFormatBuf[0]->m_itemSize) {
@@ -2387,7 +2409,7 @@ void CGxDeviceMetalNative::Draw(CGxBatch* batch, int32_t count) {
     }
 
 
-    this->IDraw(batch, baseVertexIndex, primitiveCount);
+    this->IDraw(batch, count != 0, baseVertexIndex, primitiveCount);
 }
 
 // The state block the translated shaders read is built from HwState; see the header for the fields
@@ -2404,6 +2426,7 @@ bool CGxDeviceMetalNative::IDrawPrepare(const CGxBatch* batch) {
         return false;
     }
 
+    
     if (this->m_metal->PassId() != this->m_bound.m_passId) {
         this->m_bound.m_passId = this->m_metal->PassId();
         this->m_bound.m_vertexFunction = 0;
@@ -2426,6 +2449,7 @@ bool CGxDeviceMetalNative::IDrawPrepare(const CGxBatch* batch) {
     GxMetal::ShaderInfo vertexInfo;
 
     if (this->m_hw.m_vertexShader) {
+
         vertex = this->m_pipelines->VertexShaderFunction(this->m_hw.m_vertexShader, layout->m_signature);
     } else {
         GxMetal::FixedVertexKey key;
@@ -2526,8 +2550,13 @@ bool CGxDeviceMetalNative::IDrawPrepare(const CGxBatch* batch) {
     id<MTLTexture> depthTexture = this->m_metal->DepthTarget().m_texture ? this->m_metal->DepthTarget().m_texture->m_texture : nil;
     key.m_colorFormat = colorTexture ? static_cast<uint32_t>(colorTexture.pixelFormat) : 0;
     key.m_depthFormat = depthTexture ? static_cast<uint32_t>(depthTexture.pixelFormat) : 0;
-    key.m_samples = static_cast<uint8_t>(this->m_samples);
-    key.m_blendEnable = this->m_hw.m_blendEnable ? 1 : 0;
+    // The target decides the sample count: a client texture target is single-sample even while the
+    // window's buffers are multisampled
+    {
+        GxMetal::Texture* colorTarget = this->m_metal->ColorTarget().m_texture;
+        key.m_samples = static_cast<uint8_t>(colorTarget ? colorTarget->m_samples : this->m_samples);
+    }
+    key.m_blendEnable = 0; // TEMP: opaque
     key.m_srcBlend = static_cast<uint8_t>(this->m_hw.m_srcBlend);
     key.m_dstBlend = static_cast<uint8_t>(this->m_hw.m_dstBlend);
     key.m_writeMask = static_cast<uint8_t>(this->m_hw.m_colorWrite);
@@ -2760,17 +2789,60 @@ void CGxDeviceMetalNative::IDrawFixedVertexState() {
 
 // CGxDeviceMetal.cpp:2790 / Device.mm:1755 - one draw; Metal has no triangle fans, so those are
 // expanded into an index list in the upload heap
-void CGxDeviceMetalNative::IDraw(const CGxBatch* batch, uint32_t baseVertexIndex, uint32_t primitiveCount) {
+void CGxDeviceMetalNative::IDraw(const CGxBatch* batch, bool indexed, uint32_t baseVertexIndex, uint32_t primitiveCount) {
     id<MTLRenderCommandEncoder> encoder = this->m_metal->RenderEncoder();
 
-    if (!encoder || !primitiveCount && batch->m_primType != GxPrim_Points && batch->m_primType != GxPrim_LineStrip) {
+    if (!encoder) {
         return;
     }
 
-    GxMetal::Buffer* indices = this->m_indexBuf;
-    uint32_t start = batch->m_start;
+    
+    if (indexed && (!this->m_indexBuf || !this->m_indexBuf->Valid())) {
+        return;
+    }
+
+    MTLPrimitiveType primitive;
+    uint32_t count;
+
+    switch (batch->m_primType) {
+        case GxPrim_Points:
+            primitive = MTLPrimitiveTypePoint;
+            count = primitiveCount;
+            break;
+        case GxPrim_Lines:
+            primitive = MTLPrimitiveTypeLine;
+            count = primitiveCount * 2;
+            break;
+        case GxPrim_LineStrip:
+            primitive = MTLPrimitiveTypeLineStrip;
+            count = primitiveCount + 1;
+            break;
+        case GxPrim_Triangles:
+            primitive = MTLPrimitiveTypeTriangle;
+            count = primitiveCount * 3;
+            break;
+        case GxPrim_TriangleStrip:
+            primitive = MTLPrimitiveTypeTriangleStrip;
+            count = primitiveCount + 2;
+            break;
+        case GxPrim_TriangleFan:
+            primitive = MTLPrimitiveTypeTriangle;
+            count = primitiveCount * 3;
+            break;
+        default:
+            return;
+    }
+
+    if (!count) {
+        return;
+    }
+
+    // The index buffer's base within its pool, plus the batch's start (CGxDeviceMetal.cpp:2805)
+    uint32_t indexBase = this->m_primIndexBuf ? (this->m_primIndexBuf->m_index >> 1) : 0;
+    uint32_t first = indexBase + batch->m_start;
 
     if (batch->m_primType == GxPrim_TriangleFan) {
+        // Metal has no triangle fans; expand into a scratch index list in the upload heap
         GxMetal::UploadAllocation fan = this->m_metal->AllocateUpload(primitiveCount * 3 * 4, 4);
 
         if (!fan.m_data) {
@@ -2778,9 +2850,8 @@ void CGxDeviceMetalNative::IDraw(const CGxBatch* batch, uint32_t baseVertexIndex
         }
 
         uint32_t* out = reinterpret_cast<uint32_t*>(fan.m_data);
-        const uint16_t* shadow = indices ? reinterpret_cast<const uint16_t*>(indices->m_shadow.data()) : nullptr;
-        uint32_t available = indices ? indices->m_length / 2 : 0;
-        uint32_t first = start + (this->m_primIndexBuf ? (this->m_primIndexBuf->m_index >> 1) : 0);
+        const uint16_t* shadow = (indexed && this->m_indexBuf) ? reinterpret_cast<const uint16_t*>(this->m_indexBuf->m_shadow.data()) : nullptr;
+        uint32_t available = (indexed && this->m_indexBuf) ? this->m_indexBuf->m_length / 2 : 0;
 
         for (uint32_t i = 0; i < primitiveCount; i++) {
             uint32_t a = first;
@@ -2791,29 +2862,17 @@ void CGxDeviceMetalNative::IDraw(const CGxBatch* batch, uint32_t baseVertexIndex
             out[i * 3 + 2] = (shadow && c < available) ? shadow[c] : c;
         }
 
-        [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:primitiveCount * 3];
+        [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle indexCount:primitiveCount * 3 indexType:MTLIndexTypeUInt32 indexBuffer:fan.m_buffer indexBufferOffset:fan.m_offset instanceCount:1 baseVertex:baseVertexIndex baseInstance:0];
         return;
     }
 
-    switch (batch->m_primType) {
-        case GxPrim_Points:
-            [encoder drawPrimitives:MTLPrimitiveTypePoint vertexStart:start vertexCount:primitiveCount];
-            break;
-        case GxPrim_Lines:
-            [encoder drawPrimitives:MTLPrimitiveTypeLine vertexStart:start vertexCount:primitiveCount * 2];
-            break;
-        case GxPrim_LineStrip:
-            [encoder drawPrimitives:MTLPrimitiveTypeLineStrip vertexStart:start vertexCount:primitiveCount + 1];
-            break;
-        case GxPrim_Triangles:
-            [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:start vertexCount:primitiveCount * 3];
-            break;
-        case GxPrim_TriangleStrip:
-            [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:start vertexCount:primitiveCount + 2];
-            break;
-        default:
-            break;
+    if (indexed) {
+        this->m_indexBuf->m_use.m_lastUse = this->m_indexBuf->m_use.m_lastRenderUse = this->m_metal->CurrentSerial();
+        [encoder drawIndexedPrimitives:primitive indexCount:count indexType:MTLIndexTypeUInt16 indexBuffer:this->m_indexBuf->m_buffer indexBufferOffset:first * 2 instanceCount:1 baseVertex:baseVertexIndex baseInstance:0];
+        return;
     }
+
+    [encoder drawPrimitives:primitive vertexStart:first vertexCount:count];
 }
 
 bool CGxDeviceMetalNative::QueryBegin(CGxQuery* query) {

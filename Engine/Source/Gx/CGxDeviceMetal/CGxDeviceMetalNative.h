@@ -260,6 +260,8 @@ class CGxDeviceMetalNative : public CGxDevice {
     // A CGxTex's texture as a render target (the face and level of the client's handle)
     GxMetal::Target ITexTarget(CGxTex* texId, uint32_t face, uint32_t level);
     void ITargetsFromState();
+    // A depth buffer matching a single-sample texture target (CGxDeviceD3d's m_textureDepthBuffer)
+    GxMetal::Target ITextureDepth(const GxMetal::Target& color);
     // Pools and buffers (slice 3)
     GxMetal::Buffer* ICreateBuffer(CGxPool* pool);
     int32_t CreatePoolAPI(CGxPool* pool);
@@ -305,7 +307,7 @@ class CGxDeviceMetalNative : public CGxDevice {
     bool IDrawPrepare(const CGxBatch* batch);
     void IDrawBindTextures(const GxMetal::ShaderInfo* pixelInfo, uint32_t samplerMask);
     void IDrawFixedVertexState();
-    void IDraw(const CGxBatch* batch, uint32_t baseVertexIndex, uint32_t primitiveCount);
+    void IDraw(const CGxBatch* batch, bool indexed, uint32_t baseVertexIndex, uint32_t primitiveCount);
     void IXformSetViewport();
     void IPollWindow();
     // The window's client size in pixels
