@@ -327,6 +327,19 @@ commit'lendi, devam edecek) → spesifikasyon ajanı yalnızca gerekirse. Küç�
   hepsi `CGxShaderExt` benzeri bir shader değiştirme katmanı istiyor; D3D9 shim varken HLSL derlemek
   ayrı bir iş.
 
+### Faz 1 kapanışı — D3D9 katmanı silindi (2026-10-21)
+
+- `Engine/Source/Gx/CGxDeviceMetal/D3D9/` (Direct3D 9 taklidi: Device.mm, D3D9Types.h, FixedFunction,
+  Resources) ve shim cihazı `CGxDeviceMetal.{h,cpp}` silindi. `CREATE_CGxDeviceMetal` neyse o artık
+  native cihazı döndürüyor.
+- `CGxDevice/Mac/CGxDevice.mm` adaptör sorguları MTLDevice'a taşındı: biçim listesi
+  `supportsTextureSampleCount:` ile, adaptör kimliği `registryID` ile, donanım sınıfı Windows
+  istemcisinin en üst kademesi (hwTnL + 8 doku birimi + SM3) olarak.
+- `GxMetalDevice`/`GxMetalAcquireTargets` artık native cihazda; `GxCursorSetScale` macOS'ta no-op
+  (sistem imleci çiziliyor).
+- Doğrulama: shim olmadan derleme + `glue@12` ve `world@16` ekran görüntüleri; modlar yüklü.
+- `WRATHMODERN_METAL_SHADERS=0` hâlâ sabit fonksiyon yolunu zorluyor (shader karşılaştırması için).
+
 ## Faz 1 — native Metal cihazı: TAMAMLANDI (2026-10-21)
 
 **Durum: native cihaz artık varsayılan.** `CGxDeviceMetalNative` (MetalContext/Resources/Pipeline/

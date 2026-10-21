@@ -1,7 +1,8 @@
-// The native Metal graphics device, slice 1: the device, its window, the window's render targets,
-// clearing and presenting. Textures, buffers, state mapping, shaders and draws follow (the checklist
-// is in WOWRE.md); until they exist this device draws nothing, which is what WRATHMODERN_GX=native
-// shows, while the default device on the D3D9 shim keeps the client intact.
+// The Metal graphics device: the client's CGxDevice states go straight to Metal, with no Direct3D 9
+// layer in between. It owns the MTLDevice and queue through GxMetal::Context, presents into the
+// window's CAMetalLayer, and turns the client's state, shaders, textures, buffers and draws into
+// Metal commands. WRATHMODERN_METAL_SHADERS=0 makes it report no shader profiles so the client takes
+// its fixed-function path, which is useful when comparing generated shaders against the client's.
 //
 // The window is the platform's (OsMacCreateGameWindow), as for the shim: its content view is
 // layer-backed by a CAMetalLayer and the device presents into that layer through GxMetal::Context.
