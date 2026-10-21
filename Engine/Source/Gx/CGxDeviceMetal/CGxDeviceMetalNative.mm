@@ -12,6 +12,9 @@
 #include <cstdio>
 #include <cstring>
 #include "Engine/Source/Gx/CGxDeviceMetal/CGxDeviceMetalNative.h"
+#include "Engine/Source/Gx/CGxBuf.h"
+#include "Engine/Source/Gx/CGxPool.h"
+#include "Engine/Source/Gx/CGxDevice/EmergencyMem.h"
 #include "Engine/Source/Gx/CGxDeviceMetal/MetalFormats.h"
 #include "Engine/Source/Os/Mac/MacOs.h"
 #include "Engine/Source/Os/Error.h"
@@ -36,6 +39,16 @@ CGxDeviceMetalNative::CGxDeviceMetalNative() {
     this->m_backBuffer = nullptr;
     this->m_depthBuffer = nullptr;
     this->m_samples = 1;
+    this->m_savedDepthTarget = GxMetal::Target();
+
+    for (uint32_t i = 0; i < 16; i++) {
+        this->m_streamBufs[i] = nullptr;
+        this->m_streamOffsets[i] = 0;
+        this->m_streamStrides[i] = 0;
+    }
+
+    this->m_indexBuf = nullptr;
+    this->m_streamPassId = 0;
 }
 
 CGxDeviceMetalNative::~CGxDeviceMetalNative() {
@@ -78,6 +91,13 @@ void CGxDeviceMetalNative::IDestroyMetal() {
 
     delete this->m_pipelines;
     this->m_pipelines = nullptr;
+
+    for (uint32_t i = 0; i < 16; i++) {
+        GxMetal::Clear(this->m_streamBufs[i]);
+    }
+
+    GxMetal::Clear(this->m_indexBuf);
+    this->m_streamPassId = 0;
 }
 
 int32_t CGxDeviceMetalNative::ICreateWindow(CGxFormat& format) {
@@ -132,7 +152,9 @@ void CGxDeviceMetalNative::ISetCaps(const CGxFormat& format) {
     this->m_caps.m_pixelCenterOnEdge = 0;
     this->m_caps.m_texelCenterOnEdge = 1;
     this->m_caps.m_numStreams = 16;
-    this->m_caps.m_streamOffset = 0;
+    // Every stream keeps its own byte offset; with 0 the client would fold the offset of stream 0
+    // into a base vertex index and read the other streams from the start of their buffers
+    this->m_caps.m_streamOffset = 1;
     this->m_caps.m_colorFormat = GxCF_argb;
     this->m_caps.m_maxIndex = 65535;
     this->m_caps.m_generateMipMaps = 1;
@@ -214,7 +236,7 @@ void CGxDeviceMetalNative::IResetDevice() {
         return;
     }
 
-    this->ISetHwTargets(GxMetal::Target { this->m_backBuffer, 0, 0 }, GxMetal::Target { this->m_depthBuffer, 0, 0 });
+    this->ITargetsFromState();
 }
 
 int32_t CGxDeviceMetalNative::DeviceCreate(GxWindowProc windowProc, const CGxFormat& format) {
@@ -298,6 +320,58 @@ void CGxDeviceMetalNative::CapsWindowSize(CRect& rect) {
 
 void CGxDeviceMetalNative::CapsWindowSizeInScreenCoords(CRect& rect) {
     rect = this->DeviceCurWindow();
+}
+
+GxMetal::Target CGxDeviceMetalNative::ITexTarget(CGxTex* texId, uint32_t face, uint32_t level) {
+    if (!texId || !texId->m_apiSpecificData) {
+        return GxMetal::Target();
+    }
+
+    return GxMetal::Target { static_cast<GxMetal::Texture*>(texId->m_apiSpecificData), face, level };
+}
+
+// The colour and depth targets the client set: its own texture targets where it set one, the
+// window's buffers otherwise (CGxDeviceD3d's m_defColorSurface / m_defDepthStencilSurface)
+void CGxDeviceMetalNative::ITargetsFromState() {
+    GxMetal::Target color = this->ITexTarget(this->m_textureTarget[GxBuffers_Color].m_texture, this->m_textureTarget[GxBuffers_Color].m_plane, 0);
+    GxMetal::Target depth = this->ITexTarget(this->m_textureTarget[GxBuffers_Depth].m_texture, this->m_textureTarget[GxBuffers_Depth].m_plane, 0);
+
+    if (!color.m_texture && this->m_backBuffer) {
+        color = GxMetal::Target { this->m_backBuffer, 0, 0 };
+    }
+
+    if (!depth.m_texture) {
+        depth = this->m_depthBuffer ? GxMetal::Target { this->m_depthBuffer, 0, 0 } : GxMetal::Target();
+    }
+
+    this->ISetHwTargets(color, depth);
+}
+
+void CGxDeviceMetalNative::DeviceSetRenderTarget(EGxBuffer buffer, CGxTex* texture, uint32_t plane) {
+    if (!this->m_metal) {
+        return;
+    }
+
+    CGxDevice::TextureTarget& target = this->m_textureTarget[buffer];
+
+    if (target.m_texture == texture && target.m_plane == plane) {
+        return;
+    }
+
+    CGxDevice::DeviceSetRenderTarget(buffer, texture, plane);
+    this->ITargetsFromState();
+}
+
+void CGxDeviceMetalNative::DeviceSaveDepthSurface() {
+    if (this->m_metal) {
+        this->m_savedDepthTarget = this->m_metal->DepthTarget();
+    }
+}
+
+void CGxDeviceMetalNative::DeviceRestoreDepthSurface() {
+    if (this->m_metal) {
+        this->m_metal->SetTargets(this->m_metal->ColorTarget(), this->m_savedDepthTarget);
+    }
 }
 
 int32_t CGxDeviceMetalNative::DeviceWM(EGxWM wm, uintptr_t param1, uintptr_t param2) {
@@ -426,7 +500,196 @@ void CGxDeviceMetalNative::IShaderReload(CGxShader* shader, const char* path, co
 void CGxDeviceMetalNative::IRsSendToHw(EGxRenderState which) {
 }
 
+namespace {
+
+GxMetal::Buffer* PoolBuffer(CGxPool* pool) {
+    return pool ? static_cast<GxMetal::Buffer*>(pool->m_apiSpecific) : nullptr;
+}
+
+}
+
+GxMetal::Buffer* CGxDeviceMetalNative::ICreateBuffer(CGxPool* pool) {
+    if (!pool || !this->m_metal || pool->m_size <= 0) {
+        return nullptr;
+    }
+
+    // Stream and dynamic pools are written while the GPU may still read them, so their buffers follow
+    // the lock's rules; static pools are only written when the serials say the GPU is done with them.
+    // Index buffers keep a CPU copy of their contents because triangle fans are expanded on the CPU.
+    bool dynamic = pool->m_usage == GxPoolUsage_Stream || pool->m_usage == GxPoolUsage_Dynamic;
+    bool keepShadow = pool->m_target == GxPoolTarget_Index;
+    GxMetal::Buffer* buffer = new GxMetal::Buffer(this->m_metal, static_cast<uint32_t>(pool->m_size), dynamic, keepShadow);
+
+    if (!buffer->Valid()) {
+        buffer->Release();
+        return nullptr;
+    }
+
+    return buffer;
+}
+
+int32_t CGxDeviceMetalNative::CreatePoolAPI(CGxPool* pool) {
+    if (!pool) {
+        return 0;
+    }
+
+    if (pool->m_target == GxPoolTarget_Vertex || pool->m_target == GxPoolTarget_Index) {
+        pool->m_apiSpecific = this->ICreateBuffer(pool);
+    }
+
+    return 1;
+}
+
+void CGxDeviceMetalNative::IReleasePool(CGxPool* pool) {
+    if (!pool) {
+        return;
+    }
+
+    if (pool->m_usage == GxPoolUsage_Stream) {
+        pool->m_offset = 0;
+    }
+
+    pool->Invalidate();
+    GxMetal::Clear(reinterpret_cast<GxMetal::Buffer*&>(pool->m_apiSpecific));
+}
+
+void CGxDeviceMetalNative::IReleasePools(int32_t freePools) {
+    for (CGxPool* pool = this->m_poolList.Head(); pool; pool = this->m_poolList.Next(pool)) {
+        if (freePools || pool->m_usage == GxPoolUsage_Stream || pool->m_usage == GxPoolUsage_Dynamic) {
+            this->IReleasePool(pool);
+        }
+    }
+
+    if (freePools) {
+        GxMetal::Clear(this->m_indexBuf);
+        this->m_streamPassId = 0;
+    }
+}
+
 void CGxDeviceMetalNative::PoolSizeSet(CGxPool* pool, uint32_t size) {
+    if (!pool || !this->m_metal) {
+        return;
+    }
+
+    this->IReleasePool(pool);
+    pool->m_size = static_cast<int32_t>(size);
+    this->CreatePoolAPI(pool);
+}
+
+void CGxDeviceMetalNative::PoolDestroy(CGxPool* pool) {
+    if (pool) {
+        this->IReleasePool(pool);
+        CGxDevice::PoolDestroy(pool);
+    }
+}
+
+char* CGxDeviceMetalNative::IBufLock(CGxBuf* buf) {
+    CGxPool* pool = buf->m_pool;
+    EmergencyMem& emergency = this->m_emergencyMem[pool->m_target];
+
+    if (!this->m_metal) {
+        return static_cast<char*>(emergency.Lock(buf->m_size));
+    }
+
+    GxMetal::BufferLock kind = GxMetal::BufferLock_Normal;
+
+    if (pool->m_usage == GxPoolUsage_Stream) {
+        // A stream pool appends the buffer in item-sized slots and wraps to the start when it is full
+        uint32_t index = (buf->m_itemSize + pool->m_offset - 1) - (buf->m_itemSize + pool->m_offset - 1) % buf->m_itemSize;
+
+        if (index + buf->m_size > static_cast<uint32_t>(pool->m_size)) {
+            kind = GxMetal::BufferLock_Discard;
+            pool->Discard();
+            buf->m_index = 0;
+            pool->m_offset = static_cast<int32_t>(buf->m_size);
+        } else {
+            kind = GxMetal::BufferLock_NoOverwrite;
+            buf->m_index = index;
+            pool->m_offset = static_cast<int32_t>(index + buf->m_size);
+        }
+    } else if (pool->m_usage == GxPoolUsage_Dynamic) {
+        kind = GxMetal::BufferLock_NoOverwrite;
+    }
+
+    if (!pool->m_apiSpecific) {
+        this->CreatePoolAPI(pool);
+    }
+
+    GxMetal::Buffer* buffer = PoolBuffer(pool);
+
+    if (!buffer) {
+        return static_cast<char*>(emergency.Lock(buf->m_size));
+    }
+
+    char* data = buffer->Lock(buf->m_index, buf->m_size, kind);
+
+    if (!data) {
+        // Buffer::Lock pushed no record for a failed lock, and Unlock() pops the last record: calling
+        // it here would pop a live one
+        return static_cast<char*>(emergency.Lock(buf->m_size));
+    }
+
+    return data;
+}
+
+void CGxDeviceMetalNative::IBufUnlock(CGxBuf* buf) {
+    CGxPool* pool = buf->m_pool;
+    EmergencyMem& emergency = this->m_emergencyMem[pool->m_target];
+
+    if (emergency.m_lock) {
+        emergency.Unlock();
+        buf->m_valid = 0;
+        this->m_intF5C = 1;
+        return;
+    }
+
+    GxMetal::Buffer* buffer = PoolBuffer(pool);
+
+    if (buffer) {
+        buffer->Unlock();
+    }
+
+    buf->m_valid = buffer != nullptr;
+}
+
+char* CGxDeviceMetalNative::BufLock(CGxBuf* buf) {
+    CGxDevice::BufLock(buf);
+    return this->IBufLock(buf);
+}
+
+int32_t CGxDeviceMetalNative::BufUnlock(CGxBuf* buf, uint32_t size) {
+    CGxDevice::BufUnlock(buf, size);
+    this->IBufUnlock(buf);
+    return 1;
+}
+
+void CGxDeviceMetalNative::BufData(CGxBuf* buf, const void* data, uint32_t size, uint32_t offset) {
+    CGxDevice::BufData(buf, data, size, offset);
+
+    char* destination = this->IBufLock(buf);
+
+    if (!destination) {
+        return;
+    }
+
+    memcpy(destination + offset, data, size);
+    this->IBufUnlock(buf);
+}
+
+void CGxDeviceMetalNative::ISetVertexBuffer(uint32_t stream, GxMetal::Buffer* buffer, uint32_t offset, uint32_t stride) {
+    if (stream >= 16) {
+        return;
+    }
+
+    if (!this->m_caps.m_streamOffset) {
+        offset = 0;
+    }
+
+    if (this->m_streamBufs[stream] != buffer || this->m_streamOffsets[stream] != offset || this->m_streamStrides[stream] != stride) {
+        GxMetal::Assign(this->m_streamBufs[stream], buffer);
+        this->m_streamOffsets[stream] = offset;
+        this->m_streamStrides[stream] = stride;
+    }
 }
 
 int32_t CGxDeviceMetalNative::TexCopy(CGxTex* dest, const C2iVector& destPos, const C2iVector& sourcePos, const C2iVector& size, uint32_t level, uint32_t plane) {
