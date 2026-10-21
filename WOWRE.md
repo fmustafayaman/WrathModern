@@ -282,9 +282,8 @@ commit'lendi, devam edecek) → spesifikasyon ajanı yalnızca gerekirse. Küç�
 1. [x] Faz 1 — native Metal cihazı (aşağıda "Faz 1 — native Metal cihazı", gözden geçirme dahil).
 2. [x] Faz 2 çekirdeği (Mod API v2), Faz 3 (St0ny yamaları), Lux (Faz 4), AwesomeWotlk A.
 3. [ ] AwesomeWotlk B (aşağıdaki liste).
-4. [ ] CoAVolFog (Faz 5) — 1,7 MB DLL, `fogdata.bin` (756 KB) + `waterdata.bin` (8,4 MB), kendi hacimsel
-   sis/su shader'ları ve ayar penceresi; sıfırdan tersine mühendislik. Okunabilir derinlik artık hazır
-   (`Context::ReadableDepth`, MSAA'da örnek 0 çözümlemesi).
+4. [ ] **CoAVolFog (Faz 5) — ÖNCELİK.** Plan: aşağıda "Faz 5 — CoAVolFog (Metal) — PLAN". Kaynak kod GitHub'da
+   (tersine mühendislik gerekmiyor). Sıradaki: dilim 1 (altyapı).
 5. [ ] Lexara + AwesomeWotlk MSDF fontları (ortak), çerçeve yakalama, TTS (AVSpeechSynthesizer).
 
 ### AwesomeWotlk B — kalan iş
@@ -319,6 +318,57 @@ Yapıldı (commit'lerde): `cameraFov`, `showPlayer` (3ea5ed5), `nameplateDistanc
 - **Shader gerektirenler (ertelendi):** `uiHalfPixelFix`, `uiPixelSnap`, `uiTextureSampling`, MSDF —
   hepsi `CGxShaderExt` benzeri bir shader değiştirme katmanı istiyor; D3D9 shim varken HLSL derlemek
   ayrı bir iş.
+
+## Faz 5 — CoAVolFog (Metal) — PLAN (2026-10-21, kullanıcının önceliği)
+
+**Hedef (kullanıcı):** "Oyun WoW Forever'dan daha güzel görünsün; tüm uğraşım ona." Önce Windows CoAVolFog ile
+**görsel eşlik** (CrossOver'daki Reforged kurulumu ve kullanıcının `CoAVolFog.ini`'si referans), sonra onu aşan
+iyileştirmeler.
+
+**Kaynak:** `~/Projects/refs/coa-vfog` (`Raz0r1337/coa-vfog`, `st0ny-main` @ `d08a6a3`): ~20 bin satır C++,
+3,2 bin satır HLSL (ps_3_0), `data/fogdata.bin` (Classic sis katmanları) + `data/waterdata.bin` (Forever suyu),
+README'de her motor girdisinin 12340 adresi. Lisans: `LICENSE` (port ederken korunur).
+
+**Mimari kararı:** `Mods/CoAVolFog` — ayrı `.dylib` mod (kapatılabilir, cherry-pick edilebilir), motor SDK'sı ile
+istemci yapılarını doğrudan okur. Orijinalin D3D9 sarmalayıcısı, `INTZ` derinlik hilesi, adres kancaları ve durum
+blokları **gitmez → yerine**: Mod API'ye adlandırılmış render olayları + native Metal cihazından hedef/derinlik
+erişimi. HLSL elle MSL'e çevrilir (sayısal davranış birebir), `fog_data.cpp`/`water_data.cpp` ayrıştırıcıları
+taşınabilir C++ olarak aynen alınır. Ayar dosyası `Mods/CoAVolFog.ini` (aynı anahtarlar).
+
+**Kanca → kaynak eşlemesi** (README "How it attaches"/"Engine inputs"):
+
+| Orijinal | Bizde | Kullanım |
+|---|---|---|
+| `0x4FB03D` → `0x4F8EA0` | `CGWorldFrame::OnWorldRender` (Ui/WorldFrame.cpp) | kare başı/sonu, stok sisi itme/geri alma |
+| `0x4F911D` → `0x823CB0` | `CM2Scene::Draw(M2PASS)` (pass 0 sonrası) | kamera/projeksiyon/ışık girdileri |
+| `0x4F9170` → `0x77F020` | `CWorldScene::RenderLiquidPass` (World.cpp:1932) | su: derinlik yazımı, sınıf etiketleme, su geçişi |
+| `0x4F9213` → `0x7F0870` | `DayNight::RenderGlares` | şeffaf sis yolu (TransparentFog) |
+| `0x7E5818` → `0x6BCE40` | `GxuFontRenderBatch` (dünya yazıları) | sisin dünya yazılarından önce çizimi |
+| `0x4F9281` → `0x8C1010` | `FFX::Finish` | sis kompoziti (parlamadan önce) |
+| `0x780770` | `World::ValidateFarClip` | `FarClipMax` |
+| `0x81FD15` → `0x873210` | `CShaderEffect::SetFogParams` (M2 batch sisi) | TransparentFog |
+| `0x79D5E0` | `CMap::RenderWaterRipples` | dümen suyu/dalga halkaları |
+| ışık tablosu, DayNight renkleri, sıvı ayarları… | `DayNight::g_dnInfo`, `CM2Scene` ışıkları, `LiquidType` DBC | doğrudan okuma |
+
+**Dilimler** (her biri derlenir, A/B kareleri + Metal doğrulaması + GPU süresiyle kapanır):
+1. **Altyapı:** Mod API render olayları (kare başı, pass-0 sonrası, sıvı geçişi başı/sonu + su çizimi başına
+   sıvı türü, FFX öncesi); native cihazdan renk/derinlik (MSAA'da `texture2d_ms`, çözümlemesiz) ve komut tamponu;
+   mod iskeleti, ini, veri yükleme, `Logs/CoAVolFog.log`; `DebugView=1` doğrusal derinlik görüntüsü.
+2. **Sis çekirdeği:** çeyrek/yarım çözünürlük march + derinlik doğrulamalı upsample kompozit; uzak pus + zemin
+   sisi + uzak sis (3.3.5 gün/gece verisinden, `DataMode`); stok sisin itilmesi; parlama ön-telafisi.
+3. **Classic sis verisi:** `fogdata.bin` katmanları ışıklara göre, authored noise, yoğunluk varyasyonu, iç mekân geçişi.
+4. **Zamansal filtre** (`Temporal`), siluet bölme, MSAA örnek başına.
+5. **Yerel ışıklar** (8 slot, stabilizatör, faz) — LightStay zaten var (Faz 3 #68).
+6. **Güneş saçılması, god rays, glow telafisi, renk derecelendirme** (`ColorGrading`, `ForeverGlow`).
+7. **Su:** sıvı geçişinde stencil sınıf etiketleri, GPU FFT (Forever spektrumları), Beer–Lambert/HG/EnvBRDF
+   gölgelendirme, köpük, ekran-uzayı yansıma, bölge renkleri.
+8. **Dalga halkaları/dümen suyu**, su temasları, istemci sıçramalarının kapatılması.
+9. **Şeffaf sis**, uzak mesafe (`FarClipMax`), ayar paneli (Alt+F7 yerine oyun içi Lua paneli).
+10. **"Forever'ı aşmak":** Apple GPU'da tam çözünürlük march; gölge haritasıyla **gerçek hacimsel ışık huzmeleri**
+    (radyal bulanıklık yerine — ağaç arası huzmeler); daha yüksek FFT çözünürlüğü; MSAA'nın doğrudan okunması.
+
+**Kabul ölçütü:** her dilimde aynı nokta/saat için Windows CoAVolFog (CrossOver) ↔ WowRe karşılaştırması
+(kullanıcı referans kareyi verir), sıfır Metal doğrulama hatası, kare süresi ölçümü (`WRATHMODERN_FRAMESTATS`).
 
 ## Faz 1 — native Metal cihazı: TAMAMLANDI (2026-10-21)
 
