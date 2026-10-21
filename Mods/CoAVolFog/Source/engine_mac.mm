@@ -12,7 +12,13 @@
 #include "Engine/Source/Model2/M2Light.h"
 #include "Engine/Source/Model2/M2Scene.h"
 #include "WoW/Source/Ui/WorldFrame.h"
+#include "WoW/Source/DB/DBClient/DBClient.h"
+#include "WoW/Source/DB/Rec/LiquidTypeRec.h"
+#include "WoW/Source/LiquidSystem/Liquid.h"
 #include "WoW/Source/WorldClient/DayNight.h"
+#include "log.h"
+#include "water_classify.h"
+#include <unordered_map>
 #include "WoW/Source/WorldClient/DayNight__DNInfo.h"
 #include "WoW/Source/WorldClient/MapObj.h"
 #include "WoW/Source/WorldClient/MapObjDef.h"
@@ -132,6 +138,56 @@ void CaptureLocalPointLights(const LocalLightCamera& camera, const PointLightUpl
 
     captured.capture = LocalLightCapture::Captured;
     lights = captured;
+}
+
+WaterClass ClassifyWaterSettings(const void* settings)
+{
+    static std::unordered_map<const void*, WaterClass> s_known;
+    static uint32_t s_bankCount = 0;
+    static Liquid::CMaterialSettings** s_bankData = nullptr;
+
+    if (!settings)
+        return WaterClass::None;
+
+    const TSGrowableArray<Liquid::CMaterialSettings*>& bank = Liquid::CSettingsBank::s_settings;
+
+    // A new bank (map change) forgets the classes
+    if (bank.m_count != s_bankCount || bank.m_data != s_bankData)
+    {
+        s_known.clear();
+        s_bankCount = bank.m_count;
+        s_bankData = bank.m_data;
+    }
+
+    auto known = s_known.find(settings);
+    if (known != s_known.end())
+        return known->second;
+
+    WaterClass waterClass = WaterClass::None;
+    uint32_t id = 0;
+    bool inBank = false;
+
+    for (uint32_t i = 0; i < bank.m_count; ++i)
+    {
+        if (bank.m_data[i] == settings)
+        {
+            id = i;
+            inBank = true;
+            break;
+        }
+    }
+
+    const LiquidTypeRec* row = inBank ? g_liquidTypeDB.GetRecord(static_cast<int32_t>(id)) : nullptr;
+    const auto* material = static_cast<const Liquid::CMaterialSettings*>(settings);
+    char texture0[129] = {};
+    std::memcpy(texture0, material->m_textureNames[0], 128);
+
+    if (row)
+        waterClass = ClassifyLiquid(id, static_cast<uint32_t>(row->m_soundBank), static_cast<uint32_t>(row->m_materialID), texture0);
+
+    s_known[settings] = waterClass;
+    VF_LOG_INFO("liquid %u (%s): %s", id, texture0[0] ? texture0 : "no texture", WaterClassLabel(waterClass));
+    return waterClass;
 }
 
 bool GhostEffectRuns()

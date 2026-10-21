@@ -64,6 +64,10 @@ StockFog ReadStockFog();
 void WriteStockFog(const StockFog& fog);
 // 0xCD8794, the liquid the camera is in
 bool CameraInLiquid();
+// ClassifyWaterSettings: the class of a liquid draw from its Liquid::CMaterialSettings (the settings bank
+// 0xD43B1C gives the LiquidType id, whose row gives the material and sound bank; texture 0 its folder)
+WaterClass ClassifyWaterSettings(const void* settings);
+
 // The current screen effect (0xD45780) is the death effect (0xB74368)
 bool GhostEffectRuns();
 

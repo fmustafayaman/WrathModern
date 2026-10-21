@@ -99,6 +99,7 @@
 #include <cstring>
 #include "WoW/Source/Object/ObjectClient/Object_C.h"
 #include "WoW/Source/Game/GameClient/ProjectTex.h"
+#include "WoW/Source/WorldClient/Mods/ModHost.h"
 
 // STATIC: 0x00ADEE48
 static const char* s_zonePaths[11] = {
@@ -1934,7 +1935,9 @@ void CWorldScene::RenderLiquidPass() {
     CWorldScene::ApplyFogState();
 
     if ((CWorld::enables & Enable_Water) && CWorldScene::s_liquidRenderer) {
+        WRATHMODERN_MOD_HOOK(WM_HOOK_LIQUIDS_BEGIN);
         CWorldScene::s_liquidRenderer->Flush(CWorldScene::s_activeWorldView, 1);
+        WRATHMODERN_MOD_HOOK(WM_HOOK_LIQUIDS_END);
     }
 
     CMap::RenderWaterRipples();

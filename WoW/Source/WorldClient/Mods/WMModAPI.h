@@ -51,6 +51,12 @@ typedef enum WMHook {
      */
     WM_HOOK_WORLD_BEGIN = 4,
     WM_HOOK_WORLD_END = 5,
+    /*
+     * Around the liquid surfaces of the world (CWorldScene::RenderLiquidPass, Liquid::CRenderer::Flush): every
+     * liquid draw between them is announced through OnLiquidDraw. Frame targets may be acquired at both.
+     */
+    WM_HOOK_LIQUIDS_BEGIN = 6,
+    WM_HOOK_LIQUIDS_END = 7,
     WM_HOOK_COUNT
 } WMHook;
 
@@ -233,6 +239,12 @@ typedef struct WMModInfo {
     void (*OnWorld)(int32_t entered, void* user);
     /* Called once per frame while the world is rendered; elapsed is the frame time in seconds */
     void (*OnFrame)(float elapsed, void* user);
+    /*
+     * Called before (begin = 1) and after (begin = 0) each liquid surface draw, with its Liquid::CMaterialSettings;
+     * a mod may tag the draw's pixels (GxMetalSetStencilTag) between the two. Added after version 2's first
+     * release; read only by clients that know it. May be NULL.
+     */
+    void (*OnLiquidDraw)(const void* settings, int32_t begin, void* user);
 } WMModInfo;
 
 /*

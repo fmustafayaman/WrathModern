@@ -22,6 +22,8 @@ void ModsCameraCreated(float* fieldOfView);
 void ModsWorld(int32_t entered);
 // Once per frame while the world is rendered
 void ModsFrameTick(float elapsed);
+// Each liquid surface draw, before (begin 1) and after (begin 0)
+void ModsLiquidDraw(const void* settings, int32_t begin);
 void ModsShutdown();
 #define WRATHMODERN_MOD_HOOK(hook) ModsRunHook(hook)
 #define WRATHMODERN_MOD_SCRIPT_FUNCTIONS(context) ModsRegisterScriptFunctions(context)
@@ -31,6 +33,7 @@ void ModsShutdown();
 #define WRATHMODERN_MOD_CAMERA_CREATED(fov) ModsCameraCreated(fov)
 #define WRATHMODERN_MOD_WORLD(entered) ModsWorld(entered)
 #define WRATHMODERN_MOD_FRAME(elapsed) ModsFrameTick(elapsed)
+#define WRATHMODERN_MOD_LIQUID_DRAW(settings, begin) ModsLiquidDraw(settings, begin)
 #else
 #define WRATHMODERN_MOD_HOOK(hook) ((void)0)
 #define WRATHMODERN_MOD_SCRIPT_FUNCTIONS(context) ((void)0)
@@ -40,6 +43,7 @@ void ModsShutdown();
 #define WRATHMODERN_MOD_CAMERA_CREATED(fov) ((void)0)
 #define WRATHMODERN_MOD_WORLD(entered) ((void)0)
 #define WRATHMODERN_MOD_FRAME(elapsed) ((void)0)
+#define WRATHMODERN_MOD_LIQUID_DRAW(settings, begin) ((void)0)
 #endif
 
 #endif

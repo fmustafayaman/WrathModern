@@ -426,8 +426,15 @@ taşınabilir C++ olarak aynen alınır. Ayar dosyası `Mods/CoAVolFog.ini` (ayn
   hayalet efektinde değil (`CGWorldFrame::ffxEffectDeath`), sıvıda değil. Goldshire 14:00: 0,5 güçle çiziliyor,
   doğrulama 0 hata (`build/autotest/cg-off` ↔ `cg-on`). `ForeverGlow` (glow baytını değiştirme) henüz yok —
   kullanıcı ayarında 0.
-- **Sıradaki — dilim 7:** Forever suyu (`water_renderer.cpp` 1517 + `water_fft.cpp` 759 + spektrum/dalga/temas,
-  `vw_*.hlsl` ~800 satır): sıvı geçişinde sınıf etiketleme (stencil), GPU FFT, gölgelendirme, köpük, SSR.
+- **Dilim 7.1 — TAMAM (2026-10-21):** cihazda pencere derinliği `Depth32Float_Stencil8` + `GxMetalSetStencilTag`
+  (3143627, regresyon: giriş+dünya doğrulama 0 hata); Mod API `WM_HOOK_LIQUIDS_BEGIN/END` (`RenderLiquidPass`'ta
+  Flush çevresi) ve `WMModInfo::OnLiquidDraw` (`Liquid::CRenderer::Flush` döngüsünde her `m_material->Render`
+  çevresi); mod `water_classify.h` aynen + `ClassifyWaterSettings` (`CSettingsBank::s_settings` sırası →
+  `g_liquidTypeDB` → `m_materialID`/`m_soundBank` + `m_textureNames[0]`), `water_metal.mm` etiketleme +
+  `WaterDebugView=5`. Kanıt: Lakeshire gölü "lake" (mavi), iskele önünde doğru kesiliyor (`build/autotest/w-class`).
+- **Sıradaki — 7.2:** su öncesi sahne + doğrusal derinlik kopyası, `water_fft`/`water_spectrum` (GPU FFT, Forever
+  karoları), `vw_*.hlsl` → MSL, sınıf başına stencil testli `vw_water` geçişi; `LiquidDepth` (sıvı geçişinde derinlik
+  yazımı zorlama).
 
 **Dilim 7 (su) tasarımı (2026-10-21):**
 - Orijinal: sıvı geçişini sarar (`0x790AA2` → `Liquid::CRenderer::Flush(camera, 1)`), her su çizimini

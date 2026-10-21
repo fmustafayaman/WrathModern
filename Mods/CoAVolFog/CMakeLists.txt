@@ -30,6 +30,7 @@ wrathmodern_add_mod(CoAVolFog
     Source/local_light_stabiliser.cpp
     Source/engine_mac.mm
     Source/renderer_metal.mm
+    Source/water_metal.mm
 )
 target_include_directories(CoAVolFog PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 target_link_libraries(CoAVolFog PRIVATE "-framework Metal" "-framework Foundation")

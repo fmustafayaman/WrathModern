@@ -328,6 +328,7 @@ void LoadMod(const std::string& path, const std::string& name) {
         mod->info.OnScriptContext = nullptr;
         mod->info.OnCameraTarget = nullptr;
         mod->info.OnCameraCreated = nullptr;
+        mod->info.OnLiquidDraw = nullptr;
         mod->info.OnWorld = nullptr;
     }
 
@@ -451,6 +452,14 @@ void ModsScriptsLoaded(uint32_t context) {
     for (LoadedMod* mod : s_mods) {
         if (mod->info.OnScriptContext) {
             mod->info.OnScriptContext(context, 1, mod->info.user);
+        }
+    }
+}
+
+void ModsLiquidDraw(const void* settings, int32_t begin) {
+    for (LoadedMod* mod : s_mods) {
+        if (mod->info.OnLiquidDraw) {
+            mod->info.OnLiquidDraw(settings, begin, mod->info.user);
         }
     }
 }

@@ -13,6 +13,7 @@
 #include "fog_data.h"
 #include "log.h"
 #include "renderer_metal.h"
+#include "water_metal.h"
 #include "water_data.h"
 #include "lua.h"
 #include "panel_source.h"
@@ -30,6 +31,7 @@ struct State
     FogData fog;
     WaterData water;
     FogRenderer renderer;
+    WaterRenderer waterRenderer;
     std::string iniPath;
     engine::StockFog savedStockFog = {};
     bool stockFogPushed = false;
@@ -89,6 +91,15 @@ void OnHook(WMHook hook, void* user)
     case WM_HOOK_WORLD_BEGIN:
         OnWorldBegin();
         break;
+    case WM_HOOK_LIQUIDS_BEGIN:
+        s.waterRenderer.LiquidsBegin(s.config);
+        break;
+    case WM_HOOK_LIQUIDS_END:
+        @autoreleasepool
+        {
+            s.waterRenderer.LiquidsEnd(s.host, s.config);
+        }
+        break;
     case WM_HOOK_BEFORE_SCREEN_EFFECTS:
         @autoreleasepool
         {
@@ -102,6 +113,11 @@ void OnHook(WMHook hook, void* user)
     default:
         break;
     }
+}
+
+void OnLiquidDraw(const void* settings, int32_t begin, void* user)
+{
+    s.waterRenderer.LiquidDraw(settings, begin != 0);
 }
 
 // The settings panel's functions (panel.lua)
@@ -161,6 +177,7 @@ void Shutdown(void* user)
     if (s.stockFogPushed)
         engine::WriteStockFog(s.savedStockFog);
     s.renderer.Release();
+    s.waterRenderer.Release();
 }
 
 }
@@ -190,6 +207,7 @@ extern "C" __attribute__((visibility("default"))) int32_t WMModLoad(const WMModH
     info->OnHook = OnHook;
     info->Shutdown = Shutdown;
     info->OnScriptContext = OnScriptContext;
+    info->OnLiquidDraw = OnLiquidDraw;
 
     host->RegisterLuaFunction("CoAVolFog_Get", LuaGet, WM_SCRIPT_GAME);
     host->RegisterLuaFunction("CoAVolFog_Set", LuaSet, WM_SCRIPT_GAME);
