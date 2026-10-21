@@ -383,6 +383,17 @@ taşınabilir C++ olarak aynen alınır. Ayar dosyası `Mods/CoAVolFog.ini` (ayn
   haritası: c0–c8 ortak, c9 ışık, c11 march, c12–c35 katmanlar (4×6), c36–c47 authored noise (3×4), c78 yoğunluk
   varyasyonu; yerel ışıklar aradaki aralıkta (`vf_local_lights.hlsli`). Örnekleyiciler: s0 derinlik, s9 yoğunluk
   3B gürültüsü, s10 authored 3B gürültü.
+- **Dilim 2 — YARIDA (2026-10-21 gece, kullanım sınırı):** hazır olanlar: `Shaders/vf_fog.metal` (common, density
+  variation, authored noise, local lights, integrate, march, composite — HLSL'den birebir; `struct Fog` üye
+  fonksiyonları; 3 varyant `xcrun metal` ile uyarısız derleniyor), `engine.h`/`engine_mac.mm` (`FrameInputs`
+  motordan: DNInfo grup 1 sis, `m_bands.m_glow`, iç mekân testi `s_viewerMapObjDef/Groups`, GL projeksiyon
+  D3D'den), `fog_model.*` aynen, `noise_volume.*` (D3D'siz, bayt dizisi), Mod API'ye `WM_HOOK_WORLD_BEGIN/END`
+  (`CGWorldFrame::RenderWorld`'de `OnWorldRender` çevresi). **Kalan:** `renderer_metal.mm` (yalnız başlığı var):
+  RenderPasses'ın march+kompozit kısmı (sabitler c0–c98 aynen; jitter 4. dilime kadar kapalı; blend
+  ONE/INV_SRC_ALPHA, RGB yazma; MSAA'da `DEPTH_MS` varyantı), shader kaynağını CMake ile başlığa gömme,
+  `CoAVolFog.mm`'de WORLD_BEGIN'de stok sisi 50000'e itme (yalnız önceki karede sis çizildiyse ve
+  `s_liquidTypeId==0`), WORLD_END'de geri yükleme, `FrameInputs.fogStart/End` = kaydedilen değer; CMake'e
+  `noise_volume.cpp`, `renderer_metal.mm`. Sonra test: `DebugView=1/2`, ardından normal görünüm.
 - **Sıradaki — dilim 2 (sis çekirdeği):** `shaders/vf_march.hlsl` + `vf_integrate/vf_common/vf_composite*` →
   MSL; `renderer.cpp`'nin march/composite kurulumu; `fog_model.cpp` (3.3.5 gün/gece'den katmanlar). MSAA renk
   hedefi ShaderRead değil — kompozit karıştırma ile çizer, sahne kopyası gereken geçişler için çözümlenmiş

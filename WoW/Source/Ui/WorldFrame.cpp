@@ -2111,7 +2111,9 @@ void CGWorldFrame::RenderWorld(void* param) {
 
     worldFrame->OnWorldUpdate();
     PlayerNameUpdateWorldText();
+    WRATHMODERN_MOD_HOOK(WM_HOOK_WORLD_BEGIN);
     worldFrame->OnWorldRender();
+    WRATHMODERN_MOD_HOOK(WM_HOOK_WORLD_END);
     WorldTextRenderBatch();
 
     g_theGxDevicePtr->XformSetProjection(projection);

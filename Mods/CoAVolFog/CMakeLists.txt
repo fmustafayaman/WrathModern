@@ -9,6 +9,8 @@ wrathmodern_add_mod(CoAVolFog
     Source/log.cpp
     Source/fog_data.cpp
     Source/water_data.cpp
+    Source/fog_model.cpp
+    Source/engine_mac.mm
 )
 target_link_libraries(CoAVolFog PRIVATE "-framework Metal" "-framework Foundation")
 target_compile_options(CoAVolFog PRIVATE $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>)

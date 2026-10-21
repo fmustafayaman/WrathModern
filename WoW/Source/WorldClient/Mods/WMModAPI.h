@@ -44,6 +44,13 @@ typedef enum WMHook {
     WM_HOOK_BEFORE_GLARES = 2,
     /* The world is complete; the client's screen effects (glow) follow, then the interface */
     WM_HOOK_BEFORE_SCREEN_EFFECTS = 3,
+    /*
+     * Around the whole world render (CGWorldFrame::OnWorldRender), after the day/night state of the frame is
+     * set: a mod may change it for the render (the stock fog range) and put it back at the end. No frame
+     * targets are acquired at these two; GetWorldState is not captured yet at the first.
+     */
+    WM_HOOK_WORLD_BEGIN = 4,
+    WM_HOOK_WORLD_END = 5,
     WM_HOOK_COUNT
 } WMHook;
 
