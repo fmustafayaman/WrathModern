@@ -38,6 +38,8 @@ class Context {
     bool Init(id<MTLDevice> device);
     // The layer the frames are presented to; null presents nothing
     void SetLayer(CAMetalLayer* layer);
+    // Presents on the display refresh (gxVSync) or as soon as a frame is ready
+    void SetVSync(bool vsync);
 
     // Serials and command submission
     uint64_t CurrentSerial() const { return this->m_serial; }
@@ -112,6 +114,7 @@ class Context {
     uint64_t m_passId = 0;
 
     CAMetalLayer* m_layer = nil;
+    bool m_vsync = true;
     UploadHeap m_uploads;
     dispatch_semaphore_t m_inFlight = nullptr;
     FrameStats* m_stats = nullptr;

@@ -194,6 +194,15 @@ void Context::SetLayer(CAMetalLayer* layer) {
         layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
         layer.framebufferOnly = NO;
         layer.maximumDrawableCount = 3;
+        layer.displaySyncEnabled = this->m_vsync;
+    }
+}
+
+void Context::SetVSync(bool vsync) {
+    this->m_vsync = vsync;
+
+    if (this->m_layer) {
+        this->m_layer.displaySyncEnabled = vsync;
     }
 }
 

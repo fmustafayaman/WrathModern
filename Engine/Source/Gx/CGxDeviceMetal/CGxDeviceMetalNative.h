@@ -1,14 +1,6 @@
 // The native Metal graphics device (Objective-C++ only): CGxDevice's states go straight to Metal,
-// with no Direct3D 9 layer in between.
-//
-// The device is written in slices so each one can be compared with the shim device:
-//   1. life, window, targets, clear and present            (this file today)
-//   2. textures
-//   3. buffers and pools
-//   4. state mapping (IRsSendToHw, IStateSync*)
-//   5. shaders and draws
-// The method checklist is in WOWRE.md. CreateCGxDeviceMetal returns this device when the environment
-// variable WRATHMODERN_GX is "native"; the shim device stays the default until it draws the same.
+// with no Direct3D 9 layer in between. CreateCGxDeviceMetal returns it; GxMetal::Context holds the
+// MTLDevice, queue and window targets, and the SM1-3 shaders of the .bls files are translated to MSL.
 
 #ifndef ENGINE_SOURCE_GX_CGXDEVICEMETAL_CGXDEVICEMETALNATIVE_H
 #define ENGINE_SOURCE_GX_CGXDEVICEMETAL_CGXDEVICEMETALNATIVE_H
@@ -200,6 +192,11 @@ class CGxDeviceMetalNative : public CGxDevice {
     virtual void DeviceDestroy();
     virtual void DeviceEvictResources();
     virtual int32_t DeviceSetFormat(const CGxFormat& format);
+    virtual void ICursorCreate(const CGxFormat& format);
+    virtual void ICursorDestroy();
+    virtual void ICursorDraw();
+    virtual void CursorSetVisible(int32_t visible);
+    virtual void CursorUnlock(uint32_t x, uint32_t y);
     virtual void* DeviceWindow();
     virtual void DeviceReadPixels(CiRect& rect, TSGrowableArray<CImVector>& pixels);
     virtual void DeviceReadDepths(CiRect& rect, TSGrowableArray<float>& depths);
@@ -228,6 +225,7 @@ class CGxDeviceMetalNative : public CGxDevice {
     virtual void DeviceSetBaseMipLevel(uint32_t level);
     virtual int32_t TexCopy(CGxTex* dest, const C2iVector& destPos, const C2iVector& sourcePos, const C2iVector& size, uint32_t level, uint32_t plane);
     virtual int32_t TexStretch(CGxTex* dest, const CiRect* destRect, const CiRect* sourceRect, uint32_t level, uint32_t face);
+    virtual void QueryDestroy(CGxQuery*& query);
     virtual bool QueryBegin(CGxQuery* query);
     virtual bool QueryEnd(CGxQuery* query);
     virtual bool QueryGetParam(CGxQuery* query, EGxQueryParam param, uint32_t& data);
@@ -272,6 +270,8 @@ class CGxDeviceMetalNative : public CGxDevice {
     void ISetVertexBuffer(uint32_t stream, GxMetal::Buffer* buffer, uint32_t offset, uint32_t stride);
     // Textures (slice 2)
     static GxMetal::Texture*& ITexData(CGxTex* texId);
+    GxMetal::Query* IQueryData(CGxQuery* query);
+    void IReleaseQueries();
     GxMetal::Texture* IDefaultTexture();
     void ITexCreate(CGxTex* texId);
     void ITexUpload(CGxTex* texId);
@@ -310,6 +310,7 @@ class CGxDeviceMetalNative : public CGxDevice {
     void IDraw(const CGxBatch* batch, bool indexed, uint32_t baseVertexIndex, uint32_t primitiveCount);
     void IXformSetViewport();
     void IPollWindow();
+    void IUpdateCursor();
     // The window's client size in pixels
     void IClientSize(int32_t* width, int32_t* height);
 };

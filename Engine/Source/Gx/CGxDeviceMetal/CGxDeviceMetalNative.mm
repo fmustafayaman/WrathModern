@@ -7,8 +7,10 @@
 // The window is the platform's (OsMacCreateGameWindow), as for the shim: its content view is
 // layer-backed by a CAMetalLayer and the device presents into that layer through GxMetal::Context.
 
+#import <AppKit/AppKit.h>
 #import <QuartzCore/CAMetalLayer.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -22,6 +24,7 @@
 #include "Engine/Source/Gx/CGxDeviceMetal/MetalFormats.h"
 #include "Engine/Source/Os/Mac/MacOs.h"
 #include "Engine/Source/Os/Error.h"
+#include "Engine/Source/Os/Gui.h"
 
 namespace {
 
@@ -44,6 +47,8 @@ CGxDeviceMetalNative::CGxDeviceMetalNative() {
     this->m_depthBuffer = nullptr;
     this->m_samples = 1;
     this->m_savedDepthTarget = GxMetal::Target();
+    this->m_hwCursorDirty = 0;
+    this->m_hwCursorImage = nullptr;
 
     for (uint32_t i = 0; i < 16; i++) {
         this->m_streamBufs[i] = nullptr;
@@ -96,6 +101,8 @@ int32_t CGxDeviceMetalNative::ICreateMetal() {
 }
 
 void CGxDeviceMetalNative::IDestroyMetal() {
+    this->IReleaseQueries();
+
     if (this->m_metal) {
         this->m_metal->EndEncoders();
         this->m_metal->Flush(true);
@@ -196,7 +203,9 @@ void CGxDeviceMetalNative::ISetCaps(const CGxFormat& format) {
     this->m_caps.m_depthBias = 1;
     this->m_caps.m_colorWrite = 1;
     this->m_caps.m_maxClipPlanes = 6;
-    this->m_caps.m_hwCursor = 0;
+    // The client's cursor becomes the system pointer over the game view (an NSCursor), as the
+    // Direct3D device's hardware cursor
+    this->m_caps.m_hwCursor = 1;
     this->m_caps.m_occlusionQuery = 1;
     this->m_caps.m_pointParameters = 1;
     this->m_caps.m_pointScaleMax = 64.0f;
@@ -317,11 +326,15 @@ int32_t CGxDeviceMetalNative::DeviceCreate(void* window, const CGxFormat& format
     this->IResetDevice();
     this->IStateSetDefaults();
     this->DeviceSetGamma(this->m_gammaRamp);
+    this->m_metal->SetVSync(format.m_vsync != 0);
+    this->ICursorCreate(format);
     GxMetal::Log("metal: window %dx%d, %u samples", format.m_size.x, format.m_size.y, this->m_samples);
     return 1;
 }
 
 void CGxDeviceMetalNative::DeviceDestroy() {
+    this->ICursorDestroy();
+
     if (this->m_metal) {
         this->m_metal->EndEncoders();
         this->m_metal->Flush(true);
@@ -351,6 +364,8 @@ void CGxDeviceMetalNative::DeviceEvictResources() {
     // Nothing cached outside the context yet
 }
 
+// As the shim device: the game window is kept and reconfigured for the new format, the targets are
+// made again for its size and sample count, and the base device takes the format (window aspect)
 int32_t CGxDeviceMetalNative::DeviceSetFormat(const CGxFormat& format) {
     this->m_format = format;
 
@@ -358,7 +373,30 @@ int32_t CGxDeviceMetalNative::DeviceSetFormat(const CGxFormat& format) {
         return 0;
     }
 
-    return this->ICreateWindowTargets(format) ? 1 : 0;
+    // Commands in flight still use the old targets; the saved depth target and the texture targets'
+    // depth buffer belong to the old size and sample count
+    this->m_metal->EndEncoders();
+    this->m_metal->Flush(true);
+    this->m_savedDepthTarget = GxMetal::Target();
+    GxMetal::Clear(this->m_textureDepthBuffer);
+    this->m_inScene = 0;
+
+    CGxFormat createFormat = format;
+
+    if (!this->ICreateWindow(createFormat) || !this->ICreateWindowTargets(createFormat) || !CGxDevice::DeviceSetFormat(createFormat)) {
+        GxMetal::Log("metal: unable to set format %dx%d, %u samples", createFormat.m_size.x, createFormat.m_size.y, createFormat.m_multisampleCount);
+        return 0;
+    }
+
+    this->m_format = createFormat;
+    this->ISetCaps(createFormat);
+    this->m_metal->SetVSync(createFormat.m_vsync != 0);
+    this->ICursorCreate(createFormat);
+    OsGuiSetGxWindow(this->m_hwnd);
+    this->m_windowFocus = 1;
+    this->m_viewportDirty = 1;
+    GxMetal::Log("metal: window %dx%d, %u samples", createFormat.m_size.x, createFormat.m_size.y, this->m_samples);
+    return 1;
 }
 
 void* CGxDeviceMetalNative::DeviceWindow() {
@@ -373,8 +411,18 @@ void CGxDeviceMetalNative::CapsWindowSizeInScreenCoords(CRect& rect) {
     rect = this->DeviceCurWindow();
 }
 
+// As CGxDeviceD3d::DeviceSetRenderTarget, a target that was not made yet is made now; otherwise
+// the window's buffers would stand in for it (a shadow map's colour would become the back buffer)
 GxMetal::Target CGxDeviceMetalNative::ITexTarget(CGxTex* texId, uint32_t face, uint32_t level) {
-    if (!texId || !texId->m_apiSpecificData) {
+    if (!texId) {
+        return GxMetal::Target();
+    }
+
+    if (texId->m_needsCreation || (!texId->m_apiSpecificData && !texId->m_apiSpecificData2)) {
+        this->ITexCreate(texId);
+    }
+
+    if (texId->m_needsCreation || !texId->m_apiSpecificData) {
         return GxMetal::Target();
     }
 
@@ -493,7 +541,28 @@ int32_t CGxDeviceMetalNative::DeviceWM(EGxWM wm, uintptr_t param1, uintptr_t par
     return 0;
 }
 
+// The window procedure of Windows reports size changes; here they are polled once a frame
 void CGxDeviceMetalNative::IPollWindow() {
+    if (!this->m_hwnd || !this->m_ownhwnd) {
+        return;
+    }
+
+    int32_t width;
+    int32_t height;
+    OsMacGetClientSize(this->m_hwnd, &width, &height);
+
+    const CRect& window = this->DeviceDefWindow();
+
+    if (width > 0 && height > 0 && (static_cast<float>(width) != window.maxX || static_cast<float>(height) != window.maxY)) {
+        CRect rect;
+        rect.minX = 0.0f;
+        rect.minY = 0.0f;
+        rect.maxX = static_cast<float>(width);
+        rect.maxY = static_cast<float>(height);
+        this->DeviceWM(GxWM_Size, reinterpret_cast<uintptr_t>(&rect), 0);
+    }
+
+    this->IUpdateCursor();
 }
 
 void CGxDeviceMetalNative::SceneClear(uint32_t mask, CImVector color) {
@@ -535,13 +604,17 @@ void CGxDeviceMetalNative::ScenePresent() {
     int32_t screenShotClick = this->m_scrShotClick;
     CGxDevice::ScenePresent();
     this->ISceneEnd();
+    this->ICursorDraw();
 
     if (screenShotClick) {
         this->DeviceScreenShot();
     }
 
+    this->WaitForFPSCap();
     this->m_metal->MarkTargetsRendered();
     this->m_metal->Present(this->m_backBuffer);
+
+    this->IPollWindow();
 }
 
 void CGxDeviceMetalNative::DeviceSetGamma(float gamma) {
@@ -592,8 +665,13 @@ void CGxDeviceMetalNative::DeviceReadPixels(CiRect& rect, TSGrowableArray<CImVec
     }
 }
 
+// As the Direct3D device, which has no readable depth: the rectangle's depths read as 0
 void CGxDeviceMetalNative::DeviceReadDepths(CiRect& rect, TSGrowableArray<float>& depths) {
-    depths.SetCount(0);
+    this->ClampRectToWindow(rect);
+
+    uint32_t count = (rect.maxY - rect.minY) * (rect.maxX - rect.minX);
+    depths.SetCount(count);
+    memset(depths.Ptr(), 0, sizeof(float) * count);
 }
 
 // The client's texture formats, substituted before creation and retried with a tolerable one when the
@@ -2620,14 +2698,34 @@ bool CGxDeviceMetalNative::IDrawPrepare(const CGxBatch* batch) {
     viewport.zfar = this->m_hw.m_viewport[5];
     [encoder setViewport:viewport];
 
+    // The encoder keeps the last scissor rectangle (a partial clear sets one too), so a draw without
+    // the scissor test covers the whole target; Metal requires the rectangle inside the target, which
+    // can be smaller than the window the client computed it for
+    int32_t targetWidth = static_cast<int32_t>(this->m_metal->ColorTarget().Width());
+    int32_t targetHeight = static_cast<int32_t>(this->m_metal->ColorTarget().Height());
+    int32_t scissorLeft = 0;
+    int32_t scissorTop = 0;
+    int32_t scissorRight = targetWidth;
+    int32_t scissorBottom = targetHeight;
+
     if (this->m_hw.m_scissorTest) {
-        MTLScissorRect scissor;
-        scissor.x = static_cast<NSUInteger>(this->m_hw.m_scissor.left < 0 ? 0 : this->m_hw.m_scissor.left);
-        scissor.y = static_cast<NSUInteger>(this->m_hw.m_scissor.top < 0 ? 0 : this->m_hw.m_scissor.top);
-        scissor.width = static_cast<NSUInteger>(this->m_hw.m_scissor.right > this->m_hw.m_scissor.left ? this->m_hw.m_scissor.right - this->m_hw.m_scissor.left : 1);
-        scissor.height = static_cast<NSUInteger>(this->m_hw.m_scissor.bottom > this->m_hw.m_scissor.top ? this->m_hw.m_scissor.bottom - this->m_hw.m_scissor.top : 1);
-        [encoder setScissorRect:scissor];
+        scissorLeft = std::clamp(this->m_hw.m_scissor.left, 0, targetWidth);
+        scissorTop = std::clamp(this->m_hw.m_scissor.top, 0, targetHeight);
+        scissorRight = std::clamp(this->m_hw.m_scissor.right, scissorLeft, targetWidth);
+        scissorBottom = std::clamp(this->m_hw.m_scissor.bottom, scissorTop, targetHeight);
     }
+
+    // An empty rectangle draws nothing, as Direct3D's
+    if (scissorRight <= scissorLeft || scissorBottom <= scissorTop) {
+        return false;
+    }
+
+    MTLScissorRect scissor;
+    scissor.x = static_cast<NSUInteger>(scissorLeft);
+    scissor.y = static_cast<NSUInteger>(scissorTop);
+    scissor.width = static_cast<NSUInteger>(scissorRight - scissorLeft);
+    scissor.height = static_cast<NSUInteger>(scissorBottom - scissorTop);
+    [encoder setScissorRect:scissor];
 
     for (uint32_t stream = 0; stream < 16; stream++) {
         if (!(layout->m_streamMask & (1u << stream))) {
@@ -2721,9 +2819,6 @@ void CGxDeviceMetalNative::IDrawBindTextures(const GxMetal::ShaderInfo* pixelInf
         GxMetal::Texture* texture = this->m_hw.m_textures[i];
         GxMetal::SamplerKind textureKind = texture ? texture->Kind() : GxMetal::SAMPLERKIND_2D;
         GxMetal::SamplerKind expected = textureKind;
-        static int kindLogs = 0;
-        bool logKind = kindLogs < 8;
-        if (logKind) { kindLogs++; }
 
         if (pixelInfo && pixelInfo->m_major >= 2) {
             expected = static_cast<GxMetal::SamplerKind>((pixelInfo->m_declaredKinds >> (i * 2)) & 3);
@@ -2731,10 +2826,6 @@ void CGxDeviceMetalNative::IDrawBindTextures(const GxMetal::ShaderInfo* pixelInf
             if (expected == GxMetal::SAMPLERKIND_2D && texture && texture->Kind() == GxMetal::SAMPLERKIND_DEPTH) {
                 expected = GxMetal::SAMPLERKIND_DEPTH;
             }
-        }
-
-        if (logKind) {
-            GxMetal::Log("stage %u texture kind %d expected %d size %ux%u", i, static_cast<int>(textureKind), static_cast<int>(expected), texture ? texture->m_width : 0, texture ? texture->m_height : 0);
         }
 
         id<MTLTexture> bound = (texture && texture->Kind() == expected) ? texture->SampleTexture() : this->m_metal->DummyTexture(expected);
@@ -2922,21 +3013,98 @@ void CGxDeviceMetalNative::IDraw(const CGxBatch* batch, bool indexed, uint32_t b
     [encoder drawPrimitives:primitive vertexStart:first vertexCount:count];
 }
 
+// The Metal query is made on first use: the client creates its queries before the device has a context
+GxMetal::Query* CGxDeviceMetalNative::IQueryData(CGxQuery* query) {
+    if (!query || !this->m_metal) {
+        return nullptr;
+    }
+
+    if (!query->m_apiSpecific) {
+        query->m_apiSpecific = new GxMetal::Query(this->m_metal, GxMetal::Query::Type_Occlusion);
+    }
+
+    return static_cast<GxMetal::Query*>(query->m_apiSpecific);
+}
+
+void CGxDeviceMetalNative::IReleaseQueries() {
+    for (CGxQuery* query = this->m_queryList.Head(); query; query = this->m_queryList.Next(query)) {
+        if (query->m_apiSpecific) {
+            static_cast<GxMetal::Query*>(query->m_apiSpecific)->Release();
+            query->m_apiSpecific = nullptr;
+        }
+    }
+}
+
+void CGxDeviceMetalNative::QueryDestroy(CGxQuery*& query) {
+    if (query && query->m_apiSpecific) {
+        static_cast<GxMetal::Query*>(query->m_apiSpecific)->Release();
+        query->m_apiSpecific = nullptr;
+    }
+
+    CGxDevice::QueryDestroy(query);
+}
+
 bool CGxDeviceMetalNative::QueryBegin(CGxQuery* query) {
-    return false;
-}
+    GxMetal::Query* native = this->IQueryData(query);
 
-bool CGxDeviceMetalNative::QueryEnd(CGxQuery* query) {
-    return false;
-}
+    if (!native) {
+        return false;
+    }
 
-bool CGxDeviceMetalNative::QueryGetParam(CGxQuery* query, EGxQueryParam param, uint32_t& data) {
-    data = 0;
+    native->Begin();
     return true;
 }
 
+bool CGxDeviceMetalNative::QueryEnd(CGxQuery* query) {
+    GxMetal::Query* native = this->IQueryData(query);
+
+    if (!native) {
+        return false;
+    }
+
+    native->End();
+    return true;
+}
+
+// As the Direct3D device: Unk0 is the size of the result, Unk1 whether it is available (without
+// flushing); the call itself reports false for Unk1, which the client ignores
+bool CGxDeviceMetalNative::QueryGetParam(CGxQuery* query, EGxQueryParam param, uint32_t& data) {
+    GxMetal::Query* native = this->IQueryData(query);
+
+    if (!native) {
+        return false;
+    }
+
+    switch (param) {
+        case GxQueryParam_Unk0:
+            data = sizeof(uint32_t);
+            return true;
+
+        case GxQueryParam_Unk1:
+            data = native->Result(nullptr, false);
+            return false;
+
+        default:
+            return false;
+    }
+}
+
+// Waits for the result, as the Direct3D device's D3DGETDATA_FLUSH loop does
 bool CGxDeviceMetalNative::QueryGetData(CGxQuery* query, uint32_t& data) {
-    data = 0;
+    GxMetal::Query* native = this->IQueryData(query);
+
+    if (!native) {
+        return false;
+    }
+
+    while (!native->Result(&data, true)) {
+        if (native->m_state == GxMetal::Query::State_Building) {
+            return false;
+        }
+
+        this->m_metal->WaitForSerial(native->m_serial);
+    }
+
     return true;
 }
 
@@ -2993,8 +3161,119 @@ int32_t GxMetalAcquireTargets(GxMetalTargets& targets) {
     return device->m_metal->AcquireExternalTargets(&targets.commandBuffer, &targets.color, &targets.depth, &targets.width, &targets.height, &targets.sampleCount) ? 1 : 0;
 }
 
-// macOS draws the system cursor; there is no software cursor to scale
+// Cursor
+
+static float s_cursorScale = 1.0f;
+
+// The client's 32x32 cursor (A8R8G8B8, stored B, G, R, A) as an NSCursor of scale points per pixel;
+// the image carries a bitmap at twice that so Retina displays show it at full resolution
+static NSCursor* MakeCursor(const uint32_t* cursor, uint32_t hotspotX, uint32_t hotspotY, float scale) {
+    const uint32_t width = 32;
+    const uint32_t height = 32;
+
+    NSBitmapImageRep* source = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:nullptr pixelsWide:width pixelsHigh:height bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bitmapFormat:NSBitmapFormatAlphaNonpremultiplied bytesPerRow:width * 4 bitsPerPixel:32];
+    const uint8_t* in = reinterpret_cast<const uint8_t*>(cursor);
+    uint8_t* out = source.bitmapData;
+
+    for (uint32_t i = 0; i < width * height; i++) {
+        out[i * 4 + 0] = in[i * 4 + 2];
+        out[i * 4 + 1] = in[i * 4 + 1];
+        out[i * 4 + 2] = in[i * 4 + 0];
+        out[i * 4 + 3] = in[i * 4 + 3];
+    }
+
+    NSSize size = NSMakeSize(width * scale, height * scale);
+    NSBitmapImageRep* scaled = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:nullptr pixelsWide:static_cast<NSInteger>(ceil(size.width * 2.0)) pixelsHigh:static_cast<NSInteger>(ceil(size.height * 2.0)) bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bitmapFormat:0 bytesPerRow:0 bitsPerPixel:32];
+    scaled.size = size;
+
+    [NSGraphicsContext saveGraphicsState];
+    NSGraphicsContext* context = [NSGraphicsContext graphicsContextWithBitmapImageRep:scaled];
+    NSGraphicsContext.currentContext = context;
+    context.imageInterpolation = NSImageInterpolationHigh;
+    [[NSColor clearColor] set];
+    NSRectFillUsingOperation(NSMakeRect(0, 0, size.width, size.height), NSCompositingOperationCopy);
+    [source drawInRect:NSMakeRect(0, 0, size.width, size.height) fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1.0 respectFlipped:YES hints:nil];
+    [NSGraphicsContext restoreGraphicsState];
+
+    NSImage* image = [[NSImage alloc] initWithSize:size];
+    [image addRepresentation:scaled];
+
+    return [[NSCursor alloc] initWithImage:image hotSpot:NSMakePoint(hotspotX * scale, hotspotY * scale)];
+}
+
+void CGxDeviceMetalNative::ICursorCreate(const CGxFormat& format) {
+    CGxDevice::ICursorCreate(format);
+
+    // The device starts out with no cursor image; the client unlocks one shortly after
+    this->m_hwCursorDirty = 1;
+    this->IUpdateCursor();
+}
+
+void CGxDeviceMetalNative::ICursorDestroy() {
+    CGxDevice::ICursorDestroy();
+
+    OsMacSetGameCursor(nullptr, true);
+
+    if (this->m_hwCursorImage) {
+        CFBridgingRelease(this->m_hwCursorImage);
+        this->m_hwCursorImage = nullptr;
+    }
+}
+
+void CGxDeviceMetalNative::ICursorDraw() {
+    if (!this->m_hwCursor) {
+        // The software cursor is a draw of its own after the frame's scene
+        this->ISceneBegin();
+        CGxDevice::ICursorDraw();
+        this->ISceneEnd();
+        return;
+    }
+
+    if (!this->m_hwCursorDirty) {
+        return;
+    }
+
+    if (this->m_hwCursorImage) {
+        CFBridgingRelease(this->m_hwCursorImage);
+    }
+
+    this->m_hwCursorImage = (void*)CFBridgingRetain(MakeCursor(this->m_cursor, this->m_cursorHotspotX, this->m_cursorHotspotY, s_cursorScale));
+    this->m_hwCursorDirty = 0;
+    this->IUpdateCursor();
+}
+
+void CGxDeviceMetalNative::CursorSetVisible(int32_t visible) {
+    CGxDevice::CursorSetVisible(visible);
+    this->IUpdateCursor();
+}
+
+void CGxDeviceMetalNative::CursorUnlock(uint32_t x, uint32_t y) {
+    CGxDevice::CursorUnlock(x, y);
+    this->m_hwCursorDirty = 1;
+}
+
+// Over the game view the pointer shows the client's cursor, or nothing when the client hides it or
+// draws a software cursor, as WM_SETCURSOR does on Windows
+void CGxDeviceMetalNative::IUpdateCursor() {
+    bool visible = this->m_hwCursor && this->m_cursorVisible && this->m_hwCursorImage;
+    OsMacSetGameCursor(this->m_hwCursorImage, visible);
+}
+
 void GxCursorSetScale(float scale) {
+    scale = std::clamp(scale, 0.5f, 4.0f);
+
+    if (scale == s_cursorScale) {
+        return;
+    }
+
+    s_cursorScale = scale;
+
+    CGxDeviceMetalNative* device = dynamic_cast<CGxDeviceMetalNative*>(g_theGxDevicePtr);
+
+    if (device && device->m_hwCursor) {
+        device->m_hwCursorDirty = 1;
+        device->ICursorDraw();
+    }
 }
 
 void* GxMetalNativeDevice() {

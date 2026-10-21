@@ -277,30 +277,23 @@ commit'lendi, devam edecek) → spesifikasyon ajanı yalnızca gerekirse. Küç�
   penceresinde görünür. Doğrulama: karakterin hançeri için
   `2092|Weapon|Daggers|INVTYPE_WEAPON|INVTYPE_Weapon_ShortBlade_05de|2|15`.
 
-### Kalan iş (öncelik sırası)
-
-1. Faz 1 (native Metal) — **park edildi** (WIP `WowRe-metal` @ `81ed11e`); ayrı ve büyük bir iş.
-2. AwesomeWotlk B: `C_NamePlate` + `NAME_PLATE_*` olayları + `nameplateN` token'ları, nameplate yerleşim
-   yöneticisi (stacking/clamp/occlusion/alpha, `nameplateDistance`), `cameraFov`, `showPlayer`,
-   `GetItemInfoInstant`, `/interact`, `[@cursor]`, sohbet log adları, portre çözünürlüğü, UI piksel düzeltmeleri.
-3. CoAVolFog (Faz 5) — spesifikasyonu henüz yazılmadı (ajan duraklatıldı); Faz 1'in okunabilir derinliğine bağlı.
-4. Lexara + AwesomeWotlk MSDF fontları (ortak), çerçeve yakalama, TTS (AVSpeechSynthesizer).
-
 ## Sıradaki adımlar (yarıda kalırsa buradan devam)
 
-1. [x] Faz 1 tasarımı (yukarıda "Faz 1 tasarımı").
-2. [x] 2a görsel taban (referans görüntüler `build/autotest/ref-shim/`).
-3. [~] Faz 1 (native Metal) — **park edildi**, WIP `WowRe-metal` @ `81ed11e`. Devam edilecekse:
-   `CGxDeviceMetal.mm` içindeki eski shim gövdesi (176 `m_d3dDevice` çağrısı) yeni `HwState`'e
-   çevrilecek; başlık ve yardımcı sınıflar hazır. Dosya artık `.mm` (başlık Metal/ObjC tipleri
-   taşıyor).
-4. [ ] AwesomeWotlk B (aşağıdaki liste).
-5. [ ] CoAVolFog (Faz 5) — **kapsam ölçüldü**: 1,7 MB DLL, `fogdata.bin` (756 KB) + `waterdata.bin`
-   (8,4 MB), kendi hacimsel sis/su shader'ları ve oyun içi ayar penceresi. Sıfırdan tersine
-   mühendislik gerektirir; Faz 1'in okunabilir derinliğine bağlı.
-6. [ ] Lexara + MSDF fontları (ortak), çerçeve yakalama, TTS.
+1. [x] Faz 1 — native Metal cihazı (aşağıda "Faz 1 — native Metal cihazı", gözden geçirme dahil).
+2. [x] Faz 2 çekirdeği (Mod API v2), Faz 3 (St0ny yamaları), Lux (Faz 4), AwesomeWotlk A.
+3. [ ] AwesomeWotlk B (aşağıdaki liste).
+4. [ ] CoAVolFog (Faz 5) — 1,7 MB DLL, `fogdata.bin` (756 KB) + `waterdata.bin` (8,4 MB), kendi hacimsel
+   sis/su shader'ları ve ayar penceresi; sıfırdan tersine mühendislik. Okunabilir derinlik artık hazır
+   (`Context::ReadableDepth`, MSAA'da örnek 0 çözümlemesi).
+5. [ ] Lexara + AwesomeWotlk MSDF fontları (ortak), çerçeve yakalama, TTS (AVSpeechSynthesizer).
 
-### AwesomeWotlk B — kalan iş (keşif yapıldı, kod yazılmadı)
+### AwesomeWotlk B — kalan iş
+
+Yapıldı (commit'lerde): `cameraFov`, `showPlayer` (3ea5ed5), `nameplateDistance`/`nameplatePlacement`,
+`GetItemInfoInstant` (e78c505), kare tick'i + etkileşim/`/interact`/vurgu (f9fad71), sohbet log dosya adları
+(b2191f7). **Kalan:** nameplate olayları/`C_NamePlate`/`nameplateN` token'ları, `objectHighlightMode`,
+`cameraIndirectVisibility`, shader gerektiren UI CVar'ları ve MSDF. Aşağıdaki keşif notları bunlar için.
+
 
 - **Interaction** (`Misc.cpp` ~200 satır): istemcide gerekli her şey var —
   `ClntObjMgrEnumVisibleObjects(func, param)` (ObjectMgrClient.h:65), `CGGameUI::OnSpriteRightClick(guid)`
@@ -327,53 +320,49 @@ commit'lendi, devam edecek) → spesifikasyon ajanı yalnızca gerekirse. Küç�
   hepsi `CGxShaderExt` benzeri bir shader değiştirme katmanı istiyor; D3D9 shim varken HLSL derlemek
   ayrı bir iş.
 
-### Faz 1 kapanışı — D3D9 katmanı silindi (2026-10-21)
-
-- `Engine/Source/Gx/CGxDeviceMetal/D3D9/` (Direct3D 9 taklidi: Device.mm, D3D9Types.h, FixedFunction,
-  Resources) ve shim cihazı `CGxDeviceMetal.{h,cpp}` silindi. `CREATE_CGxDeviceMetal` neyse o artık
-  native cihazı döndürüyor.
-- `CGxDevice/Mac/CGxDevice.mm` adaptör sorguları MTLDevice'a taşındı: biçim listesi
-  `supportsTextureSampleCount:` ile, adaptör kimliği `registryID` ile, donanım sınıfı Windows
-  istemcisinin en üst kademesi (hwTnL + 8 doku birimi + SM3) olarak.
-- `GxMetalDevice`/`GxMetalAcquireTargets` artık native cihazda; `GxCursorSetScale` macOS'ta no-op
-  (sistem imleci çiziliyor).
-- Doğrulama: shim olmadan derleme + `glue@12` ve `world@16` ekran görüntüleri; modlar yüklü.
-- `WRATHMODERN_METAL_SHADERS=0` hâlâ sabit fonksiyon yolunu zorluyor (shader karşılaştırması için).
-
 ## Faz 1 — native Metal cihazı: TAMAMLANDI (2026-10-21)
 
-**Durum: native cihaz artık varsayılan.** `CGxDeviceMetalNative` (MetalContext/Resources/Pipeline/
-FixedFunction/Formats + `Shader/` çevirici) istemcinin giriş ekranını, karakter seçimini ve dünyayı
-`.bls` shader'larıyla çiziyor; modlar (`Lux`, `AwesomeWotlk`) `GxMetalDevice`/`GxMetalAcquireTargets`
-üzerinden native cihazı görüyor ve çalışıyor. `WRATHMODERN_GX=shim` eski D3D9 shim cihazını
-karşılaştırma için açık tutuyor.
+`CGxDeviceMetalNative` (MetalContext/Resources/Pipeline/FixedFunction/Formats + `Shader/` çevirici) tek
+Metal cihazıdır; `CREATE_CGxDeviceMetal` onu döndürür. `Engine/Source/Gx/CGxDeviceMetal/D3D9/` ve shim
+cihazı `CGxDeviceMetal.{h,cpp}` silindi; `grep -r D3D9Metal` boş. `CGxDevice/Mac/CGxDevice.mm` adaptör
+sorguları MTLDevice'ta (biçimler `supportsTextureSampleCount:`, kimlik `registryID`, donanım sınıfı en üst
+kademe: hwTnL + 8 doku birimi + SM3). Modlar cihazı `GxMetalDevice`/`GxMetalAcquireTargets` ile görür.
+`WRATHMODERN_METAL_SHADERS=0` sabit fonksiyon yolunu zorlar (shader karşılaştırması için).
 
-**Doğrulama (autotest, kendi sunucu, karakter Rhon):**
-- `glue@12` → tam giriş ekranı (logo, panel, düğmeler, sürüm yazısı) — shader yolu.
-- `world@18` → dünya: karakter, NPC + görev işareti, ağaçlar, arayüz, minimap; modlar yüklü ve
-  omuz kamerası etkin.
-- `Logs/Mods.log` temiz; ekran görüntüleri `Screenshots/autotest-*.tga` üzerinden alınıyor.
+**Bitiren hatalar (gece, DeepSeek):**
+1. Vertex sabitleri: `ShaderInfo` boştu, GPU'ya yalnızca c0 gidiyordu → geometri çöküyordu.
+2. `ISetTexture` dokuyu `ITexMarkAsUpdated`'den önce önbelleğe alıyordu → siyah yer tutucu kalıcıydı.
+3. Pipeline örnek sayısı gerçek renk hedefinden; doku hedeflerine kendi 1× derinlik tamponu.
+4. İndeksli çizim, sabitlerin çizimden önce kopyalanması, `m_context`/`DeviceWM`/`ScenePresent`/`m_texTarget`.
+5. Mipmap üretimi, bağlı durum aynası.
 
-**Bu işi bitiren hatalar (hepsi commit'lerde):**
-1. Vertex sabitleri: `ShaderInfo` hiç doldurulmadığı için GPU'ya yalnızca 16 bayt gidiyordu (c0),
-   shader ise c2..c5 ve c31+ okuyordu → geometri çöküyordu. Artık bağlı shader'ın kendi sayısı.
-2. `ISetTexture`, dokuyu `ITexMarkAsUpdated`'den **önce** önbelleğe alıyordu → ilk bağlamada siyah
-   yer tutucu kalıcı oluyordu. Sıra düzeltildi, dokular retain ediliyor.
-3. Pipeline örnek sayısı pencere yerine gerçek renk hedefinden; doku hedeflerine kendi 1× derinlik
-   tamponu.
-4. İndeksli çizim eksikti (`drawIndexedPrimitives`), sabitler çizimden önce aynaya kopyalanmıyordu,
-   `m_context`/`DeviceWM`/`ScenePresent` eksikleri, `m_texTarget` boştu.
-5. Mipmap üretimi ve bağlı durum aynası (nil başlangıç) eklendi.
+**Gözden geçirme (2026-10-21 akşam, Claude) — "tamamlandı" denen halde bulunan ve düzeltilen hatalar:**
 
-**Kalan iş (Faz 1 dışı / sonraki fazlar):** görsel farkların ince ayarı (logo/buton gibi tek tük
-öğeler), `D3D9/` dizininin tamamen silinmesi (şimdilik yedek cihaz), CoAVolFog/Lexara için derinlik
-ve font işleri.
+| # | Hata | Etki | Düzeltme |
+|---|---|---|---|
+| 1 | `ITexTarget` henüz oluşturulmamış hedef dokuyu yok sayıyordu | Gölge haritası (PCF, 2048² renk + D24) arka tampon (2940 geniş, MSAA) ile 2048² 1× derinliği **aynı geçişte** eşleştiriyordu → geçersiz Metal geçişi; 2×'te sürücü tolere ediyordu, **4× MSAA'da GPU hang + kalıcı siyah ekran** | `CGxDeviceD3d::DeviceSetRenderTarget` gibi gerekirse `ITexCreate` |
+| 2 | `DeviceSetFormat` yalnızca hedefleri yeniden yaratıyordu | Video ayarları → Uygula (`RestartGx`): pencere yeniden yapılandırılmıyor, `CGxDevice::DeviceSetFormat` (UI en-boy oranı) atlanıyor, `m_savedDepthTarget` serbest bırakılmış tampona sarkıyordu | Shim gibi: GPU işini boşalt, sarkanları temizle, `ICreateWindow` + hedefler + temel sınıf + caps + vsync + imleç |
+| 3 | Scissor dikdörtgeni hedefe kırpılmıyordu; scissor kapalıyken encoder'da öncekisi kalıyordu | Doku hedefinde Metal doğrulama hatası (kare başına yüzlerce); kısmi temizlemeden sonraki çizimler kırpılabiliyordu | Her çizimde hedefe kırpılmış scissor; scissor kapalıysa tüm hedef; boş dikdörtgen çizmez (D3D gibi) |
+| 4 | Oklüzyon sorguları sahteydi (`QueryBegin/End/GetParam/GetData` boş) | Güneş parlaması (`DNGlare::GetQueryOcclusion`) hiç görünmez sayılıyordu | `GxMetal::Query`'ye bağlandı; tembel oluşturma, cihaz yıkılırken bağlamdan önce serbest |
+| 5 | Donanım imleci yoktu (`m_hwCursor = 0`, `ICursorCreate` hiç çağrılmıyordu) | Oyunda hep sistem oku; WoW'un eldiven/kılıç/el imleçleri yok | NSCursor (Retina 2×, `GxCursorSetScale`), `IUpdateCursor` |
+| 6 | `IPollWindow` boştu ve çağrılmıyordu | Pencere elle boyutlandırılınca hedefler/görüş alanı güncellenmiyordu | Shim'deki boyut yoklaması, `ScenePresent` sonunda |
+| 7 | `ScenePresent` `WaitForFPSCap` çağırmıyordu | `maxFPS`/`maxFPSBk` etkisiz (pil, ısı) | Eklendi |
+| 8 | `gxVSync` yok sayılıyordu (shim'de de) | Dikey senkron kapatılamıyordu | `CAMetalLayer.displaySyncEnabled` |
+| 9 | `DeviceReadDepths` boş dizi döndürüyordu | D3D dikdörtgen boyutunda sıfır dizisi döndürür; çağıran indekslerse taşma | D3D ile aynı |
+| 10 | Çizim yolunda unutulmuş hata ayıklama günlüğü (`stage N texture kind`) | Log gürültüsü | Silindi |
 
-## Sıradaki adımlar (yarıda kalırsa buradan devam)
+**Doğrulama (autotest, kendi sunucu, Rhon, Apple M4):**
+- `MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1`: giriş → karakter seçimi → dünya → 4× MSAA `RestartGx` →
+  dünya: **sıfır doğrulama hatası, sıfır GPU hatası** (düzeltmeden önce ~290 bin hata + GPU hang).
+- `RestartGx` (değişikliksiz), 4× MSAA, pencereli 1280×720: hepsi doğru görüntü.
+- Oklüzyon sorgusu pozitif kontrol: dünya çizimini saran sorgu kare başına ~37 M örnek saydı; bloklayan
+  `GetData` takılmadan döndü (geçici enstrümantasyon, commit'lenmedi).
+- İmleç: üretilen NSCursor görüntüsü dökülüp incelendi (WoW eldiveni, renkler doğru, 64 px Retina).
+- Kararlılık: 5 dk dünyada (`world@30,world@300`), sıfır GPU/komut tamponu hatası; WTF geri yüklendi.
+- Faz 3 #67 gereksinimleri karşılanıyor: vertex sabit dosyası 256 kayıt, sabit fonksiyon 8 ışık.
 
-1. [x] Faz 1 tasarımı (yukarıda "Faz 1 tasarımı").
-2. [ ] 2a görsel taban — GUI testi; kullanıcı oyunda değilken (bkz. hafıza `gui-testing-etiquette`).
-3. [ ] 2b → 2c → 3a → 3b → 3c → 3d → 4 (tasarımdaki sırayla, her biri ayrı commit).
+**Bilinen sınırlar:** stereo yok (macOS); `DeviceReadDepths` D3D gibi sıfır döndürür; pencereli modda
+`gxResolution` nokta değil piksel olarak uygulanıyor (shim'deki davranış, ayrı bakılacak).
 
 ## Yapılamayanlar / riskler
 
