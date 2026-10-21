@@ -169,6 +169,8 @@ class CGxDeviceMetalNative : public CGxDevice {
     GxMetal::Buffer* m_indexBuf;
     // The encoder pass the stream bindings were applied for; a new pass invalidates them
     uint64_t m_streamPassId;
+    // The opaque texture a CGxTex holds after a forced recreation (the shim's m_texture3B58)
+    GxMetal::Texture* m_defaultTexture;
     GxMetal::Texture* m_textureDepthBuffer;
     GxMetal::Target m_savedDepthTarget;
     uint32_t m_samples;
@@ -203,6 +205,11 @@ class CGxDeviceMetalNative : public CGxDevice {
     virtual char* BufLock(CGxBuf* buf);
     virtual int32_t BufUnlock(CGxBuf* buf, uint32_t size);
     virtual void BufData(CGxBuf* buf, const void* data, uint32_t size, uint32_t offset);
+    virtual void ITexMarkAsUpdated(CGxTex* texId);
+    virtual void TexDestroy(CGxTex* texId);
+    virtual void DeviceCopyTex(CGxTex* source, uint32_t sourcePlane, CGxTex* dest, uint32_t destPlane);
+    virtual void DeviceResolveDepthBuffer(CGxTex* texture);
+    virtual void DeviceSetBaseMipLevel(uint32_t level);
     virtual int32_t TexCopy(CGxTex* dest, const C2iVector& destPos, const C2iVector& sourcePos, const C2iVector& size, uint32_t level, uint32_t plane);
     virtual int32_t TexStretch(CGxTex* dest, const CiRect* destRect, const CiRect* sourceRect, uint32_t level, uint32_t face);
     virtual bool QueryBegin(CGxQuery* query);
@@ -219,6 +226,9 @@ class CGxDeviceMetalNative : public CGxDevice {
     virtual void DeviceUnk81(uint32_t a, uint32_t b);
     virtual void DeviceUnk82();
     virtual void DeviceUnk83(uint32_t a, uint32_t b);
+
+    static EGxTexFormat s_GxTexFormatToUse[GxTexFormats_Last];
+    static const EGxTexFormat s_tolerableTexFmtMapping[GxTexFormats_Last];
 
     CGxDeviceMetalNative();
     virtual ~CGxDeviceMetalNative();
@@ -242,6 +252,12 @@ class CGxDeviceMetalNative : public CGxDevice {
     char* IBufLock(CGxBuf* buf);
     void IBufUnlock(CGxBuf* buf);
     void ISetVertexBuffer(uint32_t stream, GxMetal::Buffer* buffer, uint32_t offset, uint32_t stride);
+    // Textures (slice 2)
+    static GxMetal::Texture*& ITexData(CGxTex* texId);
+    GxMetal::Texture* IDefaultTexture();
+    void ITexCreate(CGxTex* texId);
+    void ITexUpload(CGxTex* texId);
+    void ITexForceRecreation(int32_t all);
     void IPollWindow();
     // The window's client size in pixels
     void IClientSize(int32_t* width, int32_t* height);

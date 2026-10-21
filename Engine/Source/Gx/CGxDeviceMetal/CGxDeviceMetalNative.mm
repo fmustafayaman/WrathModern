@@ -12,8 +12,11 @@
 #include <cstdio>
 #include <cstring>
 #include "Engine/Source/Gx/CGxDeviceMetal/CGxDeviceMetalNative.h"
+#include "Engine/Source/Gx/Blit.h"
 #include "Engine/Source/Gx/CGxBuf.h"
 #include "Engine/Source/Gx/CGxPool.h"
+#include "Engine/Source/Gx/CGxTex.h"
+#include "Engine/Source/Gx/Gx.h"
 #include "Engine/Source/Gx/CGxDevice/EmergencyMem.h"
 #include "Engine/Source/Gx/CGxDeviceMetal/MetalFormats.h"
 #include "Engine/Source/Os/Mac/MacOs.h"
@@ -491,6 +494,311 @@ void CGxDeviceMetalNative::DeviceReadDepths(CiRect& rect, TSGrowableArray<float>
     depths.SetCount(0);
 }
 
+// The client's texture formats, substituted before creation and retried with a tolerable one when the
+// GPU cannot make it (CGxDeviceMetal.cpp:30 and :56; the first table is deliberately mutable)
+EGxTexFormat CGxDeviceMetalNative::s_GxTexFormatToUse[GxTexFormats_Last] = { GxTex_Unknown, GxTex_Abgr8888, GxTex_Argb8888, GxTex_Argb4444, GxTex_Argb1555, GxTex_Rgb565, GxTex_Dxt1, GxTex_Dxt3, GxTex_Dxt5, GxTex_Uv88, GxTex_Gr1616F, GxTex_R32F, GxTex_D24X8 };
+
+const EGxTexFormat CGxDeviceMetalNative::s_tolerableTexFmtMapping[GxTexFormats_Last] = { GxTex_Unknown, GxTex_Argb4444, GxTex_Argb4444, GxTex_Argb4444, GxTex_Argb4444, GxTex_Argb4444, GxTex_Dxt1, GxTex_Dxt3, GxTex_Dxt5, GxTex_Uv88, GxTex_Gr1616F, GxTex_R32F, GxTex_D24X8 };
+
+GxMetal::Texture*& CGxDeviceMetalNative::ITexData(CGxTex* texId) {
+    return *reinterpret_cast<GxMetal::Texture**>(&texId->m_apiSpecificData);
+}
+
+// The texture a CGxTex holds after ITexForceRecreation: a valid object the client can keep bound
+// (opaque green, as the shim's 8x8 m_texture3B58), re-uploaded on its next use
+GxMetal::Texture* CGxDeviceMetalNative::IDefaultTexture() {
+    if (!this->m_defaultTexture && this->m_metal) {
+        GxMetal::FormatInfo info;
+
+        if (GxMetal::TexFormatInfo(GxTex_Argb8888, info)) {
+            this->m_defaultTexture = GxMetal::Texture::Create(this->m_metal, MTLTextureType2D, 8, 8, 1, info, false, false);
+        }
+
+        if (this->m_defaultTexture) {
+            GxMetal::UploadAllocation staging = this->m_metal->AllocateUpload(8 * 8 * 4, 16);
+
+            for (uint32_t i = 0; i < 64; i++) {
+                memcpy(staging.m_data + i * 4, "\x00\xFF\x00\xFF", 4);
+            }
+
+            this->m_metal->CopyToTexture(staging, 32, 256, this->m_defaultTexture->m_texture, 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(8, 8, 1), this->m_defaultTexture->m_use);
+        }
+    }
+
+    return this->m_defaultTexture;
+}
+
+// CGxDeviceMetal.cpp:2527 - create the GPU texture of a client texture (CFR: ITexWHDStartEnd decides
+// the level count; the base mip is already folded into width and height)
+void CGxDeviceMetalNative::ITexCreate(CGxTex* texId) {
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t baseMip = 0;
+    uint32_t mipCount = 0;
+    this->ITexWHDStartEnd(texId, width, height, baseMip, mipCount);
+
+    texId->m_format = s_GxTexFormatToUse[texId->m_format];
+
+    GxMetal::FormatInfo info;
+
+    if (!GxMetal::TexFormatInfo(texId->m_format, info)) {
+        return;
+    }
+
+    bool renderTarget = texId->m_flags.m_renderTarget != 0;
+    bool autoMips = texId->m_flags.m_generateMipMaps != 0;
+    GxMetal::Texture* texture = nullptr;
+
+    if (info.m_depth) {
+        texture = GxMetal::Texture::Create(this->m_metal, MTLTextureType2D, width, height, 1, info, true, false);
+    } else {
+        uint32_t levels = mipCount > baseMip ? mipCount - baseMip : 1;
+        MTLTextureType type = texId->m_target == GxTex_CubeMap ? MTLTextureTypeCube : MTLTextureType2D;
+        texture = GxMetal::Texture::Create(this->m_metal, type, width, height, levels, info, renderTarget, autoMips);
+
+        if (!texture && !renderTarget) {
+            // The GPU cannot make the format: use the client's tolerable one for every texture after
+            // this, exactly as the shim does
+            s_GxTexFormatToUse[texId->m_format] = s_tolerableTexFmtMapping[texId->m_format];
+            texId->m_format = s_GxTexFormatToUse[texId->m_format];
+
+            if (!GxMetal::TexFormatInfo(texId->m_format, info)) {
+                return;
+            }
+
+            texture = GxMetal::Texture::Create(this->m_metal, type, width, height, levels, info, false, autoMips);
+        }
+    }
+
+    if (!texture) {
+        return;
+    }
+
+    GxMetal::Assign(this->ITexData(texId), texture);
+    texture->Release();
+    texId->m_needsCreation = 0;
+}
+
+// CGxDeviceMetal.cpp:2585 - upload the updated rectangle into every level and cube face; the client's
+// user function hands out the texels through GxTex_Lock/Latch/Unlock
+void CGxDeviceMetalNative::ITexUpload(CGxTex* texId) {
+    GxMetal::Texture* texture = this->ITexData(texId);
+
+    if (!texture || !texId->m_userFunc) {
+        return;
+    }
+
+    uint32_t texelStrideInBytes = 0;
+    const void* texels = nullptr;
+    texId->m_userFunc(GxTex_Lock, texId->m_width, texId->m_height, 0, 0, texId->m_userArg, texelStrideInBytes, texels);
+
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t baseMip = 0;
+    uint32_t mipCount = 0;
+    this->ITexWHDStartEnd(texId, width, height, baseMip, mipCount);
+
+    bool compressedData = texId->m_dataFormat >= GxTex_Dxt1 && texId->m_dataFormat <= GxTex_Dxt5;
+    bool renderTarget = texId->m_flags.m_renderTarget != 0;
+    uint32_t faceCount = texId->m_target == GxTex_CubeMap ? 6 : 1;
+    const GxMetal::FormatInfo& info = texture->m_format;
+
+    for (uint32_t face = 0; face < faceCount; face++) {
+        uint32_t mipWidth = width;
+        uint32_t mipHeight = height;
+        uint32_t level = 0;
+
+        for (uint32_t mip = baseMip; mip != mipCount; mip++, level++) {
+            texels = nullptr;
+            texId->m_userFunc(GxTex_Latch, mipWidth, mipHeight, face, mip, texId->m_userArg, texelStrideInBytes, texels);
+
+            if (texels && !renderTarget) {
+                int32_t left = texId->m_updateRect.minX >> mip;
+                int32_t top = texId->m_updateRect.minY >> mip;
+                int32_t right = texId->m_updateRect.maxX >> mip;
+                int32_t bottom = texId->m_updateRect.maxY >> mip;
+
+                if (right <= left) {
+                    right = left + 1;
+                }
+
+                if (bottom <= top) {
+                    bottom = top + 1;
+                }
+
+                if (texId->m_format >= GxTex_Dxt1 && texId->m_format <= GxTex_Dxt5) {
+                    left &= ~3;
+                    top &= ~3;
+                    right = (right + 3) & ~3;
+                    bottom = (bottom + 3) & ~3;
+
+                    if (right > static_cast<int32_t>(mipWidth)) {
+                        right = static_cast<int32_t>(mipWidth);
+                    }
+
+                    if (bottom > static_cast<int32_t>(mipHeight)) {
+                        bottom = static_cast<int32_t>(mipHeight);
+                    }
+                }
+
+                const uint8_t* source = static_cast<const uint8_t*>(texels);
+
+                if (!texId->m_flags.m_bit15) {
+                    if (compressedData) {
+                        source += s_texFormatBytesPerBlock[texId->m_dataFormat] * (left >> 2) + texelStrideInBytes * (top >> 2);
+                    } else {
+                        source += ((left * s_texFormatBitDepth[texId->m_dataFormat]) >> 3) + texelStrideInBytes * top;
+                    }
+                }
+
+                uint32_t copyWidth = static_cast<uint32_t>(right - left);
+                uint32_t copyHeight = static_cast<uint32_t>(bottom - top);
+                uint32_t pitch = info.RowPitch(copyWidth);
+                uint32_t rows = info.RowCount(copyHeight);
+                GxMetal::UploadAllocation staging = this->m_metal->AllocateUpload(pitch * rows, 16);
+
+                C2iVector size;
+                size.x = static_cast<int32_t>(copyWidth);
+                size.y = static_cast<int32_t>(copyHeight);
+
+                if (Blit(size, BlitAlpha_0, source, texelStrideInBytes, GxGetBlitFormat(texId->m_dataFormat), staging.m_data, pitch, GxGetBlitFormat(texId->m_format))) {
+                    this->m_metal->CopyToTexture(staging, pitch, pitch * rows, texture->m_texture, face, level, MTLOriginMake(left, top, 0), MTLSizeMake(copyWidth, copyHeight, 1), texture->m_use);
+                    texture->MarkWritten(level);
+                }
+            }
+
+            mipWidth >>= 1;
+            mipHeight >>= 1;
+
+            if (!mipWidth) {
+                mipWidth = 1;
+            }
+
+            if (!mipHeight) {
+                mipHeight = 1;
+            }
+        }
+    }
+
+    texels = nullptr;
+    texId->m_userFunc(GxTex_Unlock, texId->m_width, texId->m_height, 0, 0, texId->m_userArg, texelStrideInBytes, texels);
+}
+
+// CGxDeviceMetal.cpp:2493 - drop the GPU object of the render targets so they are made again
+void CGxDeviceMetalNative::ITexForceRecreation(int32_t all) {
+    for (CGxTex* texId = this->m_textures.Head(); texId; texId = this->m_textures.Next(texId)) {
+        if (!texId->m_apiSpecificData || !(all || texId->m_flags.m_renderTarget)) {
+            continue;
+        }
+
+        CiRect updateRect;
+
+        if (!texId->m_needsCreation && (texId->m_apiSpecificData || texId->m_apiSpecificData2)) {
+            GxMetal::Clear(this->ITexData(texId));
+        }
+
+        texId->m_apiSpecificData = this->IDefaultTexture();
+        texId->m_needsCreation = 1;
+        this->TexMarkForUpdate(texId, updateRect, 0);
+
+        uint32_t texelStrideInBytes = 0;
+        const void* texels = nullptr;
+
+        if (texId->m_userFunc) {
+            texId->m_userFunc(GxTex_3, texId->m_width, texId->m_height, 0, 0, texId->m_userArg, texelStrideInBytes, texels);
+        }
+    }
+
+    if (this->m_hwnd) {
+        this->NotifyOnTextureRecreation();
+    }
+}
+
+void CGxDeviceMetalNative::ITexMarkAsUpdated(CGxTex* texId) {
+    if (!texId->m_needsUpdate || !this->m_metal) {
+        return;
+    }
+
+    if (texId->m_needsCreation || (!texId->m_apiSpecificData && !texId->m_apiSpecificData2)) {
+        this->ITexCreate(texId);
+    }
+
+    if (!texId->m_needsCreation && (texId->m_apiSpecificData || texId->m_apiSpecificData2)) {
+        this->ITexUpload(texId);
+        CGxDevice::ITexMarkAsUpdated(texId);
+    }
+}
+
+void CGxDeviceMetalNative::TexDestroy(CGxTex* texId) {
+    if (!texId->m_needsCreation && (texId->m_apiSpecificData || texId->m_apiSpecificData2)) {
+        GxMetal::Clear(this->ITexData(texId));
+    }
+
+    CGxDevice::TexDestroy(texId);
+}
+
+void CGxDeviceMetalNative::DeviceCopyTex(CGxTex* source, uint32_t sourcePlane, CGxTex* dest, uint32_t destPlane) {
+    if (!this->m_metal) {
+        return;
+    }
+
+    GxMetal::Texture* sourceTexture = nullptr;
+    GxMetal::Texture* destTexture = nullptr;
+
+    if (source) {
+        if (source->m_needsCreation || (!source->m_apiSpecificData && !source->m_apiSpecificData2)) {
+            this->ITexCreate(source);
+        }
+
+        if (!source->m_needsCreation) {
+            sourceTexture = this->ITexData(source);
+        }
+    }
+
+    if (dest) {
+        if (dest->m_needsCreation || (!dest->m_apiSpecificData && !dest->m_apiSpecificData2)) {
+            this->ITexCreate(dest);
+        }
+
+        if (!dest->m_needsCreation) {
+            destTexture = this->ITexData(dest);
+        }
+    }
+
+    if (!sourceTexture || !destTexture) {
+        return;
+    }
+
+    GxMetal::Target from = { sourceTexture, source->m_target == GxTex_CubeMap ? sourcePlane : 0, 0 };
+    GxMetal::Target to = { destTexture, dest->m_target == GxTex_CubeMap ? destPlane : 0, 0 };
+    this->m_metal->Stretch(from, nullptr, to, nullptr, false);
+}
+
+void CGxDeviceMetalNative::DeviceResolveDepthBuffer(CGxTex* texture) {
+    if (!this->m_metal) {
+        return;
+    }
+
+    if (texture && (texture->m_needsCreation || (!texture->m_apiSpecificData && !texture->m_apiSpecificData2))) {
+        this->ITexCreate(texture);
+    }
+
+    GxMetal::Texture* depth = texture ? this->ITexData(texture) : nullptr;
+
+    if (!depth || !depth->m_format.m_depth) {
+        return;
+    }
+
+    // The colour target stays what it was; the texture becomes the depth target
+    this->ISetHwTargets(this->m_metal->ColorTarget(), GxMetal::Target { depth, 0, 0 });
+}
+
+void CGxDeviceMetalNative::DeviceSetBaseMipLevel(uint32_t level) {
+    // The recreation is lazy (only m_needsCreation is set) and ITexCreate reads the level later
+    this->ITexForceRecreation(1);
+    CGxDevice::DeviceSetBaseMipLevel(level);
+}
+
 void CGxDeviceMetalNative::IShaderCreate(CGxShader* shader) {
 }
 
@@ -692,12 +1000,68 @@ void CGxDeviceMetalNative::ISetVertexBuffer(uint32_t stream, GxMetal::Buffer* bu
     }
 }
 
+// CGxDeviceMetal.cpp:3227 - copy a rectangle of the window's back buffer into a texture
 int32_t CGxDeviceMetalNative::TexCopy(CGxTex* dest, const C2iVector& destPos, const C2iVector& sourcePos, const C2iVector& size, uint32_t level, uint32_t plane) {
-    return 1;
+    if (!this->m_metal || !this->m_backBuffer) {
+        return 0;
+    }
+
+    if (dest->m_needsCreation || (!dest->m_apiSpecificData && !dest->m_apiSpecificData2)) {
+        this->ITexCreate(dest);
+    }
+
+    GxMetal::Texture* texture = this->ITexData(dest);
+
+    if (dest->m_needsCreation || !texture) {
+        return 0;
+    }
+
+    GxMetal::Rect from = { sourcePos.x, sourcePos.y, sourcePos.x + size.x, sourcePos.y + size.y };
+    GxMetal::Rect to = { destPos.x, destPos.y, destPos.x + size.x, destPos.y + size.y };
+    GxMetal::Target source = { this->m_backBuffer, 0, 0 };
+    GxMetal::Target target = { texture, dest->m_target == GxTex_CubeMap ? plane : 0, level };
+    return this->m_metal->Stretch(source, &from, target, &to, false) ? 1 : 0;
 }
 
+// CGxDeviceMetal.cpp:3260 - the same from the back buffer, scaling when the rectangles differ in size
 int32_t CGxDeviceMetalNative::TexStretch(CGxTex* dest, const CiRect* destRect, const CiRect* sourceRect, uint32_t level, uint32_t face) {
-    return 1;
+    if (!this->m_metal || !this->m_backBuffer) {
+        return 0;
+    }
+
+    if (dest->m_needsCreation || (!dest->m_apiSpecificData && !dest->m_apiSpecificData2)) {
+        this->ITexCreate(dest);
+    }
+
+    GxMetal::Texture* texture = this->ITexData(dest);
+
+    if (dest->m_needsCreation || !texture) {
+        return 0;
+    }
+
+    GxMetal::Rect from = { 0, 0, 0, 0 };
+    GxMetal::Rect to = { 0, 0, 0, 0 };
+
+    if (sourceRect) {
+        from.left = sourceRect->minX;
+        from.top = sourceRect->minY;
+        from.right = sourceRect->maxX;
+        from.bottom = sourceRect->maxY;
+    }
+
+    if (destRect) {
+        to.left = destRect->minX;
+        to.top = destRect->minY;
+        to.right = destRect->maxX;
+        to.bottom = destRect->maxY;
+    }
+
+    // The shim asks for D3DTEXF_NONE only when both rectangles are given and the sizes match; Metal
+    // picks blit or a quad by itself, so this only selects the sampler of a scaling copy
+    bool linear = !(destRect && sourceRect && (to.right - to.left) == (from.right - from.left) && (to.bottom - to.top) == (from.bottom - from.top));
+    GxMetal::Target source = { this->m_backBuffer, 0, 0 };
+    GxMetal::Target target = { texture, dest->m_target == GxTex_CubeMap ? face : 0, level };
+    return this->m_metal->Stretch(source, sourceRect ? &from : nullptr, target, destRect ? &to : nullptr, linear) ? 1 : 0;
 }
 
 bool CGxDeviceMetalNative::QueryBegin(CGxQuery* query) {
