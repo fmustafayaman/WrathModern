@@ -375,6 +375,14 @@ taşınabilir C++ olarak aynen alınır. Ayar dosyası `Mods/CoAVolFog.ini` (ayn
   ötesi gök/WDL — README ile aynı). `DebugView=3` doğrusal derinlik MSAA'da `depth2d_ms`'ten doğrudan okunuyor
   (Windows'taki kopya hilesi gereksiz). Kanıt: `build/autotest/vf1`. Test sırasında kullanıcının `CoAVolFog.ini`'si
   yedeklenip birebir geri yüklenir (md5 kontrolü).
+- **Port stratejisi (karar, 2026-10-21):** HLSL ps_3_0 sabitleri `register(cN)`'de; MSL'de tek bir
+  `constant float4* C` tamponu (yazmaç numaraları aynı), her ad makroyla eşlenir (`#define cWorldViewportPx C[0]`,
+  `cLayers[i]` → `C[12 + i]`, `row_major cViewToWorld` c4–c7 → `v.x*C[4].xyz + v.y*C[5].xyz + v.z*C[6].xyz`, kamera
+  `C[7].xyz`). Böylece `renderer.cpp`'nin sabit kurulumu yazmaç numaralarıyla birebir taşınır. `#define` varyantları
+  (`STEPS`, `LOCAL_LIGHTS`, `SAMPLES_AUTHORED_NOISE`) MSL function constant/ön işlemci makrosu olur. Yazmaç
+  haritası: c0–c8 ortak, c9 ışık, c11 march, c12–c35 katmanlar (4×6), c36–c47 authored noise (3×4), c78 yoğunluk
+  varyasyonu; yerel ışıklar aradaki aralıkta (`vf_local_lights.hlsli`). Örnekleyiciler: s0 derinlik, s9 yoğunluk
+  3B gürültüsü, s10 authored 3B gürültü.
 - **Sıradaki — dilim 2 (sis çekirdeği):** `shaders/vf_march.hlsl` + `vf_integrate/vf_common/vf_composite*` →
   MSL; `renderer.cpp`'nin march/composite kurulumu; `fog_model.cpp` (3.3.5 gün/gece'den katmanlar). MSAA renk
   hedefi ShaderRead değil — kompozit karıştırma ile çizer, sahne kopyası gereken geçişler için çözümlenmiş
