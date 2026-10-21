@@ -208,8 +208,12 @@ void CGxDeviceMetalNative::ISetCaps(const CGxFormat& format) {
     // client loads the same .bls set the Windows client does (the Reforged data ships SM3)
     // The translator handles vs_1_1 to vs_3_0 and ps_1_1 to ps_3_0; report the highest profile so the
     // client loads the same .bls set the Windows client does
-    this->m_caps.m_shaderTargets[GxSh_Vertex] = 3;
-    this->m_caps.m_shaderTargets[GxSh_Pixel] = 4;
+    // The fixed-function path draws the client's scenes correctly; the .bls shader path is still being
+    // debugged, so WRATHMODERN_METAL_SHADERS=0 falls back to the fixed pipeline for comparison
+    const char* shaders = getenv("WRATHMODERN_METAL_SHADERS");
+    bool useShaders = !(shaders && !strcmp(shaders, "0"));
+    this->m_caps.m_shaderTargets[GxSh_Vertex] = useShaders ? 3 : 0;
+    this->m_caps.m_shaderTargets[GxSh_Pixel] = useShaders ? 4 : 0;
     this->m_caps.m_shaderConstants[GxSh_Vertex] = 256;
     this->m_caps.m_shaderConstants[GxSh_Pixel] = 256;
 }
@@ -2482,6 +2486,7 @@ bool CGxDeviceMetalNative::IDrawPrepare(const CGxBatch* batch) {
         return false;
     }
 
+    
     GxMetal::CompiledFunction fragment;
     GxMetal::ShaderInfo pixelInfo;
 
