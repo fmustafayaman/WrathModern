@@ -258,9 +258,28 @@ commit'lendi, devam edecek) → spesifikasyon ajanı yalnızca gerekirse. Küç�
 - Modlar artık derlemeyle `WoW_Wrath/Mods` (= `mods`) içine kurulur: `LuxShoulderCam.dylib`,
   `AwesomeWotlk.dylib`. Eski v1 host'lu derlemeler (ör. `WrathModern.app`) v2 modları reddeder.
 
+### 2026-10-21 öğleden sonra — Faz 1 park edildi, AwesomeWotlk B başladı
+
+- **Faz 1 (native Metal) park edildi.** `WowRe-metal` dalındaki yarım iş incelendi: yeni başlık
+  (`CGxDeviceMetal.h`, `MetalContext/MetalResources/MetalPipeline/MetalFormats/MetalFixedFunction`,
+  ~6 600 satır) yazılmış ama `CGxDeviceMetal.cpp` hâlâ eski D3D9 shim uygulaması (176 `m_d3dDevice`
+  çağrısı, 226 D3D sabiti). Dosya `.mm` yapılınca bile 122 hata veriyor. WIP commit'lendi
+  (`81ed11e`), ürün dalına alınmadı; Faz 1 ayrı bir iş olarak duruyor.
+- **`nameplateDistance` / `nameplatePlacement` bağlandı.** İstemcide iki sabit değişkenle
+  değiştirildi: `WoW/Source/Object/ObjectClient/NamePlateTuning.h` (`g_namePlateMaxDistanceSq`,
+  `g_tabTargetMaxDistanceSq`, `g_namePlateHeightOffset`). Orijinal bunları Wow.exe'de yama ile
+  yazıyordu (0x00715739 operantı ve tab-target tavanı); bizde mod değişkeni yazıyor. Nameplate
+  yerleşim yöneticisi (stacking/clamp/hitbox/occlusion) hâlâ istemcinin kendi kodu.
+- **`GetItemInfoInstant` eklendi** (`Mods/AwesomeWotlk/Item.cpp`): öğe önbelleği + DBC sınıf/alt sınıf
+  adları + `s_inventoryTypeTokens` + `CGItem_C::GetInventoryArt`. Önbellekte kayıt yoksa **değer
+  döndürmez** (istemcinin `GetItemInfo`'su gibi); ilk çağrı yalnızca sorguyu gönderir.
+- **Test aracı:** `WRATHMODERN_AUTOTEST_LUA=<lua>` dünyaya girince bir kez çalışır; sohbet
+  penceresinde görünür. Doğrulama: karakterin hançeri için
+  `2092|Weapon|Daggers|INVTYPE_WEAPON|INVTYPE_Weapon_ShortBlade_05de|2|15`.
+
 ### Kalan iş (öncelik sırası)
 
-1. Faz 1 ajanı (native Metal) — sürüyor; bitince `WowRe-metal` → `WowRe` birleştir, tüm testleri koş.
+1. Faz 1 (native Metal) — **park edildi** (WIP `WowRe-metal` @ `81ed11e`); ayrı ve büyük bir iş.
 2. AwesomeWotlk B: `C_NamePlate` + `NAME_PLATE_*` olayları + `nameplateN` token'ları, nameplate yerleşim
    yöneticisi (stacking/clamp/occlusion/alpha, `nameplateDistance`), `cameraFov`, `showPlayer`,
    `GetItemInfoInstant`, `/interact`, `[@cursor]`, sohbet log adları, portre çözünürlüğü, UI piksel düzeltmeleri.
