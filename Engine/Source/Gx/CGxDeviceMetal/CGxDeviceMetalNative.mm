@@ -479,6 +479,10 @@ void CGxDeviceMetalNative::DeviceSetRenderTarget(EGxBuffer buffer, CGxTex* textu
 
     CGxDevice::DeviceSetRenderTarget(buffer, texture, plane);
     this->ITargetsFromState();
+
+    // The current window changed with the target; viewport and scissor follow it (CGxDeviceD3d)
+    this->m_viewportDirty = 1;
+    this->m_scissorRectDirty = 1;
 }
 
 void CGxDeviceMetalNative::DeviceSaveDepthSurface() {
@@ -2157,15 +2161,16 @@ void CGxDeviceMetalNative::IStateSyncClipPlanes() {
 }
 
 // CGxDeviceMetal.cpp:755 - normalized client rectangle to target pixels, y down
+// As CGxDeviceD3d, relative to the current window (the texture while rendering into one)
 void CGxDeviceMetalNative::IStateSyncScissorRect() {
-    if (!this->m_scissorRectDirty || !this->m_hwnd) {
+    if (!this->m_scissorRectDirty) {
         return;
     }
 
-    int32_t width = 0;
-    int32_t height = 0;
-    DrawableSize(this->m_hwnd, &width, &height);
-    bool textureTarget = this->m_textureTarget[GxBuffers_Color].m_texture != nullptr;
+    const CRect& window = this->DeviceCurWindow();
+    int32_t width = static_cast<int32_t>(window.maxX);
+    int32_t height = static_cast<int32_t>(window.maxY);
+    bool textureTarget = this->m_textureTarget[GxBuffers_Color].m_texture || this->m_textureTarget[GxBuffers_Depth].m_texture;
 
     int32_t left = static_cast<int32_t>(this->m_scissorRect.minX * width + 0.5f);
     int32_t right = static_cast<int32_t>(this->m_scissorRect.maxX * width + 1.0f);
@@ -2445,21 +2450,17 @@ void CGxDeviceMetalNative::IXformSetTex(uint32_t tmu) {
 }
 
 // CGxDeviceMetal.cpp:1910 - the client's normalized viewport to Metal's pixels
+// As CGxDeviceD3d: the viewport is relative to the current window, which is the texture's size while
+// the client renders into a texture (CGxDevice::DeviceSetRenderTarget), not the game window's
 void CGxDeviceMetalNative::IXformSetViewport() {
-    if (!this->m_hwnd) {
+    const CRect& window = this->DeviceCurWindow();
+    float windowWidth = window.maxX;
+    float windowHeight = window.maxY;
+
+    if (windowWidth <= 0.0f || windowHeight <= 0.0f) {
         return;
     }
 
-    int32_t width = 0;
-    int32_t height = 0;
-    DrawableSize(this->m_hwnd, &width, &height);
-
-    if (width <= 0 || height <= 0) {
-        return;
-    }
-
-    float windowWidth = static_cast<float>(width);
-    float windowHeight = static_cast<float>(height);
     float x = this->m_viewport.m_x.m_l * windowWidth;
     float y = (1.0f - this->m_viewport.m_y.m_h) * windowHeight;
     float w = this->m_viewport.m_x.m_h * windowWidth - x;

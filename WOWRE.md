@@ -350,6 +350,7 @@ kademe: hwTnL + 8 doku birimi + SM3). Modlar cihazı `GxMetalDevice`/`GxMetalAcq
 | 8 | `gxVSync` yok sayılıyordu (shim'de de) | Dikey senkron kapatılamıyordu | `CAMetalLayer.displaySyncEnabled` |
 | 9 | `DeviceReadDepths` boş dizi döndürüyordu | D3D dikdörtgen boyutunda sıfır dizisi döndürür; çağıran indekslerse taşma | D3D ile aynı |
 | 11 | İndekssiz çizimin başlangıç köşesine **son bağlanan indeks tamponunun** havuz ofseti ekleniyordu | Yağmur damlaları/sıçramaları (ve indekssiz her çizim) bazı karelerde tampon dışı köşeler okuyordu → gökyüzünde ve yağmurda ekranı kesen çizgi patlamaları (kullanıcı ekran kaydıyla buldu; shim ve CrossOver'da yok) | D3D `DrawPrimitive` gibi `baseVertexIndex`; indekssiz yelpazede taban köşe iki kez eklenmiyor |
+| 12 | Viewport ve scissor her zaman **pencere** boyutundan hesaplanıyordu (D3D `DeviceCurWindow`: doku hedefindeyken dokunun boyutu); hedef değişince ikisi kirli işaretlenmiyordu | #1 ile doku hedefleri ilk kez çalışınca tam ekran parlama (`ffxGlow`) yarım/çeyrek dokulara ~2,9× büyük çiziliyor, ekrana "ağaç şekilli sis" olarak biniyordu (kullanıcı `ffxGlow 0` ile doğruladı); gölge haritası viewport'u da aynı hatayla | `DeviceCurWindow`; `DeviceSetRenderTarget` viewport + scissor'ı kirli işaretliyor; scissor renk *veya* derinlik hedefine bakıyor |
 | 10 | Çizim yolunda unutulmuş hata ayıklama günlüğü (`stage N texture kind`) | Log gürültüsü | Silindi |
 
 **Doğrulama (autotest, kendi sunucu, Rhon, Apple M4):**
