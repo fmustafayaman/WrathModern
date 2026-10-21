@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <new>
 #include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
+#include "Engine/Source/Model2/M2Scene.h"
 #include "Engine/Source/Services/GfxSingletonManager.h"
 #include "Engine/Source/Services/Texture.h"
 #include "Engine/Source/ShaderEffect/ShaderEffect.h"
@@ -168,6 +169,16 @@ bool CWorldParam::MaxLightsCallback(CVar* var, const char* oldValue, const char*
 
     return true;
 }
+
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+// St0ny #68 "lightstay" as a setting. Project Reforged leaves the exe patch off (lightstay=0 in its patcher
+// selection), so the default is off as well; /console lightStay 1 turns it on without a restart.
+static bool LightStayCallback(CVar* var, const char* oldValue, const char* value, void* arg) {
+    CM2Scene::s_lightStay = SStrToInt(value) != 0;
+
+    return true;
+}
+#endif
 
 // VERIFY: bbb3c156 auto
 // OFFSET: 0x0078D6F0
@@ -641,6 +652,10 @@ void CWorldParam::Initialize() {
     CWorldParam::cvar_lod = CVar::Register("lod", "Video option: Toggle Lod", 1, "0", CWorldParam::LodCallback, CATEGORY_GRAPHICS, false, nullptr, false);
     CWorldParam::cvar_mapShadows = CVar::Register("mapShadows", "Video option: Toggle map shadows", 1, "1", CWorldParam::MapShadowsCallback, CATEGORY_GRAPHICS, false, nullptr, false);
     CWorldParam::cvar_maxLights = CVar::Register("MaxLights", "Max number of hardware lights", 1, "4", CWorldParam::MaxLightsCallback, CATEGORY_GRAPHICS, false, nullptr, false);
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    CVar* lightStay = CVar::Register("lightStay", "Lights of models out of view keep lighting what is in view", 1, "0", LightStayCallback, CATEGORY_GRAPHICS, false, nullptr, false);
+    CM2Scene::s_lightStay = lightStay->m_intValue != 0;
+#endif
     CWorldParam::cvar_shadowLevel = CVar::Register("shadowLevel", "Terrain shadow map mip level", 1, "1", CWorldParam::ShadowLevelCallback, CATEGORY_GRAPHICS, false, nullptr, false);
     CWorldParam::cvar_texLodBias = CVar::Register("texLodBias", "Texture LOD Bias", 1, "0.0", CWorldParam::TexLodBiasCallback, CATEGORY_GRAPHICS, false, nullptr, false);
     CWorldParam::cvar_farClip = CVar::Register("farclip", "Far clip plane distance", 1, "350", CWorldParam::FarClipCallback, CATEGORY_GRAPHICS, false, nullptr, false);
