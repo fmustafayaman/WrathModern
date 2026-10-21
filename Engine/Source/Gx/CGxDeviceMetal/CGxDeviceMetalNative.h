@@ -149,6 +149,11 @@ class CGxDeviceMetalNative : public CGxDevice {
     GxMetal::PipelineCache* m_pipelines;
     HwState m_hw;
     Bound m_bound;
+    bool m_pipelineDirty;
+    bool m_depthDirty;
+    bool m_fixedKeysDirty;
+    bool m_stagesDirty;
+    uint8_t m_samplerDirty[16];
     bool m_vsConstantsDirty;
     bool m_psConstantsDirty;
     bool m_vertexStateDirty;
@@ -182,6 +187,8 @@ class CGxDeviceMetalNative : public CGxDevice {
     float m_stereoSeparation;
 
     virtual void IRsSendToHw(EGxRenderState which);
+    virtual void XformSetView(const C44Matrix& matrix);
+    virtual void XformSetProjection(const C44Matrix& matrix);
     virtual int32_t DeviceCreate(GxWindowProc windowProc, const CGxFormat& format);
     virtual int32_t DeviceCreate(void* window, const CGxFormat& format);
     virtual void DeviceDestroy();
@@ -258,6 +265,26 @@ class CGxDeviceMetalNative : public CGxDevice {
     void ITexCreate(CGxTex* texId);
     void ITexUpload(CGxTex* texId);
     void ITexForceRecreation(int32_t all);
+    // State (slice 4)
+    void IStateSetDefaults();
+    void IStateSync();
+    void IStateSyncEnables();
+    void IStateSyncClipPlanes();
+    void IStateSyncScissorRect();
+    void IStateSyncXforms();
+    void IStateSyncLights();
+    void IStateSyncMaterial();
+    void IStateSyncVertexPtrs();
+    void ISetTexture(uint32_t tmu, CGxTex* texId);
+    void ISetColorOp(uint32_t tmu, uint32_t op);
+    void ISetAlphaOp(uint32_t tmu, uint32_t op);
+    void ISetTexCoord(uint32_t tmu, uint32_t coord);
+    void ISetTexCoordIndex(uint32_t tmu, int32_t texGen, uint32_t coord);
+    void ISetTexGen(uint32_t tmu, int32_t texGen);
+    void ISetMaterial(CImVector diffuse, CImVector emissive, CImVector specular, float specularExp);
+    void IXformSetTex(uint32_t tmu);
+    void IXformSetWorld();
+    void IXformSetViewport();
     void IPollWindow();
     // The window's client size in pixels
     void IClientSize(int32_t* width, int32_t* height);

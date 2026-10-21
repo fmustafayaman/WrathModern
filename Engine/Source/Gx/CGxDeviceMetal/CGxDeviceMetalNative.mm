@@ -271,6 +271,7 @@ int32_t CGxDeviceMetalNative::DeviceCreate(void* window, const CGxFormat& format
     }
 
     this->IResetDevice();
+    this->IStateSetDefaults();
     GxMetal::Log("metal: window %dx%d, %u samples", format.m_size.x, format.m_size.y, this->m_samples);
     return 1;
 }
@@ -805,7 +806,481 @@ void CGxDeviceMetalNative::IShaderCreate(CGxShader* shader) {
 void CGxDeviceMetalNative::IShaderReload(CGxShader* shader, const char* path, const char* name) {
 }
 
+namespace {
+
+// The client's colours are Direct3D's 0xAARRGGBB
+void ColorFloats(uint32_t color, float out[4]) {
+    out[0] = ((color >> 16) & 0xFF) * (1.0f / 255.0f);
+    out[1] = ((color >> 8) & 0xFF) * (1.0f / 255.0f);
+    out[2] = (color & 0xFF) * (1.0f / 255.0f);
+    out[3] = ((color >> 24) & 0xFF) * (1.0f / 255.0f);
+}
+
+// EGxBlend, in the old device's order (CGxDeviceMetal.cpp:42-44)
+const MTLBlendFactor kSrcBlend[12] = {
+    MTLBlendFactorOne, MTLBlendFactorOne, MTLBlendFactorSourceAlpha, MTLBlendFactorSourceAlpha,
+    MTLBlendFactorDestinationColor, MTLBlendFactorDestinationColor, MTLBlendFactorDestinationColor,
+    MTLBlendFactorOneMinusSourceAlpha, MTLBlendFactorOneMinusSourceAlpha, MTLBlendFactorSourceAlpha,
+    MTLBlendFactorOne, MTLBlendFactorBlendColor,
+};
+
+const MTLBlendFactor kDstBlend[12] = {
+    MTLBlendFactorZero, MTLBlendFactorZero, MTLBlendFactorOneMinusSourceAlpha, MTLBlendFactorOne,
+    MTLBlendFactorZero, MTLBlendFactorSourceColor, MTLBlendFactorOne,
+    MTLBlendFactorOne, MTLBlendFactorZero, MTLBlendFactorZero,
+    MTLBlendFactorOne, MTLBlendFactorOneMinusBlendColor,
+};
+
+// GxRs_DepthFunc: LessEqual, Equal, GreaterEqual, Less
+const MTLCompareFunction kDepthCompare[4] = { MTLCompareFunctionLessEqual, MTLCompareFunctionEqual, MTLCompareFunctionGreaterEqual, MTLCompareFunctionLess };
+
+const MTLCullMode kCullMode[3] = { MTLCullModeNone, MTLCullModeFront, MTLCullModeBack };
+
+// The client's COLORMASK bits are r = 1, b = 2, g = 4, a = 8 (the old device swaps g and b back)
+MTLColorWriteMask ColorWriteMask(uint32_t bits) {
+    uint32_t mask = 0;
+
+    if (bits & 0x1) {
+        mask |= MTLColorWriteMaskRed;
+    }
+
+    if (bits & 0x4) {
+        mask |= MTLColorWriteMaskGreen;
+    }
+
+    if (bits & 0x2) {
+        mask |= MTLColorWriteMaskBlue;
+    }
+
+    if (bits & 0x8) {
+        mask |= MTLColorWriteMaskAlpha;
+    }
+
+    return static_cast<MTLColorWriteMask>(mask);
+}
+
+// TexGen matrix of ISetTexGen: object and eye linear generation take the inverse view (and world)
+template <typename T>
+bool Master(T value, EGxMasterEnables which) {
+    return (value & (1 << which)) != 0;
+}
+
+}
+
+// CGxDeviceMetal.cpp:1402 - one client render state into the native state block. Nothing here
+// touches the encoder: IStateSync runs this inside the frame, and opening a pass per state change
+// would end and restart the render pass for every draw.
 void CGxDeviceMetalNative::IRsSendToHw(EGxRenderState which) {
+    if (!this->m_metal) {
+        return;
+    }
+
+    CGxStateBom& value = this->m_appRenderStates[which].m_value;
+    uint32_t master = this->m_appMasterEnables;
+
+    switch (which) {
+        case GxRs_PolygonOffset:
+            // Direct3D applies the bias after the divide; the fixed vertex shader adds it to z
+            this->m_hw.m_depthBias = -value.m_data.f[0];
+            this->m_vertexStateDirty = 1;
+            break;
+
+        case GxRs_MatDiffuse:
+        case GxRs_MatEmissive:
+        case GxRs_MatSpecular:
+        case GxRs_MatSpecularExp: {
+            // All four material states are applied together, as the old device does
+            CImVector diffuse;
+            CImVector emissive;
+            CImVector specular;
+            memcpy(&diffuse, &this->m_appRenderStates[GxRs_MatDiffuse].m_value.m_data.u[0], sizeof(diffuse));
+            memcpy(&emissive, &this->m_appRenderStates[GxRs_MatEmissive].m_value.m_data.u[0], sizeof(emissive));
+            memcpy(&specular, &this->m_appRenderStates[GxRs_MatSpecular].m_value.m_data.u[0], sizeof(specular));
+            float power = this->m_appRenderStates[GxRs_MatSpecularExp].m_value.m_data.f[0];
+            this->ISetMaterial(diffuse, emissive, specular, power);
+            this->m_appRenderStates[GxRs_MatDiffuse].m_dirty = 0;
+            this->m_appRenderStates[GxRs_MatEmissive].m_dirty = 0;
+            this->m_appRenderStates[GxRs_MatSpecular].m_dirty = 0;
+            this->m_appRenderStates[GxRs_MatSpecularExp].m_dirty = 0;
+            break;
+        }
+
+        case GxRs_NormalizeNormals:
+            this->m_hw.m_normalizeNormals = value.m_data.i[0] != 0;
+            this->m_fixedKeysDirty = 1;
+            break;
+
+        case GxRs_BlendingMode: {
+            int32_t mode = value.m_data.i[0];
+
+            if (mode < 2) {
+                this->m_hw.m_blendEnable = false;
+                this->m_hw.m_srcBlend = MTLBlendFactorOne;
+                this->m_hw.m_dstBlend = MTLBlendFactorZero;
+            } else {
+                int32_t index = mode < 12 ? mode : 11;
+                this->m_hw.m_blendEnable = true;
+                this->m_hw.m_srcBlend = kSrcBlend[index];
+                this->m_hw.m_dstBlend = kDstBlend[index];
+            }
+
+            this->m_pipelineDirty = 1;
+            break;
+        }
+
+        case GxRs_AlphaRef:
+            this->m_hw.m_alphaTest = value.m_data.i[0] > 0;
+            this->m_hw.m_alphaRef = static_cast<uint32_t>(value.m_data.i[0]) & 0xFF;
+            this->m_pixelStateDirty = 1;
+            break;
+
+        case GxRs_FogStart:
+            this->m_hw.m_fogStart = value.m_data.f[0];
+            this->m_fixedVertexDirty = 1;
+            break;
+
+        case GxRs_FogEnd:
+            this->m_hw.m_fogEnd = value.m_data.f[0];
+            this->m_fixedVertexDirty = 1;
+            break;
+
+        case GxRs_FogColor:
+            ColorFloats(value.m_data.u[0], this->m_hw.m_fogColor);
+            this->m_pixelStateDirty = 1;
+            break;
+
+        case GxRs_Lighting:
+            this->m_hw.m_lighting = Master(master, GxMasterEnable_Lighting) && value.m_data.i[0] != 0;
+            this->m_fixedKeysDirty = 1;
+            break;
+
+        case GxRs_Fog:
+            this->m_hw.m_fog = Master(master, GxMasterEnable_Fog) && value.m_data.i[0] != 0;
+            this->m_fixedKeysDirty = 1;
+            break;
+
+        case GxRs_DepthTest:
+        case GxRs_DepthFunc: {
+            bool test = Master(master, GxMasterEnable_DepthTest) && this->m_appRenderStates[GxRs_DepthTest].m_value.m_data.i[0] != 0;
+            int32_t func = this->m_appRenderStates[GxRs_DepthFunc].m_value.m_data.i[0];
+            func = func < 0 ? 0 : (func > 3 ? 3 : func);
+            this->m_hw.m_depthCompare = test ? kDepthCompare[func] : MTLCompareFunctionAlways;
+            this->m_depthDirty = 1;
+            this->m_appRenderStates[GxRs_DepthTest].m_dirty = 0;
+            this->m_appRenderStates[GxRs_DepthFunc].m_dirty = 0;
+            break;
+        }
+
+        case GxRs_DepthWrite:
+            this->m_hw.m_depthWrite = Master(master, GxMasterEnable_DepthWrite) && value.m_data.i[0] != 0;
+            this->m_depthDirty = 1;
+            break;
+
+        case GxRs_ColorWrite: {
+            uint32_t bits = Master(master, GxMasterEnable_ColorWrite) ? value.m_data.u[0] : 0;
+            this->m_hw.m_colorWrite = ColorWriteMask(bits);
+            this->m_pipelineDirty = 1;
+            break;
+        }
+
+        case GxRs_Culling: {
+            int32_t mode = Master(master, GxMasterEnable_Culling) ? value.m_data.i[0] : 0;
+            mode = mode < 0 ? 0 : (mode > 2 ? 2 : mode);
+            this->m_hw.m_cullMode = kCullMode[mode];
+            break;
+        }
+
+        case GxRs_ClipPlaneMask:
+            this->m_hw.m_clipPlaneMask = value.m_data.u[0] & 0x3F;
+            this->m_vertexStateDirty = 1;
+            break;
+
+        case GxRs_Multisample:
+            break;
+
+        case GxRs_ScissorTest:
+            this->m_hw.m_scissorTest = value.m_data.i[0] != 0;
+            this->m_vertexStateDirty = 1;
+            break;
+
+        case GxRs_Texture0:
+        case GxRs_Texture1:
+        case GxRs_Texture2:
+        case GxRs_Texture3:
+        case GxRs_Texture4:
+        case GxRs_Texture5:
+        case GxRs_Texture6:
+        case GxRs_Texture7:
+        case GxRs_Texture8:
+        case GxRs_Texture9:
+        case GxRs_Texture10:
+        case GxRs_Texture11:
+        case GxRs_Texture12:
+        case GxRs_Texture13:
+        case GxRs_Texture14:
+        case GxRs_Texture15:
+            this->ISetTexture(static_cast<uint32_t>(which - GxRs_Texture0), static_cast<CGxTex*>(value.m_data.p));
+            break;
+
+        case GxRs_ColorOp0:
+        case GxRs_ColorOp1:
+        case GxRs_ColorOp2:
+        case GxRs_ColorOp3:
+        case GxRs_ColorOp4:
+        case GxRs_ColorOp5:
+        case GxRs_ColorOp6:
+        case GxRs_ColorOp7:
+            this->ISetColorOp(static_cast<uint32_t>(which - GxRs_ColorOp0), value.m_data.u[0]);
+            break;
+
+        case GxRs_AlphaOp0:
+        case GxRs_AlphaOp1:
+        case GxRs_AlphaOp2:
+        case GxRs_AlphaOp3:
+        case GxRs_AlphaOp4:
+        case GxRs_AlphaOp5:
+        case GxRs_AlphaOp6:
+        case GxRs_AlphaOp7:
+            this->ISetAlphaOp(static_cast<uint32_t>(which - GxRs_AlphaOp0), value.m_data.u[0]);
+            break;
+
+        case GxRs_TexGen0:
+        case GxRs_TexGen1:
+        case GxRs_TexGen2:
+        case GxRs_TexGen3:
+        case GxRs_TexGen4:
+        case GxRs_TexGen5:
+        case GxRs_TexGen6:
+        case GxRs_TexGen7:
+            this->ISetTexGen(static_cast<uint32_t>(which - GxRs_TexGen0), value.m_data.i[0]);
+            break;
+
+        case GxRs_TextureShader0:
+        case GxRs_TextureShader1:
+        case GxRs_TextureShader2:
+        case GxRs_TextureShader3:
+        case GxRs_TextureShader4:
+        case GxRs_TextureShader5:
+        case GxRs_TextureShader6:
+        case GxRs_TextureShader7:
+            // The old device only reads this in IXformSetTex; a change alone marks the transform dirty
+            this->m_xforms[GxXform_Tex0 + (which - GxRs_TextureShader0)].m_dirty = 1;
+            break;
+
+        case GxRs_TextureCoord0:
+        case GxRs_TextureCoord1:
+        case GxRs_TextureCoord2:
+        case GxRs_TextureCoord3:
+        case GxRs_TextureCoord4:
+        case GxRs_TextureCoord5:
+        case GxRs_TextureCoord6:
+        case GxRs_TextureCoord7: {
+            uint32_t tmu = static_cast<uint32_t>(which - GxRs_TextureCoord0);
+            this->ISetTexCoord(tmu, value.m_data.u[0]);
+            break;
+        }
+
+        case GxRs_VertexShader:
+            this->m_pipelineDirty = 1;
+            break;
+
+        case GxRs_PixelShader:
+            this->m_pipelineDirty = 1;
+            this->m_stagesDirty = 1;
+            break;
+
+        case GxRs_PointScale:
+            this->m_hw.m_pointSize = value.m_data.f[0];
+            this->m_vertexStateDirty = 1;
+            break;
+
+        case GxRs_PointScaleAttenuation:
+            this->m_hw.m_pointScale = value.m_data.f[0] != 1.0f || value.m_data.f[1] != 0.0f || value.m_data.f[2] != 0.0f;
+            this->m_hw.m_pointScaleAttenuation[0] = value.m_data.f[0];
+            this->m_hw.m_pointScaleAttenuation[1] = value.m_data.f[1];
+            this->m_hw.m_pointScaleAttenuation[2] = value.m_data.f[2];
+            this->m_fixedVertexDirty = 1;
+            break;
+
+        case GxRs_PointScaleMin: {
+            float size = value.m_data.f[0];
+            this->m_hw.m_pointSizeMin = size > 1.0f ? size : 1.0f;
+            this->m_vertexStateDirty = 1;
+            break;
+        }
+
+        case GxRs_PointScaleMax: {
+            float size = value.m_data.f[0];
+            this->m_hw.m_pointSizeMax = size < this->m_caps.m_pointScaleMax ? size : this->m_caps.m_pointScaleMax;
+            this->m_vertexStateDirty = 1;
+            break;
+        }
+
+        case GxRs_PointSprite:
+            this->m_hw.m_pointSprite = value.m_data.i[0] != 0;
+            this->m_stagesDirty = 1;
+            break;
+
+        case Unk84: {
+            uint32_t factor = static_cast<uint32_t>(value.m_data.f[0] * 255.0f);
+            ColorFloats((factor << 24) | (factor << 16) | (factor << 8) | factor, this->m_hw.m_blendColor);
+            break;
+        }
+
+        case GxRs_ColorMaterial:
+            this->m_fixedKeysDirty = 1;
+            break;
+
+        default:
+            break;
+    }
+}
+
+void CGxDeviceMetalNative::ISetMaterial(CImVector diffuse, CImVector emissive, CImVector specular, float specularExp) {
+    this->m_hw.m_materialDiffuse[0] = diffuse.r * (1.0f / 255.0f);
+    this->m_hw.m_materialDiffuse[1] = diffuse.g * (1.0f / 255.0f);
+    this->m_hw.m_materialDiffuse[2] = diffuse.b * (1.0f / 255.0f);
+    this->m_hw.m_materialDiffuse[3] = diffuse.a * (1.0f / 255.0f);
+
+    // Direct3D tracks a separate ambient material; the client never sets one, so it follows the diffuse
+    memcpy(this->m_hw.m_materialAmbient, this->m_hw.m_materialDiffuse, sizeof(this->m_hw.m_materialAmbient));
+    this->m_hw.m_materialEmissive[0] = emissive.r * (1.0f / 255.0f);
+    this->m_hw.m_materialEmissive[1] = emissive.g * (1.0f / 255.0f);
+    this->m_hw.m_materialEmissive[2] = emissive.b * (1.0f / 255.0f);
+    this->m_hw.m_materialEmissive[3] = emissive.a * (1.0f / 255.0f);
+    this->m_hw.m_materialSpecular[0] = specular.r * (1.0f / 255.0f);
+    this->m_hw.m_materialSpecular[1] = specular.g * (1.0f / 255.0f);
+    this->m_hw.m_materialSpecular[2] = specular.b * (1.0f / 255.0f);
+    this->m_hw.m_materialSpecular[3] = specular.a * (1.0f / 255.0f);
+    this->m_hw.m_materialPower = specularExp;
+    this->m_hw.m_specularEnable = specularExp > 0.0f && (specular.r | specular.g | specular.b) != 0;
+    this->m_fixedVertexDirty = 1;
+}
+
+void CGxDeviceMetalNative::ISetTexture(uint32_t tmu, CGxTex* texId) {
+    if (tmu >= 16) {
+        return;
+    }
+
+    this->m_hw.m_textures[tmu] = texId ? this->ITexData(texId) : nullptr;
+    this->m_samplerDirty[tmu] = 1;
+
+    if (texId) {
+        // A texture the client marks for update is created and uploaded before it is drawn
+        this->ITexMarkAsUpdated(texId);
+
+        if (tmu < 8) {
+            HwStage& stage = this->m_hw.m_stages[tmu];
+            GxMetal::Texture* texture = this->ITexData(texId);
+
+            this->m_hw.m_samplers[tmu].m_filter = static_cast<uint8_t>(texId->m_flags.m_filter);
+            this->m_hw.m_samplers[tmu].m_wrapU = static_cast<uint8_t>(texId->m_flags.m_wrapU);
+            this->m_hw.m_samplers[tmu].m_wrapV = static_cast<uint8_t>(texId->m_flags.m_wrapV);
+            this->m_hw.m_samplers[tmu].m_maxAnisotropy = static_cast<uint8_t>(texId->m_flags.m_maxAnisotropy > 1 ? texId->m_flags.m_maxAnisotropy : 1);
+            this->m_hw.m_samplers[tmu].m_compare = texture && texture->Kind() == GxMetal::SAMPLERKIND_DEPTH ? 1 : 0;
+
+            if (stage.m_colorOp == GxMetal::StageOp_Disable) {
+                // A stage that was off and gets a texture takes the client's own operations again
+                stage.m_colorOp = static_cast<uint8_t>(this->m_appRenderStates[GxRs_ColorOp0 + tmu].m_value.m_data.u[0]);
+                stage.m_alphaOp = static_cast<uint8_t>(this->m_appRenderStates[GxRs_AlphaOp0 + tmu].m_value.m_data.u[0]);
+                this->m_appRenderStates[GxRs_ColorOp0 + tmu].m_dirty = 0;
+                this->m_appRenderStates[GxRs_AlphaOp0 + tmu].m_dirty = 0;
+            }
+        }
+    } else if (tmu < 8) {
+        HwStage& stage = this->m_hw.m_stages[tmu];
+        stage.m_colorOp = GxMetal::StageOp_Disable;
+        stage.m_alphaOp = GxMetal::StageOp_Disable;
+    }
+
+    this->m_samplerDirty[tmu] = 1;
+    this->m_stagesDirty = 1;
+    this->m_fixedKeysDirty = 1;
+}
+
+void CGxDeviceMetalNative::ISetColorOp(uint32_t tmu, uint32_t op) {
+    if (tmu < 8) {
+        this->m_hw.m_stages[tmu].m_colorOp = static_cast<uint8_t>(op <= GxMetal::StageOp_Disable ? op : GxMetal::StageOp_Disable);
+        this->m_stagesDirty = 1;
+    }
+}
+
+void CGxDeviceMetalNative::ISetAlphaOp(uint32_t tmu, uint32_t op) {
+    if (tmu < 8) {
+        this->m_hw.m_stages[tmu].m_alphaOp = static_cast<uint8_t>(op <= GxMetal::StageOp_Disable ? op : GxMetal::StageOp_Disable);
+        this->m_stagesDirty = 1;
+    }
+}
+
+void CGxDeviceMetalNative::ISetTexCoord(uint32_t tmu, uint32_t coord) {
+    if (tmu < 8) {
+        this->ISetTexCoordIndex(tmu, this->m_appRenderStates[GxRs_TexGen0 + tmu].m_value.m_data.i[0], coord);
+    }
+}
+
+void CGxDeviceMetalNative::ISetTexCoordIndex(uint32_t tmu, int32_t texGen, uint32_t coord) {
+    if (tmu >= 8) {
+        return;
+    }
+
+    HwStage& stage = this->m_hw.m_stages[tmu];
+
+    switch (static_cast<EGxTexGen>(texGen)) {
+        case GxTexGen_Disabled:
+            stage.m_texGen = GxMetal::TexGen_None;
+            stage.m_texcoordIndex = static_cast<uint8_t>(coord & 0x7);
+            break;
+        case GxTexGen_ObjectLinear:
+        case GxTexGen_EyeLinear:
+        case GxTexGen_Unk3:
+            stage.m_texGen = GxMetal::TexGen_ViewPosition;
+            break;
+        case GxTexGen_ReflectionMap:
+        case GxTexGen_SphereMap:
+            stage.m_texGen = GxMetal::TexGen_ViewReflection;
+            break;
+        case GxTexGen_Normal:
+            stage.m_texGen = GxMetal::TexGen_ViewNormal;
+            break;
+        default:
+            break;
+    }
+
+    this->m_fixedKeysDirty = 1;
+}
+
+void CGxDeviceMetalNative::ISetTexGen(uint32_t tmu, int32_t texGen) {
+    if (tmu >= 8) {
+        return;
+    }
+
+    this->ISetTexCoordIndex(tmu, texGen, this->m_appRenderStates[GxRs_TextureCoord0 + tmu].m_value.m_data.u[0]);
+
+    CGxMatrixStack& stack = this->m_texGen[tmu];
+    uint32_t level = stack.m_level;
+    C44Matrix matrix;
+    EGxTexGen gen = static_cast<EGxTexGen>(texGen);
+
+    if (gen == GxTexGen_ObjectLinear || gen == GxTexGen_EyeLinear) {
+        matrix = this->m_xforms[GxXform_View].m_mtx[this->m_xforms[GxXform_View].m_level].AffineInverse();
+
+        if (gen == GxTexGen_ObjectLinear) {
+            matrix = matrix * this->m_xforms[GxXform_World].m_mtx[this->m_xforms[GxXform_World].m_level].AffineInverse();
+        }
+    } else if (gen == GxTexGen_SphereMap) {
+        matrix.a0 = 0.5f;
+        matrix.b1 = 0.5f;
+        matrix.d0 = 0.5f;
+        matrix.d1 = 0.5f;
+    } else {
+        stack.Identity();
+        return;
+    }
+
+    stack.m_dirty = 1;
+    stack.m_flags[level] &= ~CGxMatrixStack::F_Identity;
+    stack.m_mtx[level] = matrix;
+    this->m_fixedKeysDirty = 1;
 }
 
 namespace {
@@ -1062,6 +1537,488 @@ int32_t CGxDeviceMetalNative::TexStretch(CGxTex* dest, const CiRect* destRect, c
     GxMetal::Target source = { this->m_backBuffer, 0, 0 };
     GxMetal::Target target = { texture, dest->m_target == GxTex_CubeMap ? face : 0, level };
     return this->m_metal->Stretch(source, sourceRect ? &from : nullptr, target, destRect ? &to : nullptr, linear) ? 1 : 0;
+}
+
+void CGxDeviceMetalNative::XformSetView(const C44Matrix& matrix) {
+    CGxDevice::XformSetView(matrix);
+    this->m_fixedVertexDirty = 1;
+}
+
+// CGxDeviceMetal.cpp:596 - the client projects into Direct3D's [0, 1] depth with its own matrices; the
+// fix-up below maps them onto the same range Metal expects (the shim forwards this matrix untouched)
+void CGxDeviceMetalNative::XformSetProjection(const C44Matrix& matrix) {
+    CGxDevice::XformSetProjection(matrix);
+
+    C44Matrix projNative = matrix;
+
+    if (!(fabs(projNative.c3 - 1.0f) < 0.00000023841858f) && !(fabs(projNative.c3) < 0.00000023841858f)) {
+        projNative *= 1.0f / projNative.c3;
+    }
+
+    if (projNative.d3 == 0.0f) {
+        float minZ = -(projNative.d2 / (projNative.c2 + 1.0f));
+        float maxZ = -(projNative.d2 / (projNative.c2 - 1.0f));
+        projNative.c2 = maxZ / (maxZ - minZ);
+        projNative.d2 = maxZ * minZ / (minZ - maxZ);
+    } else {
+        float invC2 = 1.0f / projNative.c2;
+        float minZ = (-1.0f - projNative.d2) * invC2;
+        float maxZ = (1.0f - projNative.d2) * invC2;
+        projNative.c2 = 1.0f / (maxZ - minZ);
+        projNative.d2 = minZ / (minZ - maxZ);
+    }
+
+    if (!(this->m_appMasterEnables & (1 << GxMasterEnable_NormalProjection)) && projNative.d3 != 1.0f) {
+        C44Matrix scale;
+        scale.a0 = 0.2f;
+        scale.b1 = 0.2f;
+        scale.c2 = 0.2f;
+        projNative = projNative * scale;
+    }
+
+    this->m_xforms[GxXform_Projection].m_dirty = 1;
+    this->m_projNative = projNative;
+    this->m_fixedVertexDirty = 1;
+}
+
+// CGxDeviceMetal.cpp:2812 - the state the client never pushes, then the client's own defaults
+void CGxDeviceMetalNative::IStateSetDefaults() {
+    memset(&this->m_hw, 0, sizeof(this->m_hw));
+
+    this->m_hw.m_blendEnable = false;
+    this->m_hw.m_srcBlend = MTLBlendFactorOne;
+    this->m_hw.m_dstBlend = MTLBlendFactorZero;
+    this->m_hw.m_colorWrite = MTLColorWriteMaskAll;
+    this->m_hw.m_depthCompare = MTLCompareFunctionLessEqual;
+    this->m_hw.m_depthWrite = true;
+    this->m_hw.m_cullMode = MTLCullModeNone;
+    this->m_hw.m_fillMode = MTLTriangleFillModeFill;
+    this->m_hw.m_pointSize = 1.0f;
+    this->m_hw.m_pointSizeMin = 1.0f;
+    this->m_hw.m_pointSizeMax = this->m_caps.m_pointScaleMax;
+
+    for (uint32_t i = 0; i < 8; i++) {
+        this->m_hw.m_stages[i].m_colorOp = GxMetal::StageOp_Disable;
+        this->m_hw.m_stages[i].m_alphaOp = GxMetal::StageOp_Disable;
+    }
+
+    for (uint32_t i = 0; i < 16; i++) {
+        this->m_samplerDirty[i] = 1;
+    }
+
+    this->m_primVertexDirty = 0xFFFFFFFF;
+    this->m_primIndexDirty = 0;
+    this->m_pipelineDirty = 1;
+    this->m_depthDirty = 1;
+    this->m_fixedKeysDirty = 1;
+    this->m_stagesDirty = 1;
+    this->m_vertexStateDirty = 1;
+    this->m_pixelStateDirty = 1;
+    this->m_fixedVertexDirty = 1;
+    this->m_ambientOnlyMode = 0;
+
+    for (uint32_t i = 0; i < 16; i++) {
+        this->m_hw.m_streams[i].m_buffer = nullptr;
+        this->m_hw.m_streams[i].m_offset = 0;
+        this->m_hw.m_streams[i].m_stride = 0;
+    }
+
+    // The client's IRsInit values run through the same translation as the frame's own state
+    this->IRsForceUpdate();
+    this->IRsSync(0);
+}
+
+// CGxDeviceMetal.cpp:1790 - everything the draw needs, in the order the old device syncs it
+void CGxDeviceMetalNative::IStateSync() {
+    if (!this->m_metal) {
+        return;
+    }
+
+    this->IRsSync(0);
+
+    bool hardwareVertexShader = this->m_hwRenderStates[GxRs_VertexShader].m_data.i[0] != 0;
+    bool appVertexShader = this->m_appRenderStates[GxRs_VertexShader].m_value.m_data.i[0] != 0;
+
+    if (!hardwareVertexShader || !appVertexShader) {
+        this->IStateSyncLights();
+        this->IStateSyncMaterial();
+        this->IStateSyncXforms();
+    }
+
+    this->IStateSyncEnables();
+    this->IStateSyncClipPlanes();
+    this->IStateSyncScissorRect();
+    this->IStateSyncVertexPtrs();
+
+    if (this->m_primIndexDirty) {
+        this->m_primIndexDirty = 0;
+        GxMetal::Assign(this->m_indexBuf, this->m_primIndexBuf ? PoolBuffer(this->m_primIndexBuf->m_pool) : nullptr);
+    }
+
+    if (this->m_viewportDirty) {
+        this->IXformSetViewport();
+        this->m_viewportDirty = 0;
+    }
+}
+
+// CGxDeviceMetal.cpp:727 - the master enables the client switches (wireframe among them)
+void CGxDeviceMetalNative::IStateSyncEnables() {
+    if (this->m_appMasterEnables == this->m_hwMasterEnables) {
+        return;
+    }
+
+    this->m_hw.m_fillMode = (this->m_appMasterEnables & (1 << GxMasterEnable_PolygonFill)) ? MTLTriangleFillModeFill : MTLTriangleFillModeLines;
+    this->m_hwMasterEnables = this->m_appMasterEnables;
+}
+
+// CGxDeviceMetal.cpp:741 - the client's world-space clip planes
+void CGxDeviceMetalNative::IStateSyncClipPlanes() {
+    if (!this->m_clipPlaneMask) {
+        return;
+    }
+
+    for (uint32_t i = 0; i < 6; i++) {
+        if (this->m_clipPlaneMask & (1 << i)) {
+            this->m_hw.m_clipPlanes[i][0] = this->m_clipPlane[i].n.x;
+            this->m_hw.m_clipPlanes[i][1] = this->m_clipPlane[i].n.y;
+            this->m_hw.m_clipPlanes[i][2] = this->m_clipPlane[i].n.z;
+            this->m_hw.m_clipPlanes[i][3] = this->m_clipPlane[i].d;
+        }
+    }
+
+    this->m_hw.m_clipPlaneMask = this->m_clipPlaneMask;
+    this->m_clipPlaneMask = 0;
+    this->m_vertexStateDirty = 1;
+}
+
+// CGxDeviceMetal.cpp:755 - normalized client rectangle to target pixels, y down
+void CGxDeviceMetalNative::IStateSyncScissorRect() {
+    if (!this->m_scissorRectDirty || !this->m_hwnd) {
+        return;
+    }
+
+    int32_t width = 0;
+    int32_t height = 0;
+    DrawableSize(this->m_hwnd, &width, &height);
+    bool textureTarget = this->m_textureTarget[GxBuffers_Color].m_texture != nullptr;
+
+    int32_t left = static_cast<int32_t>(this->m_scissorRect.minX * width + 0.5f);
+    int32_t right = static_cast<int32_t>(this->m_scissorRect.maxX * width + 1.0f);
+    int32_t top = textureTarget ? static_cast<int32_t>(this->m_scissorRect.minY * height + 0.5f) : static_cast<int32_t>((1.0f - this->m_scissorRect.maxY) * height + 0.5f);
+    int32_t bottom = textureTarget ? static_cast<int32_t>(1 + this->m_scissorRect.maxY * height) : static_cast<int32_t>(1 + (1.0f - this->m_scissorRect.minY) * height);
+
+    left = left < 0 ? 0 : (left > width ? width : left);
+    right = right < left ? left : (right > width ? width : right);
+    top = top < 0 ? 0 : (top > height ? height : top);
+    bottom = bottom < top ? top : (bottom > height ? height : bottom);
+
+    this->m_hw.m_scissor.left = left;
+    this->m_hw.m_scissor.top = top;
+    this->m_hw.m_scissor.right = right;
+    this->m_hw.m_scissor.bottom = bottom;
+    this->m_vertexStateDirty = 1;
+    this->m_scissorRectDirty = 0;
+}
+
+// CGxDeviceMetal.cpp:1298 - projection, view and world into the state block, then the texture matrices
+void CGxDeviceMetalNative::IStateSyncXforms() {
+    CGxMatrixStack& projection = this->m_xforms[GxXform_Projection];
+
+    if (projection.m_dirty) {
+        memcpy(this->m_hw.m_projection, &this->m_projNative, sizeof(this->m_hw.m_projection));
+        projection.m_dirty = 0;
+        this->m_fixedVertexDirty = 1;
+    }
+
+    CGxMatrixStack& view = this->m_xforms[GxXform_View];
+
+    if (view.m_dirty) {
+        memcpy(this->m_hw.m_view, &view.m_mtx[view.m_level], sizeof(this->m_hw.m_view));
+        view.m_dirty = 0;
+        this->m_fixedVertexDirty = 1;
+    }
+
+    CGxMatrixStack& world = this->m_xforms[GxXform_World];
+
+    if (world.m_dirty) {
+        this->IXformSetWorld();
+    }
+
+    for (uint32_t i = 0; i < 8; i++) {
+        if (this->m_xforms[GxXform_Tex0 + i].m_dirty || this->m_texGen[i].m_dirty) {
+            this->IXformSetTex(i);
+        }
+    }
+}
+
+// CGxDeviceMetal.cpp:1187 - the client's light slots; with lighting off the client gets ambient-only
+// shading, which eight disabled lights plus a white global ambient reproduce
+void CGxDeviceMetalNative::IStateSyncLights() {
+    bool lighting = this->m_appRenderStates[GxRs_Lighting].m_value.m_data.i[0] != 0;
+
+    if (lighting) {
+        this->m_ambientOnlyMode = 0;
+        this->m_hw.m_lighting = (this->m_appMasterEnables & (1 << GxMasterEnable_Lighting)) != 0;
+        this->m_hw.m_globalAmbient[0] = 0.0f;
+        this->m_hw.m_globalAmbient[1] = 0.0f;
+        this->m_hw.m_globalAmbient[2] = 0.0f;
+        this->m_hw.m_globalAmbient[3] = 0.0f;
+
+        for (uint32_t i = 0; i < GxMaxLights; i++) {
+            CGxApiLight& api = this->m_lights[i];
+            HwLight& hw = this->m_hw.m_lights[i];
+
+            if (!api.m_flags) {
+                continue;
+            }
+
+            if (api.m_flags & 0x1) {
+                if (!api.m_enable) {
+                    api.m_flags &= ~1u;
+                    hw.m_enabled = false;
+                    continue;
+                }
+
+                hw.m_enabled = true;
+            } else if (!api.m_enable) {
+                continue;
+            }
+
+            hw.m_type = api.m_dir.w == 1.0f ? GxMetal::LightType_Point : GxMetal::LightType_Directional;
+            hw.m_position[0] = api.m_dir.x;
+            hw.m_position[1] = api.m_dir.y;
+            hw.m_position[2] = api.m_dir.z;
+            hw.m_position[3] = api.m_dir.w;
+            hw.m_direction[0] = api.m_dir.x;
+            hw.m_direction[1] = api.m_dir.y;
+            hw.m_direction[2] = api.m_dir.z;
+            hw.m_direction[3] = api.m_dir.w;
+            hw.m_ambient[0] = api.m_ambColor.x * (1.0f / 255.0f);
+            hw.m_ambient[1] = api.m_ambColor.y * (1.0f / 255.0f);
+            hw.m_ambient[2] = api.m_ambColor.z * (1.0f / 255.0f);
+            hw.m_ambient[3] = 0.0f;
+            hw.m_diffuse[0] = api.m_dirColor.x * (1.0f / 255.0f);
+            hw.m_diffuse[1] = api.m_dirColor.y * (1.0f / 255.0f);
+            hw.m_diffuse[2] = api.m_dirColor.z * (1.0f / 255.0f);
+            hw.m_diffuse[3] = 1.0f;
+            hw.m_specular[0] = api.m_specColor.x * (1.0f / 255.0f);
+            hw.m_specular[1] = api.m_specColor.y * (1.0f / 255.0f);
+            hw.m_specular[2] = api.m_specColor.z * (1.0f / 255.0f);
+            hw.m_specular[3] = 0.0f;
+            hw.m_attenuation[0] = api.m_constantAttenuation;
+            hw.m_attenuation[1] = api.m_linearAttenuation;
+            hw.m_attenuation[2] = api.m_quadraticAttenuation;
+            api.m_flags = 0;
+        }
+
+        this->m_fixedVertexDirty = 1;
+        this->m_fixedKeysDirty = 1;
+        return;
+    }
+
+    bool vertexColors = (this->m_primVertexMask & (1 << GxVA_Color0)) != 0;
+    uint32_t diffuse = this->m_appRenderStates[GxRs_MatDiffuse].m_value.m_data.u[0];
+
+    if (vertexColors || diffuse == 0xFFFFFFFF) {
+        this->m_ambientOnlyMode = 0;
+        this->m_hw.m_lighting = false;
+        this->m_hw.m_globalAmbient[0] = 0.0f;
+        this->m_hw.m_globalAmbient[1] = 0.0f;
+        this->m_hw.m_globalAmbient[2] = 0.0f;
+        this->m_hw.m_globalAmbient[3] = 0.0f;
+    } else {
+        if (!this->m_ambientOnlyMode) {
+            this->m_ambientOnlyMode = 1;
+
+            for (uint32_t i = 0; i < GxMaxLights; i++) {
+                this->m_hw.m_lights[i].m_enabled = false;
+                this->m_lights[i].m_flags = this->m_lights[i].m_enable ? (this->m_lights[i].m_flags | 0x1) : (this->m_lights[i].m_flags & ~1u);
+            }
+        }
+
+        this->m_hw.m_lighting = true;
+        this->m_hw.m_globalAmbient[0] = 1.0f;
+        this->m_hw.m_globalAmbient[1] = 1.0f;
+        this->m_hw.m_globalAmbient[2] = 1.0f;
+        this->m_hw.m_globalAmbient[3] = 1.0f;
+    }
+
+    this->m_fixedVertexDirty = 1;
+    this->m_fixedKeysDirty = 1;
+}
+
+// CGxDeviceMetal.cpp:1279 - which colour source each material term takes; the client always has
+// vertex colours, so D3DRS_COLORVERTEX is on
+void CGxDeviceMetalNative::IStateSyncMaterial() {
+    bool vertexColors = (this->m_primVertexMask & (1 << GxVA_Color0)) != 0;
+
+    if (vertexColors) {
+        int32_t colorMaterial = this->m_appRenderStates[GxRs_ColorMaterial].m_value.m_data.i[0];
+        this->m_hw.m_ambientSource = colorMaterial == 0 ? GxMetal::MaterialSource_Color0 : GxMetal::MaterialSource_Material;
+        this->m_hw.m_diffuseSource = colorMaterial == 0 ? GxMetal::MaterialSource_Color0 : GxMetal::MaterialSource_Material;
+        this->m_hw.m_specularSource = colorMaterial == 1 ? GxMetal::MaterialSource_Color0 : GxMetal::MaterialSource_Material;
+        this->m_hw.m_emissiveSource = colorMaterial == 2 ? GxMetal::MaterialSource_Color0 : GxMetal::MaterialSource_Material;
+    } else {
+        this->m_hw.m_ambientSource = GxMetal::MaterialSource_Material;
+        this->m_hw.m_diffuseSource = GxMetal::MaterialSource_Material;
+        this->m_hw.m_specularSource = GxMetal::MaterialSource_Material;
+        this->m_hw.m_emissiveSource = GxMetal::MaterialSource_Material;
+    }
+
+    this->m_fixedKeysDirty = 1;
+}
+
+// CGxDeviceMetal.cpp:1720 - the vertex streams of the draw
+void CGxDeviceMetalNative::IStateSyncVertexPtrs() {
+    if (!this->m_primVertexDirty) {
+        return;
+    }
+
+    if (this->m_primVertexFormat != GxVertexBufferFormats_Last && this->m_primVertexBuf) {
+        // One known interleaved format: a single stream over the whole vertex
+        this->ISetVertexBuffer(0, PoolBuffer(this->m_primVertexBuf->m_pool), this->m_primVertexBuf->m_index, this->m_primVertexSize);
+        this->m_primVertexDirty = 0;
+        return;
+    }
+
+    // Attributes from several buffers: one stream per distinct buffer, the stride is the sum of its
+    // attributes' sizes (CGxDeviceMetal.cpp:1752-1763)
+    CGxBuf* buffers[GxVAs_Last] = {};
+    uint32_t strides[GxVAs_Last] = {};
+    uint32_t count = 0;
+
+    for (uint32_t i = 0; i < GxVAs_Last; i++) {
+        if (!(this->m_primVertexMask & (1 << i)) || !this->m_primVertexFormatBuf[i]) {
+            continue;
+        }
+
+        uint32_t stream = 0;
+
+        for (; stream < count; stream++) {
+            if (buffers[stream] == this->m_primVertexFormatBuf[i]) {
+                break;
+            }
+        }
+
+        if (stream == count) {
+            buffers[count++] = this->m_primVertexFormatBuf[i];
+        }
+
+        static const uint32_t kAttribSizes[7] = { 4, 4, 4, 8, 12, 4, 4 };
+        uint32_t type = this->m_primVertexFormatAttrib[i].m_type;
+        strides[stream] += kAttribSizes[type < 7 ? type : 0];
+    }
+
+    for (uint32_t stream = 0; stream < count; stream++) {
+        this->ISetVertexBuffer(stream, PoolBuffer(buffers[stream]->m_pool), buffers[stream]->m_index, strides[stream]);
+    }
+
+    this->m_primVertexDirty = 0;
+}
+
+void CGxDeviceMetalNative::IXformSetWorld() {
+    CGxMatrixStack& world = this->m_xforms[GxXform_World];
+    memcpy(this->m_hw.m_world, &world.m_mtx[world.m_level], sizeof(this->m_hw.m_world));
+    world.m_dirty = 0;
+    this->m_fixedVertexDirty = 1;
+}
+
+// CGxDeviceMetal.cpp:1835 - the texture matrix of a stage; the client's TextureShader value decides
+// whether the texture transform composes with the texgen matrix, and how many components it produces
+void CGxDeviceMetalNative::IXformSetTex(uint32_t tmu) {
+    if (tmu >= 8) {
+        return;
+    }
+
+    CGxMatrixStack& xform = this->m_xforms[GxXform_Tex0 + tmu];
+    CGxMatrixStack& texGen = this->m_texGen[tmu];
+    HwStage& stage = this->m_hw.m_stages[tmu];
+    int32_t mode = this->m_appRenderStates[GxRs_TextureShader0 + tmu].m_value.m_data.i[0];
+    C44Matrix matrix;
+
+    switch (mode) {
+        case 0: {
+            matrix = texGen.m_mtx[texGen.m_level];
+            bool identity = (texGen.m_flags[texGen.m_level] & CGxMatrixStack::F_Identity) != 0;
+            stage.m_transformCount = identity ? 0 : 3;
+            stage.m_projected = 0;
+            break;
+        }
+        case 1: {
+            C44Matrix product = texGen.m_mtx[texGen.m_level] * xform.m_mtx[xform.m_level];
+            matrix = product;
+
+            if (this->m_appRenderStates[GxRs_TexGen0 + tmu].m_value.m_data.i[0]) {
+                stage.m_transformCount = 3;
+            } else {
+                stage.m_transformCount = 2;
+                // Pack a 2D transform: the translation moves into the w row
+                matrix.c0 = product.d0;
+                matrix.c1 = product.d1;
+            }
+
+            stage.m_projected = 0;
+            break;
+        }
+        case 2: {
+            matrix = texGen.m_mtx[texGen.m_level] * xform.m_mtx[xform.m_level];
+            stage.m_transformCount = 3;
+            stage.m_projected = 3;
+            break;
+        }
+        default:
+            matrix.Identity();
+            stage.m_transformCount = 0;
+            stage.m_projected = 0;
+            break;
+    }
+
+    memcpy(stage.m_transform, &matrix, sizeof(stage.m_transform));
+    xform.m_dirty = 0;
+    texGen.m_dirty = 0;
+    this->m_fixedKeysDirty = 1;
+}
+
+// CGxDeviceMetal.cpp:1910 - the client's normalized viewport to Metal's pixels
+void CGxDeviceMetalNative::IXformSetViewport() {
+    if (!this->m_hwnd) {
+        return;
+    }
+
+    int32_t width = 0;
+    int32_t height = 0;
+    DrawableSize(this->m_hwnd, &width, &height);
+
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+
+    float windowWidth = static_cast<float>(width);
+    float windowHeight = static_cast<float>(height);
+    float x = this->m_viewport.m_x.m_l * windowWidth;
+    float y = (1.0f - this->m_viewport.m_y.m_h) * windowHeight;
+    float w = this->m_viewport.m_x.m_h * windowWidth - x;
+    float h = (1.0f - this->m_viewport.m_y.m_l) * windowHeight - y;
+
+    if (this->m_textureTarget[GxBuffers_Color].m_texture || this->m_textureTarget[GxBuffers_Depth].m_texture) {
+        y = windowHeight * this->m_viewport.m_y.m_l;
+    }
+
+    // Direct3D puts pixel centres at integers, Metal at half-integers; slightly less than a half keeps
+    // exact-texel quads stable (the shim's kPixelCenterOffset)
+    const float pixelCentre = 0.5f - 1.0f / 128.0f;
+    this->m_hw.m_viewport[0] = x + pixelCentre;
+    this->m_hw.m_viewport[1] = y + pixelCentre;
+    this->m_hw.m_viewport[2] = w;
+    this->m_hw.m_viewport[3] = h;
+
+    float minZ = this->m_viewport.m_z.m_l;
+    float maxZ = this->m_viewport.m_z.m_h;
+    minZ = minZ < 0.0f ? 0.0f : (minZ > 1.0f ? 1.0f : minZ);
+    maxZ = maxZ < minZ ? minZ : (maxZ > 1.0f ? 1.0f : maxZ);
+    this->m_hw.m_viewport[4] = minZ;
+    this->m_hw.m_viewport[5] = maxZ;
+    this->m_vertexStateDirty = 1;
 }
 
 bool CGxDeviceMetalNative::QueryBegin(CGxQuery* query) {
