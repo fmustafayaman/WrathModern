@@ -213,6 +213,29 @@ Başlangıç noktası: commit `f917b1c`, etiket `wowre-start` (`git diff wowre-s
   eşlemesi ve Mod API v2 gereksinimleri → `/tmp/wowre-specs/*.md` (bitince repoya `Docs/Mods/` olarak alınır).
 - `WowRe` (bu worktree): koordinasyon, Faz 2 (Mod API v2), dalların birleştirilmesi ve doğrulama.
 
+### 2026-10-21 sabah — Faz 2 çekirdeği (Mod API v2) tamamlandı
+
+- `WMModAPI.h` v2: Lua fonksiyonu/olay/CVar kaydı, `SignalEvent`, `ExecuteLua`, `GetLuaState`,
+  `GetScriptContext`, `OnScriptContext(context, loaded)`. `WMModHost.size` + `WM_HOST_HAS` ile ileri
+  uyumluluk; v1 modlar yüklenmeye devam eder.
+- Lua C API'si yürütülebilir dosyadan dışa açık (128 sembol); modlar `-undefined dynamic_lookup` ile
+  bağlanır, ikinci bir Lua kopyası **asla** bağlanmaz.
+- Glue (`CGlueMgr`) ve oyun (`GameUI`) Lua durumu her kurulduğunda mod fonksiyonları yeniden kaydedilir;
+  mod olayları istemcinin olaylarından sonra eklenir (`FrameScript_AppendEvents`), istemci indeksleri değişmez.
+- **Tuzak:** istemcinin `OsValidateFunctionPointer`'ı Lua C fonksiyonlarının ve CVar callback'lerinin
+  ana ikilinin `__TEXT`'inde olmasını şart koşuyor ("Invalid function pointer" fatal). Kontrol
+  kapatılmadı; ModHost yüklediği her modun `__TEXT`'ini `OsAllowFunctionPointerImage` ile ekliyor.
+- Doğrulama: `Mods/Samples/ApiSmoke` (oyun dizinine geçici kopyalandı, sonra silindi) — glue ve oyun
+  bağlamında ping/olay/CVar zinciri `Logs/Mods.log`'da eksiksiz.
+- Oyun dizinindeki mod klasörü `WoW_Wrath/mods` (exFAT büyük/küçük harf duyarsız, `Mods` ile aynı);
+  içinde Windows Reforged DLL'leri de duruyor, ModHost yalnızca `*.dylib` yükler.
+
+### Token bütçesi kararı (kullanıcı, 2026-10-21 sabah)
+
+Kullanıcı: "Token sınırlı, ajanları çok sık kullanma." Bundan sonra **en fazla bir ajan** aynı anda
+çalışır; ajan talimatları tutumlu olmayı söyler. Sıra: Faz 3 ajanı (bitiyor) → Faz 1 ajanı (adım 1
+commit'lendi, devam edecek) → spesifikasyon ajanı yalnızca gerekirse. Küçük işler (Lux vb.) ana oturumda.
+
 ## Sıradaki adımlar (yarıda kalırsa buradan devam)
 
 1. [x] Faz 1 tasarımı (yukarıda "Faz 1 tasarımı").
