@@ -349,6 +349,7 @@ kademe: hwTnL + 8 doku birimi + SM3). Modlar cihazı `GxMetalDevice`/`GxMetalAcq
 | 7 | `ScenePresent` `WaitForFPSCap` çağırmıyordu | `maxFPS`/`maxFPSBk` etkisiz (pil, ısı) | Eklendi |
 | 8 | `gxVSync` yok sayılıyordu (shim'de de) | Dikey senkron kapatılamıyordu | `CAMetalLayer.displaySyncEnabled` |
 | 9 | `DeviceReadDepths` boş dizi döndürüyordu | D3D dikdörtgen boyutunda sıfır dizisi döndürür; çağıran indekslerse taşma | D3D ile aynı |
+| 11 | İndekssiz çizimin başlangıç köşesine **son bağlanan indeks tamponunun** havuz ofseti ekleniyordu | Yağmur damlaları/sıçramaları (ve indekssiz her çizim) bazı karelerde tampon dışı köşeler okuyordu → gökyüzünde ve yağmurda ekranı kesen çizgi patlamaları (kullanıcı ekran kaydıyla buldu; shim ve CrossOver'da yok) | D3D `DrawPrimitive` gibi `baseVertexIndex`; indekssiz yelpazede taban köşe iki kez eklenmiyor |
 | 10 | Çizim yolunda unutulmuş hata ayıklama günlüğü (`stage N texture kind`) | Log gürültüsü | Silindi |
 
 **Doğrulama (autotest, kendi sunucu, Rhon, Apple M4):**
@@ -360,6 +361,10 @@ kademe: hwTnL + 8 doku birimi + SM3). Modlar cihazı `GxMetalDevice`/`GxMetalAcq
 - İmleç: üretilen NSCursor görüntüsü dökülüp incelendi (WoW eldiveni, renkler doğru, 64 px Retina).
 - Kararlılık: 5 dk dünyada (`world@30,world@300`), sıfır GPU/komut tamponu hatası; WTF geri yüklendi.
 - Faz 3 #67 gereksinimleri karşılanıyor: vertex sabit dosyası 256 kayıt, sabit fonksiyon 8 ışık.
+
+**Teşhis notu (#11):** önce tampon yarışından şüphelenildi; geçici sayaç (`NoOverwrite` kilidi GPU kullanırken)
+`WeatherPacket_vtx`'te sıfır yarış gösterdi ve hipotezi eledi. Ekran kaydının kare kare incelenmesi patlamaların
+bir karedeki tüm damlaları birden bozduğunu gösterdi → çizim başına durum hatası. Kullanıcı yağmurda doğruladı.
 
 **Bilinen sınırlar:** stereo yok (macOS); `DeviceReadDepths` D3D gibi sıfır döndürür; pencereli modda
 `gxResolution` nokta değil piksel olarak uygulanıyor (shim'deki davranış, ayrı bakılacak).

@@ -2975,9 +2975,10 @@ void CGxDeviceMetalNative::IDraw(const CGxBatch* batch, bool indexed, uint32_t b
         return;
     }
 
-    // The index buffer's base within its pool, plus the batch's start (CGxDeviceMetal.cpp:2805)
-    uint32_t indexBase = this->m_primIndexBuf ? (this->m_primIndexBuf->m_index >> 1) : 0;
-    uint32_t first = indexBase + batch->m_start;
+    // Indexed: the index buffer's base within its pool plus the batch's start, as DrawIndexedPrimitive's
+    // StartIndex. Not indexed: the first vertex is the base vertex index, as DrawPrimitive's
+    // StartVertex (CGxDeviceD3d::IDraw); the last index buffer's offset belongs to another draw
+    uint32_t first = indexed ? (this->m_primIndexBuf ? (this->m_primIndexBuf->m_index >> 1) : 0) + batch->m_start : baseVertexIndex;
 
     if (batch->m_primType == GxPrim_TriangleFan) {
         // Metal has no triangle fans; expand into a scratch index list in the upload heap
@@ -2991,10 +2992,13 @@ void CGxDeviceMetalNative::IDraw(const CGxBatch* batch, bool indexed, uint32_t b
         const uint16_t* shadow = (indexed && this->m_indexBuf) ? reinterpret_cast<const uint16_t*>(this->m_indexBuf->m_shadow.data()) : nullptr;
         uint32_t available = (indexed && this->m_indexBuf) ? this->m_indexBuf->m_length / 2 : 0;
 
+        // The draw adds the base vertex itself, so a fan without indices counts from 0
+        uint32_t fanFirst = indexed ? first : 0;
+
         for (uint32_t i = 0; i < primitiveCount; i++) {
-            uint32_t a = first;
-            uint32_t b = first + i + 1;
-            uint32_t c = first + i + 2;
+            uint32_t a = fanFirst;
+            uint32_t b = fanFirst + i + 1;
+            uint32_t c = fanFirst + i + 2;
             out[i * 3 + 0] = (shadow && a < available) ? shadow[a] : a;
             out[i * 3 + 1] = (shadow && b < available) ? shadow[b] : b;
             out[i * 3 + 2] = (shadow && c < available) ? shadow[c] : c;
