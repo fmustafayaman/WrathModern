@@ -22,6 +22,7 @@
 #include "Engine/Source/Tempest/CFacet.h"
 #include "Engine/Source/Tempest/CMath.h"
 #include "Engine/Source/Tempest/CWFrustum.h"
+#include "WoW/Source/WorldClient/Mods/ModHost.h"
 #include "WoW/Source/DB/DBClient/DBClient.h"
 #include "WoW/Source/DB/Rec/VehicleRec.h"
 #include "WoW/Source/Object/CMoveSpline.h"
@@ -2364,6 +2365,8 @@ void CGCamera::CalcTargetCamera(CGObject_C* target, uint32_t time) {
     this->UpdateUncontrolledState(uncontrolled);
 
     C3Vector safePos = this->GetSafeWorldPos(target);
+    // Mods: the shoulder camera moves the orbit target here, where Lux Shoulder Cam patched 0x006070CB
+    WRATHMODERN_MOD_CAMERA_TARGET(&this->m_position.x, &safePos.x);
     float flightLower = -500.0f;
     World::GetFlightBoundsLower(safePos, &flightLower);
 

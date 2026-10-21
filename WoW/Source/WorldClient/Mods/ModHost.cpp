@@ -21,6 +21,8 @@
 #include "WoW/Source/WorldClient/DayNight.h"
 #include "WoW/Source/WorldClient/DayNight__DNInfo.h"
 #include "WoW/Source/WorldClient/World.h"
+#include "WoW/Source/ObjectMgrClient/ObjectMgrClient.h"
+#include "WoW/Source/Object/ObjectClient/Player_C.h"
 
 namespace {
 
@@ -321,6 +323,7 @@ void LoadMod(const std::string& path, const std::string& name) {
     // A version 1 mod has no members after Shutdown
     if (mod->info.version < 2) {
         mod->info.OnScriptContext = nullptr;
+        mod->info.OnCameraTarget = nullptr;
     }
 
     LogLine("%s: loaded as \"%s\" (interface version %u)", name.c_str(), mod->info.name ? mod->info.name : name.c_str(), mod->info.version);
@@ -444,6 +447,39 @@ void ModsScriptsLoaded(uint32_t context) {
             mod->info.OnScriptContext(context, 1, mod->info.user);
         }
     }
+}
+
+void ModsCameraTarget(const float* cameraPosition, float* targetPosition) {
+    bool any = false;
+
+    for (LoadedMod* mod : s_mods) {
+        any = any || mod->info.OnCameraTarget;
+    }
+
+    if (!any) {
+        return;
+    }
+
+    WMCameraTarget camera = {};
+    std::memcpy(camera.cameraPosition, cameraPosition, sizeof(camera.cameraPosition));
+    std::memcpy(camera.targetPosition, targetPosition, sizeof(camera.targetPosition));
+
+    if (CGPlayer_C* player = ClntObjMgrGetActivePlayerObj()) {
+        C3Vector position = player->GetPosition();
+        camera.playerPosition[0] = position.x;
+        camera.playerPosition[1] = position.y;
+        camera.playerPosition[2] = position.z;
+        camera.playerFacing = player->GetFacing();
+        camera.playerValid = 1;
+    }
+
+    for (LoadedMod* mod : s_mods) {
+        if (mod->info.OnCameraTarget) {
+            mod->info.OnCameraTarget(&camera, mod->info.user);
+        }
+    }
+
+    std::memcpy(targetPosition, camera.targetPosition, sizeof(camera.targetPosition));
 }
 
 void ModsShutdown() {

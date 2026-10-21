@@ -107,6 +107,22 @@ typedef struct WMFrameTargets {
     uint32_t sampleCount; /* above 1 when the targets are multisampled */
 } WMFrameTargets;
 
+/*
+ * The orbit target of the third-person camera, as CGCamera::CalcTargetCamera computes it each frame from
+ * the followed object's safe world position, before the flight bounds and the camera eye are derived from
+ * it. Shifting targetPosition shifts the whole orbit (camera collision follows the shifted target).
+ */
+typedef struct WMCameraTarget {
+    /* The camera eye of the previous frame */
+    float cameraPosition[3];
+    /* The orbit target; a mod may change it */
+    float targetPosition[3];
+    /* The active player's position and facing (radians), when playerValid */
+    float playerPosition[3];
+    float playerFacing;
+    int32_t playerValid;
+} WMCameraTarget;
+
 /* A Lua function a mod adds to the interface; the client's lua_CFunction */
 typedef int (*WMLuaFunction)(struct lua_State* L);
 
@@ -190,6 +206,8 @@ typedef struct WMModInfo {
      * have loaded. May be NULL.
      */
     void (*OnScriptContext)(uint32_t context, int32_t loaded, void* user);
+    /* Called each time the camera computes its orbit target (see WMCameraTarget); may be NULL */
+    void (*OnCameraTarget)(WMCameraTarget* camera, void* user);
 } WMModInfo;
 
 /*

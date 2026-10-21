@@ -16,16 +16,20 @@ void ModsRunHook(WMHook hook);
 void ModsRegisterScriptFunctions(uint32_t context);
 void ModsCreateEvents(uint32_t context);
 void ModsScriptsLoaded(uint32_t context);
+// The camera's orbit target (CGCamera::CalcTargetCamera); mods may move it
+void ModsCameraTarget(const float* cameraPosition, float* targetPosition);
 void ModsShutdown();
 #define WRATHMODERN_MOD_HOOK(hook) ModsRunHook(hook)
 #define WRATHMODERN_MOD_SCRIPT_FUNCTIONS(context) ModsRegisterScriptFunctions(context)
 #define WRATHMODERN_MOD_SCRIPT_EVENTS(context) ModsCreateEvents(context)
 #define WRATHMODERN_MOD_SCRIPTS_LOADED(context) ModsScriptsLoaded(context)
+#define WRATHMODERN_MOD_CAMERA_TARGET(camera, target) ModsCameraTarget(camera, target)
 #else
 #define WRATHMODERN_MOD_HOOK(hook) ((void)0)
 #define WRATHMODERN_MOD_SCRIPT_FUNCTIONS(context) ((void)0)
 #define WRATHMODERN_MOD_SCRIPT_EVENTS(context) ((void)0)
 #define WRATHMODERN_MOD_SCRIPTS_LOADED(context) ((void)0)
+#define WRATHMODERN_MOD_CAMERA_TARGET(camera, target) ((void)0)
 #endif
 
 #endif
