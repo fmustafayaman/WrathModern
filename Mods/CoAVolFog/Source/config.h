@@ -74,5 +74,12 @@ bool LoadConfig(const std::string& path, Config& out);
 // Whether two configurations draw the same fog (the temporal history survives only that)
 bool SameFogSettings(const Config& a, const Config& b);
 
+// A setting by its ini key: kind 'i' (integer), 'f' (float) or 'b' (0/1), its range and value
+bool GetSetting(const Config& config, const char* key, char& kind, float& lo, float& hi, float& value);
+// Sets a setting by its ini key, clamped to its range; returns the value it took
+bool SetSetting(Config& config, const char* key, float value, float& applied);
+// Writes every setting into the [CoAVolFog] section of path, keeping the file's other lines and comments
+bool SaveConfig(const std::string& path, const Config& config);
+
 // "Key=value" lines for every setting, for the log
 std::string DescribeConfig(const Config& config);

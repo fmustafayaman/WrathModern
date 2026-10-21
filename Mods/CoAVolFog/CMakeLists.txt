@@ -12,6 +12,12 @@ file(READ ${COAVOLFOG_SHADER} COAVOLFOG_SHADER_TEXT)
 file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/vf_fog_source.h
     "#pragma once\n// Generated from Shaders/vf_fog.metal\nstatic const char kVfFogSource[] = R\"MSL(${COAVOLFOG_SHADER_TEXT})MSL\";\n")
 
+set(COAVOLFOG_PANEL ${CMAKE_CURRENT_SOURCE_DIR}/Source/panel.lua)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${COAVOLFOG_PANEL})
+file(READ ${COAVOLFOG_PANEL} COAVOLFOG_PANEL_TEXT)
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/panel_source.h
+    "#pragma once\n// Generated from Source/panel.lua\nstatic const char kPanelSource[] = R\"LUA(${COAVOLFOG_PANEL_TEXT})LUA\";\n")
+
 wrathmodern_add_mod(CoAVolFog
     Source/CoAVolFog.mm
     Source/config.cpp

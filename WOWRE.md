@@ -400,6 +400,13 @@ taşınabilir C++ olarak aynen alınır. Ayar dosyası `Mods/CoAVolFog.ini` (ayn
   orijinalle aynı: ölçek, ayarlar, harita, ekran efekti yuvası, ileri yön ≥ 45°, projeksiyon, boyut, < 0,25 s,
   < 30 yd hareket), march jitter açık. Duskwood'da dönen kamerada hayaletlenme yok (`build/autotest/t-val`),
   doğrulama 0 hata, 60 FPS, GPU 13,8–16,1 ms.
+- **Ayar paneli — TAMAM (2026-10-21, kullanıcı isteği; dilim 9'dan öne alındı):** `Source/panel.lua` (İngilizce;
+  WoW şablonları: OptionsSlider, UICheckButton, UIPanelScrollFrame, diyalog çerçevesi), `ALT-F7`
+  (`SetOverrideBindingClick`, kalıcı tuş atamalarına dokunmaz) ve `/coavolfog`; Esc kapatır. Lua köprüsü:
+  `CoAVolFog_Get/Set/Save/Revert` (oyun bağlamı). Ayarlar anında uygulanıyor (geçmiş `SameFogSettings` ile
+  sıfırlanıyor). `SaveConfig` ini'yi yorum ve sırayı koruyarak yazıyor; değeri değişmeyen satırın yazımı
+  korunuyor (kayıt sonrası md5 birebir aynı — test edildi). Panelde yalnızca şu ana kadar etkili ayarlar var;
+  her yeni dilim kendi ayarlarını ekler. Oyun içinde Enable kapatılırsa stok sis kare sonunda yine geri konuyor.
 - **Sıradaki — dilim 5:** yerel ışıklar (8 slot, `local_light_stabiliser.cpp`, ışık tablosu motordan:
   `CM2Scene` ışıkları; `vf_local_lights` zaten MSL'de, lit varyant hazır).
 

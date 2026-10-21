@@ -14,6 +14,8 @@
 #include "log.h"
 #include "renderer_metal.h"
 #include "water_data.h"
+#include "lua.h"
+#include "panel_source.h"
 
 namespace
 {
@@ -28,6 +30,7 @@ struct State
     FogData fog;
     WaterData water;
     FogRenderer renderer;
+    std::string iniPath;
     engine::StockFog savedStockFog = {};
     bool stockFogPushed = false;
     bool renderedThisFrame = false;
@@ -68,16 +71,23 @@ void OnWorldEnd()
 
 void OnHook(WMHook hook, void* user)
 {
-    if (!s.config.enable)
+    // The end of the world render restores the stock fog even when the panel just turned the fog off
+    if (hook == WM_HOOK_WORLD_END)
+    {
+        OnWorldEnd();
         return;
+    }
+
+    if (!s.config.enable)
+    {
+        s.renderedThisFrame = false;
+        return;
+    }
 
     switch (hook)
     {
     case WM_HOOK_WORLD_BEGIN:
         OnWorldBegin();
-        break;
-    case WM_HOOK_WORLD_END:
-        OnWorldEnd();
         break;
     case WM_HOOK_BEFORE_SCREEN_EFFECTS:
         @autoreleasepool
@@ -92,6 +102,58 @@ void OnHook(WMHook hook, void* user)
     default:
         break;
     }
+}
+
+// The settings panel's functions (panel.lua)
+
+// CoAVolFog_Get(key) -> value, lo, hi, kind ("i", "f" or "b")
+int LuaGet(lua_State* L)
+{
+    const char* key = lua_tolstring(L, 1, nullptr);
+    char kind;
+    float lo, hi, value;
+    if (!key || !GetSetting(s.config, key, kind, lo, hi, value))
+        return 0;
+    const char kindText[2] = {kind, 0};
+    lua_pushnumber(L, value);
+    lua_pushnumber(L, lo);
+    lua_pushnumber(L, hi);
+    lua_pushstring(L, kindText);
+    return 4;
+}
+
+// CoAVolFog_Set(key, value) -> the value taken (clamped to the setting's range)
+int LuaSet(lua_State* L)
+{
+    const char* key = lua_tolstring(L, 1, nullptr);
+    float applied;
+    if (!key || !SetSetting(s.config, key, static_cast<float>(lua_tonumber(L, 2)), applied))
+        return 0;
+    LogSetLevel(s.config.logLevel);
+    lua_pushnumber(L, applied);
+    return 1;
+}
+
+int LuaSave(lua_State* L)
+{
+    bool saved = SaveConfig(s.iniPath, s.config);
+    VF_LOG_INFO("settings %s %s", saved ? "saved to" : "could not be saved to", s.iniPath.c_str());
+    lua_pushboolean(L, saved ? 1 : 0);
+    return 1;
+}
+
+int LuaRevert(lua_State* L)
+{
+    LoadConfig(s.iniPath, s.config);
+    LogSetLevel(s.config.logLevel);
+    VF_LOG_INFO("settings reloaded from %s", s.iniPath.c_str());
+    return 0;
+}
+
+void OnScriptContext(uint32_t context, int32_t loaded, void* user)
+{
+    if (context == WM_SCRIPT_GAME && loaded)
+        s.host->ExecuteLua(kPanelSource, "CoAVolFog panel");
 }
 
 void Shutdown(void* user)
@@ -114,6 +176,7 @@ extern "C" __attribute__((visibility("default"))) int32_t WMModLoad(const WMModH
     LogOpen((game + "/Logs/CoAVolFog.log").c_str());
 
     std::string iniPath = game + "/Mods/CoAVolFog.ini";
+    s.iniPath = iniPath;
     bool read = LoadConfig(iniPath, s.config);
     LogSetLevel(s.config.logLevel);
     VF_LOG_INFO("CoAVolFog for Metal, slice 2; settings %s %s", read ? "from" : "defaulted, no", iniPath.c_str());
@@ -126,6 +189,12 @@ extern "C" __attribute__((visibility("default"))) int32_t WMModLoad(const WMModH
     info->name = "CoAVolFog";
     info->OnHook = OnHook;
     info->Shutdown = Shutdown;
+    info->OnScriptContext = OnScriptContext;
+
+    host->RegisterLuaFunction("CoAVolFog_Get", LuaGet, WM_SCRIPT_GAME);
+    host->RegisterLuaFunction("CoAVolFog_Set", LuaSet, WM_SCRIPT_GAME);
+    host->RegisterLuaFunction("CoAVolFog_Save", LuaSave, WM_SCRIPT_GAME);
+    host->RegisterLuaFunction("CoAVolFog_Revert", LuaRevert, WM_SCRIPT_GAME);
     host->Log(s.config.enable ? "CoAVolFog: loaded" : "CoAVolFog: loaded, disabled by Enable=0");
     return 1;
 }
