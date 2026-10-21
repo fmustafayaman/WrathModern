@@ -429,6 +429,19 @@ taşınabilir C++ olarak aynen alınır. Ayar dosyası `Mods/CoAVolFog.ini` (ayn
 - **Sıradaki — dilim 7:** Forever suyu (`water_renderer.cpp` 1517 + `water_fft.cpp` 759 + spektrum/dalga/temas,
   `vw_*.hlsl` ~800 satır): sıvı geçişinde sınıf etiketleme (stencil), GPU FFT, gölgelendirme, köpük, SSR.
 
+**Dilim 7 (su) tasarımı (2026-10-21):**
+- Orijinal: sıvı geçişini sarar (`0x790AA2` → `Liquid::CRenderer::Flush(camera, 1)`), her su çizimini
+  (`CMaterialWater::Render`, `CMaterialWaterNoSpec::Render` vtable yuvaları) sınıflandırıp (göl/nehir/okyanus/iç
+  mekân, `ClassifyWaterSettings`) stencil'e etiketler; sonra her sınıf için stencil testli tam ekran su geçişi.
+- Bizde: (1) native cihazda pencere derinliği `Depth32Float_Stencil8`; `GxMetalSetStencilTag(tag)` — tag > 0 iken
+  her çizim stencil'e `replace(tag)` yazar (karşılaştırma always, maske 0xFF), 0 iken stencil kapalı (bugünkü
+  davranış). (2) Mod API: `WM_HOOK_WATER_BEGIN/END` (`RenderLiquidPass`'ta Flush çevresi) ve su malzemesi
+  çiziminde `OnWaterDraw(settings, begin)` → mod sınıflandırır ve etiketi ayarlar. (3) `LiquidDepth`: su
+  geçişinde derinlik yazımını zorlama — host bayrağı. (4) Mod: su öncesi sahne + doğrusal derinlik kopyası,
+  FFT (`water_fft`, `water_spectrum`), sınıf başına stencil testli `vw_water` geçişi, SSR, köpük, dalga halkaları.
+- Adımlar: 7.1 cihaz stencil + Mod API kancaları + sınıf görselleştirme (`WaterDebugView=5`); 7.2 FFT + yüzey;
+  7.3 gölgelendirme (Beer–Lambert, HG, EnvBRDF, GGX, SSR); 7.4 köpük + bölge renkleri; 7.5 dalga halkaları.
+
 **Kabul ölçütü:** her dilimde aynı nokta/saat için Windows CoAVolFog (CrossOver) ↔ WowRe karşılaştırması
 (kullanıcı referans kareyi verir), sıfır Metal doğrulama hatası, kare süresi ölçümü (`WRATHMODERN_FRAMESTATS`).
 
