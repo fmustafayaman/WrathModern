@@ -236,6 +236,37 @@ Kullanıcı: "Token sınırlı, ajanları çok sık kullanma." Bundan sonra **en
 çalışır; ajan talimatları tutumlu olmayı söyler. Sıra: Faz 3 ajanı (bitiyor) → Faz 1 ajanı (adım 1
 commit'lendi, devam edecek) → spesifikasyon ajanı yalnızca gerekirse. Küçük işler (Lux vb.) ana oturumda.
 
+### 2026-10-21 öğlen — Faz 3 birleşti, Lux bitti, AwesomeWotlk başladı
+
+- `WowRe-patches` → `WowRe` birleşti (çakışmasız). Artık `-DWOWDECOMP_DISABLE_SIGNATURE_CHECKS=OFF` ile
+  çalışıyor (yama #19). Faz 3 ayrıntıları "Faz 3 — St0ny Reforged yamaları" bölümünde.
+- **Motor SDK'sı kararı:** yürütülebilir dosya ~23 bin C++ sembolünü dışa açıyor. Ağır modlar
+  (`Mods/CMakeLists.txt`, ana ağaçta derlenir) decompile başlıklarını kullanıp istemci fonksiyonlarını
+  isimle çağırır (`-undefined dynamic_lookup`); Windows DLL'lerinin adresle yaptığı her okuma/çağrı böyle
+  karşılanır. Host hook'u yalnızca kontrol akışına müdahale gereken yerlerde. **Tuzak:** üst CMake
+  `link_libraries(MacPlatform)` modlara sızmasın diye `wrathmodern_add_mod` LINK_LIBRARIES'i boşaltır.
+  Mod istemciyle aynı derlemeden gelmeli (yapı düzenleri eşleşmeli).
+- **LuxShoulderCam (Faz 4, tamam):** host'ta `CGCamera::CalcTargetCamera` içinde `OnCameraTarget`
+  (orijinalin 0x006070CB yamasının yeri). Mod DLL'in disassembly'den çıkan mantığını birebir uygular,
+  `LSC()` protokolü + `LuxShoulderCam.cfg`. Doğrulama: değiştirilmemiş addon kayıtlı ofsetleri uyguladı,
+  karakter merkezin sağında, sohbette "Active -- /lsc to open panel". Kullanıcının cfg'si geri yüklendi (0/0).
+- **AwesomeWotlk A aşaması (tamam):** `AwesomeWotlk=38` global'i, 48 CVar (varsayılan/aralık/kırpma),
+  Unit API'leri, `GetInventoryItemTransmog`, `GetSpellBaseCooldown`, `IsWindowFocused`, `FocusWindow`,
+  `CopyToClipboard`. AwesomeCVar artık "not loaded" demiyor. **Henüz etkisiz CVar'lar** (B/C aşamasında
+  bağlanacak): nameplate*, camera*, showPlayer, interaction*, ui*, MSDF*, objectHighlightMode,
+  portraitResolution, chat/combatLogSessionKey, tts*.
+- Modlar artık derlemeyle `WoW_Wrath/Mods` (= `mods`) içine kurulur: `LuxShoulderCam.dylib`,
+  `AwesomeWotlk.dylib`. Eski v1 host'lu derlemeler (ör. `WrathModern.app`) v2 modları reddeder.
+
+### Kalan iş (öncelik sırası)
+
+1. Faz 1 ajanı (native Metal) — sürüyor; bitince `WowRe-metal` → `WowRe` birleştir, tüm testleri koş.
+2. AwesomeWotlk B: `C_NamePlate` + `NAME_PLATE_*` olayları + `nameplateN` token'ları, nameplate yerleşim
+   yöneticisi (stacking/clamp/occlusion/alpha, `nameplateDistance`), `cameraFov`, `showPlayer`,
+   `GetItemInfoInstant`, `/interact`, `[@cursor]`, sohbet log adları, portre çözünürlüğü, UI piksel düzeltmeleri.
+3. CoAVolFog (Faz 5) — spesifikasyonu henüz yazılmadı (ajan duraklatıldı); Faz 1'in okunabilir derinliğine bağlı.
+4. Lexara + AwesomeWotlk MSDF fontları (ortak), çerçeve yakalama, TTS (AVSpeechSynthesizer).
+
 ## Sıradaki adımlar (yarıda kalırsa buradan devam)
 
 1. [x] Faz 1 tasarımı (yukarıda "Faz 1 tasarımı").
