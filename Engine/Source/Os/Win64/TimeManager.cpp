@@ -69,6 +69,12 @@ OsTimeManager::TimingMethod OsTimeManager::Calibrate() {
         OsSleep(0);
     }
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // St0ny #5 "timer": the 250 ms comparison against GetTickCount is skipped (jne -> jmp at 0x86AC8E). A driver
+    // holding the thread for 5 ms during it was enough to drop the whole session to the 16 ms tick count
+    // (timingTestError 3), which made the lower body jump when turning. The multi-core check (error 4) and the
+    // timingMethod CVar stay.
+#else
     if (!this->m_timingTestError) {
         DWORD now;
         do {
@@ -88,6 +94,7 @@ OsTimeManager::TimingMethod OsTimeManager::Calibrate() {
             this->m_timingTestError = 3;
         }
     }
+#endif
 
     SetPriorityClass(process, priorityClass);
     SetThreadPriority(thread, threadPriority);
