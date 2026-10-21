@@ -12,6 +12,7 @@
 #include <vector>
 #include "Engine/Source/ConsoleBase/ConsoleVar.h"
 #include "Engine/Source/Event/Event.h"
+#include "Engine/Source/FrameScript/FrameScript.h"
 #include "Engine/Source/Frame/CSimpleTop.h"
 #include "Engine/Source/Os/TimeManager.h"
 #include "Engine/Source/Scrn/Scrn.h"
@@ -354,6 +355,14 @@ int32_t Tick(const void* data, void* param) {
                 s_worldLoadedAt = now;
                 Log("in the world after %.1f s", (now - s_enteredAt) / 1000.0);
                 s_phase = PHASE_WORLD;
+
+                // WRATHMODERN_AUTOTEST_LUA runs once in the world. A Lua error's message is written to
+                // Logs/FrameXML.log, so a shell script can check a mod's Lua API without a screenshot.
+                if (const char* script = getenv("WRATHMODERN_AUTOTEST_LUA")) {
+                    Log("running the autotest Lua snippet");
+                    FrameScript_Execute(script, "autotest", nullptr);
+                    Log("the autotest Lua snippet returned");
+                }
             } else if (now - s_enteredAt > 180000) {
                 Log("the world did not load");
                 s_phase = PHASE_DONE;
