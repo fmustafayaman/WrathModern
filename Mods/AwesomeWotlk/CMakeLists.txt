@@ -4,6 +4,7 @@ wrathmodern_add_mod(AwesomeWotlk
     Entry.cpp
     CVars.cpp
     UnitAPI.cpp
+    Camera.cpp
     Window.mm
 )
 target_link_libraries(AwesomeWotlk PRIVATE "-framework AppKit")

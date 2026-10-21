@@ -79,6 +79,11 @@ const Definition kCVars[] = {
     { "ttsVolume", "Text to speech volume", "100", 0, 100, true },
 };
 
+// The modules that act on a variable as it changes
+void Changed(const char* name, float value) {
+    camera::OnCVarChanged(name, value);
+}
+
 int32_t OnChanged(const char* name, const char* oldValue, const char* newValue, void* user) {
     const Definition* definition = static_cast<const Definition*>(user);
     char* end = nullptr;
@@ -95,6 +100,8 @@ int32_t OnChanged(const char* name, const char* oldValue, const char* newValue, 
     }
 
     if (clamped == value) {
+        // The client stores the value only after this returns: modules get it here
+        Changed(name, value);
         return 1;
     }
 

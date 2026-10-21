@@ -29,6 +29,12 @@ namespace window {
 void Register();
 }
 
+namespace camera {
+void OnCameraCreated(float* fieldOfView, void* user);
+void OnWorld(int32_t entered, void* user);
+void OnCVarChanged(const char* name, float value);
+}
+
 }
 
 #endif

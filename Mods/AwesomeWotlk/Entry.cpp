@@ -50,5 +50,7 @@ extern "C" __attribute__((visibility("default"))) int32_t WMModLoad(const WMModH
     info->version = WM_MOD_API_VERSION;
     info->name = "Awesome WotLK";
     info->OnScriptContext = awesome::OnScriptContext;
+    info->OnCameraCreated = awesome::camera::OnCameraCreated;
+    info->OnWorld = awesome::camera::OnWorld;
     return 1;
 }
