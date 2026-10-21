@@ -27,6 +27,9 @@ constexpr float kDeepestWorldDepthInFullRangeViewport = 0.9999995f;
 constexpr float kWorldDepthMargin = 2.0e-6f;
 constexpr double kMaxNoiseStepSeconds = 0.25;
 constexpr int kRegisterCount = 99;
+constexpr float kHistoryMaxSeconds = 0.25f;
+constexpr float kHistoryMaxMove = 30.0f;
+constexpr float kHistoryMinForwardDot = 0.70710678f;
 
 struct Float4
 {
@@ -118,6 +121,8 @@ struct FogRenderer::Impl
     std::map<std::string, id<MTLLibrary>> libraries;
     std::map<std::string, id<MTLRenderPipelineState>> pipelines;
     id<MTLTexture> march = nil;
+    id<MTLTexture> history[2] = {nil, nil};
+    id<MTLTexture> historyDepth = nil;
     id<MTLTexture> densityNoise = nil;
     id<MTLTexture> authoredNoise = nil;
     id<MTLTexture> dummy2d = nil;
@@ -175,18 +180,30 @@ struct FogRenderer::Impl
         return pipeline;
     }
 
-    bool EnsureMarch(uint32_t width, uint32_t height)
+    id<MTLTexture> Target(MTLPixelFormat format, uint32_t width, uint32_t height)
     {
-        if (march && march.width == width && march.height == height)
-            return true;
-
-        MTLTextureDescriptor* descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
+        MTLTextureDescriptor* descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format
                                                                                               width:width height:height mipmapped:NO];
         descriptor.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
         descriptor.storageMode = MTLStorageModePrivate;
-        march = [device newTextureWithDescriptor:descriptor];
-        VF_LOG_INFO("march target %ux%u fp16", width, height);
-        return march != nil;
+        return [device newTextureWithDescriptor:descriptor];
+    }
+
+    // EnsureTargets: the march and the two histories in fp16, the history depth packed in 8-bit channels.
+    // Returns whether they were made again (the history is then lost).
+    bool EnsureTargets(uint32_t width, uint32_t height, bool& remade)
+    {
+        remade = false;
+        if (march && march.width == width && march.height == height)
+            return true;
+
+        march = Target(MTLPixelFormatRGBA16Float, width, height);
+        history[0] = Target(MTLPixelFormatRGBA16Float, width, height);
+        history[1] = Target(MTLPixelFormatRGBA16Float, width, height);
+        historyDepth = Target(MTLPixelFormatRGBA8Unorm, width, height);
+        remade = true;
+        VF_LOG_INFO("fog targets %ux%u: march, history fp16, history depth rgba8", width, height);
+        return march && history[0] && history[1] && historyDepth;
     }
 
     void EnsureStatic()
@@ -256,7 +273,8 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
     const uint32_t lowH = (vp.Height + scale - 1) / scale;
 
     impl.EnsureStatic();
-    if (!impl.EnsureMarch(lowW, lowH))
+    bool remade = false;
+    if (!impl.EnsureTargets(lowW, lowH, remade))
         return false;
 
     float viewToWorld[16];
@@ -272,6 +290,24 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
     const bool samplesNoise = AnyLayerNoise(fog);
     const float* proj = in.glProjection;
     const WorldDepthMapping worldDepth = MapWorldDepth(proj, vp);
+
+    // The history applies while nothing that moves the fog's samples changed
+    const double now = world->time;
+    const float dx = in.camPos[0] - m_prevCam[0];
+    const float dy = in.camPos[1] - m_prevCam[1];
+    const float dz = in.camPos[2] - m_prevCam[2];
+    const float forwardDot = worldToView[2] * m_prevWorldToView[2] + worldToView[6] * m_prevWorldToView[6] +
+                             worldToView[10] * m_prevWorldToView[10];
+    const bool historyValid = m_historyValid && !remade && cfg.temporal > 0.0f && m_prevScale == scale &&
+                              SameFogSettings(cfg, m_prevConfig) && in.mapId == m_prevMap &&
+                              in.lightParams.screenEffectSlot == m_prevLightSlot && forwardDot > kHistoryMinForwardDot &&
+                              std::memcmp(m_prevProj, proj, sizeof(m_prevProj)) == 0 && m_prevWidth == vp.Width &&
+                              m_prevHeight == vp.Height && now - m_prevSeconds < kHistoryMaxSeconds &&
+                              dx * dx + dy * dy + dz * dz < kHistoryMaxMove * kHistoryMaxMove;
+    float reproj[16];
+    float prevViewProj[16];
+    Mul4x4(m_prevWorldToView, m_prevProj, prevViewProj);
+    Mul4x4(viewToWorld, prevViewProj, reproj);
 
     float toLightInView[3];
     TransformDirection(in.toLight, in.cameraRelativeView, toLightInView);
@@ -295,14 +331,11 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
         sunPx[1] = vp.Y + (0.5f - ndcY * 0.5f) * vp.Height;
     }
 
-    // The march jitters only with the temporal filter, which arrives in slice 4; until then it takes the
-    // midpoints, as the Windows build does with Temporal=0
     C[9] = {toLightInView[0], toLightInView[1], toLightInView[2], fog.lightAboveHorizon};
-    C[11] = {0.0f, fog.maxDistance, fog.horizonStart, fog.farClip};
+    C[11] = {cfg.temporal > 0.0f ? 1.0f : 0.0f, fog.maxDistance, fog.horizonStart, fog.farClip};
     static_assert(sizeof(FogLayer) == 6 * sizeof(Float4), "FogLayer is six shader registers");
     std::memcpy(&C[12], &fog.layers[0].start, sizeof(fog.layers));
 
-    const double now = world->time;
     const double elapsed = m_noiseSeconds > 0.0 ? std::min(now - m_noiseSeconds, kMaxNoiseStepSeconds) : 0.0;
     m_noiseSeconds = now;
     m_noiseScroll.Advance(fog, in.camPos, std::max(elapsed, 0.0));
@@ -336,10 +369,14 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
     std::string variant = std::to_string(steps) + (samplesNoise ? "N" : "") + (depthMs ? "M" : "");
     id<MTLRenderPipelineState> marchPipeline =
         impl.Pipeline(library, @"vf_march", MTLPixelFormatRGBA16Float, 1, false, "march" + variant);
+    id<MTLRenderPipelineState> temporalPipeline =
+        impl.Pipeline(library, @"vf_temporal", MTLPixelFormatRGBA16Float, 1, false, "temporal" + variant);
+    id<MTLRenderPipelineState> historyDepthPipeline =
+        impl.Pipeline(library, @"vf_history_depth", MTLPixelFormatRGBA8Unorm, 1, false, "historydepth" + variant);
     id<MTLRenderPipelineState> compositePipeline =
         impl.Pipeline(library, @"vf_composite", color.pixelFormat, color.sampleCount, true,
                       "composite" + variant + std::to_string(color.pixelFormat) + "x" + std::to_string(color.sampleCount));
-    if (!marchPipeline || !compositePipeline)
+    if (!marchPipeline || !temporalPipeline || !historyDepthPipeline || !compositePipeline)
     {
         impl.failed = true;
         return false;
@@ -354,29 +391,49 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
                     fog.maxDistance, fog.horizonStart, lowW, lowH, scale, steps);
     }
 
+    const bool temporalFiltering = cfg.temporal > 0.0f;
+    const int write = m_historyIndex ^ 1;
+    id<MTLTexture> fogResult = temporalFiltering ? impl.history[write] : impl.march;
+
     auto bindFog = [&](id<MTLRenderCommandEncoder> encoder, Float4* constants) {
         [encoder setFragmentBytes:constants length:sizeof(Float4) * kRegisterCount atIndex:0];
         [encoder setFragmentBytes:localLights length:sizeof(localLights) atIndex:1];
         [encoder setFragmentTexture:depth atIndex:0];
-        [encoder setFragmentTexture:impl.march atIndex:1];
+        [encoder setFragmentTexture:fogResult atIndex:1];
         [encoder setFragmentTexture:impl.dummy2d atIndex:2];
         [encoder setFragmentTexture:impl.march atIndex:4];
+        [encoder setFragmentTexture:impl.history[m_historyIndex] atIndex:5];
+        [encoder setFragmentTexture:impl.historyDepth atIndex:6];
         [encoder setFragmentTexture:impl.densityNoise atIndex:9];
         [encoder setFragmentTexture:impl.authoredNoise atIndex:10];
     };
 
-    // March
-    {
+    auto drawInto = [&](id<MTLTexture> target, id<MTLRenderPipelineState> pipeline, Float4* constants, NSString* label) {
         MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
-        pass.colorAttachments[0].texture = impl.march;
+        pass.colorAttachments[0].texture = target;
         pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
         pass.colorAttachments[0].storeAction = MTLStoreActionStore;
         id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
-        encoder.label = @"CoAVolFog march";
-        [encoder setRenderPipelineState:marchPipeline];
-        bindFog(encoder, C);
+        encoder.label = label;
+        [encoder setRenderPipelineState:pipeline];
+        bindFog(encoder, constants);
         [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
         [encoder endEncoding];
+    };
+
+    drawInto(impl.march, marchPipeline, C, @"CoAVolFog march");
+
+    // FilterWithHistory: the temporal pass replaces c9..c13 with the reprojection and its settings, then
+    // the history depth of this frame is written for the next one
+    const bool adaptiveLightingHistory = m_prevLocalLightCount > 0 || cfg.noiseAmount > 0.0f || samplesNoise;
+    if (temporalFiltering)
+    {
+        Float4 T[kRegisterCount];
+        std::memcpy(T, C, sizeof(T));
+        std::memcpy(&T[9], reproj, sizeof(reproj));
+        T[13] = {cfg.temporal, historyValid ? 1.0f : 0.0f, adaptiveLightingHistory ? 1.0f : 0.0f, 0.0f};
+        drawInto(impl.history[write], temporalPipeline, T, @"CoAVolFog temporal");
+        drawInto(impl.historyDepth, historyDepthPipeline, C, @"CoAVolFog history depth");
     }
 
     // Composite, with the march's fog (no local lights, so WithMeanNoise does not apply)
@@ -396,6 +453,20 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
         [encoder endEncoding];
     }
 
+    std::memcpy(m_prevWorldToView, worldToView, sizeof(m_prevWorldToView));
+    std::memcpy(m_prevProj, proj, sizeof(m_prevProj));
+    std::memcpy(m_prevCam, in.camPos, sizeof(m_prevCam));
+    m_prevScale = scale;
+    m_prevWidth = vp.Width;
+    m_prevHeight = vp.Height;
+    m_prevConfig = cfg;
+    m_prevMap = in.mapId;
+    m_prevLightSlot = in.lightParams.screenEffectSlot;
+    m_prevLocalLightCount = 0;
+    m_prevSeconds = now;
+    m_historyValid = temporalFiltering;
+    if (temporalFiltering)
+        m_historyIndex = write;
     ++m_frame;
     return true;
 }

@@ -213,3 +213,17 @@ std::string DescribeConfig(const Config& config)
 
     return text;
 }
+
+bool SameFogSettings(const Config& a, const Config& b)
+{
+    for (const IntSetting& s : kIntSettings)
+        if (a.*s.value != b.*s.value)
+            return false;
+    for (const FloatSetting& s : kFloatSettings)
+        if (a.*s.value != b.*s.value)
+            return false;
+    for (const BoolSetting& s : kBoolSettings)
+        if (a.*s.value != b.*s.value)
+            return false;
+    return true;
+}

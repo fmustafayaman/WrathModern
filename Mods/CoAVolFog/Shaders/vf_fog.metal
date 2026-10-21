@@ -158,6 +158,8 @@ struct Fog
     texture2d<float> fogTexture;    // sFog
     texture2d<float> godRays;       // sGodRays, linear
     texture2d<float> currentMarch;  // sCurrentMarch
+    texture2d<float> history;       // vf_temporal.hlsl sHistory
+    texture2d<float> historyDepth;  // vf_temporal.hlsl sHistoryDepth
     sampler wrapped;
     sampler linearClamp;
 
@@ -225,6 +227,13 @@ struct Fog
     {
         return float2((pixel.x - ViewportOrigin().x) / ViewportSize().x * 2 - 1,
                       1 - (pixel.y - ViewportOrigin().y) / ViewportSize().y * 2);
+    }
+
+    float2 LowResTexelToUv(float2 lowResTexel) const { return (lowResTexel + 0.5) * LowResTexelSize(); }
+
+    float2 NdcToPixel(float2 ndc) const
+    {
+        return ViewportOrigin() + float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5) * ViewportSize();
     }
 
     float3 ViewRayAtUnitDepth(float2 pixel) const
@@ -758,6 +767,144 @@ struct Fog
         return IntegrateFogAtDepth(pixel, SampleDepth(pixel), jitter);
     }
 
+    // ---- vf_history_depth.hlsl ----
+
+    float4 HistoryDepthAt(float2 lowResTexel) const
+    {
+        float depth = SampleDepth(LowResTexelToFullPixel(lowResTexel));
+        float packed = floor(saturate(LinearDepth(depth) / MaxFogDistance()) * 65535 + 0.5);
+        float highByte = floor(packed / 256);
+        float lowByte = packed - highByte * 256;
+        float depthClass = IsSky(depth) ? 1 : (BeyondFarClip(depth) ? 0.5 : 0);
+        return float4(highByte / 255, lowByte / 255, depthClass, 1);
+    }
+
+    // ---- vf_temporal.hlsl (cViewToPreviousClip row_major in c9..c12, cTemporal c13) ----
+
+    float HistoryWeight() const { return C[13].x; }
+    bool HistoryInvalid() const { return C[13].y <= 0; }
+
+    float LightingHistoryWeight(float3 currentMean, float3 previous) const
+    {
+        float weight = HistoryWeight();
+        if (C[13].z > 0)
+        {
+            float3 difference = abs(currentMean - previous);
+            float peakDifference = max(difference.r, max(difference.g, difference.b));
+            float3 peak = max(currentMean, previous);
+            float brightness = max(0.05, max(peak.r, max(peak.g, peak.b)));
+            weight *= 1 - smoothstep(0.20, 0.40, peakDifference / brightness);
+        }
+        return weight;
+    }
+
+    // tex2Dlod(sCurrent, uv) with point filtering and clamped addressing
+    float4 ReadCurrent(float2 uv) const
+    {
+        float2 texel = clamp(floor(uv * LowResSize()), float2(0), LowResSize() - 1);
+        return currentMarch.read(uint2(texel));
+    }
+
+    void CurrentNeighbourhood(float2 uv, float4 centre, thread float4& lowest, thread float4& highest, thread float4& mean) const
+    {
+        lowest = centre;
+        highest = centre;
+        float4 sum = centre;
+        const float2 offsets[8] = {float2(-1, -1), float2(0, -1), float2(1, -1), float2(-1, 0),
+                                   float2(1, 0),   float2(-1, 1), float2(0, 1),  float2(1, 1)};
+        for (int k = 0; k < 8; k++)
+        {
+            float4 neighbour = ReadCurrent(uv + offsets[k] * LowResTexelSize());
+            lowest = min(lowest, neighbour);
+            highest = max(highest, neighbour);
+            sum += neighbour;
+        }
+        mean = sum / 9;
+    }
+
+    static bool MatchesSurface(float expectedDepth, float depthClass, float tapViewZ, float tapDepthClass)
+    {
+        float tolerance = max(0.5, expectedDepth * 0.02);
+        return abs(tapDepthClass - depthClass) < 0.25 && (depthClass > 0 || abs(tapViewZ - expectedDepth) <= tolerance);
+    }
+
+    float DepthClass(float depth) const { return IsSky(depth) ? 1 : (BeyondFarClip(depth) ? 0.5 : 0); }
+
+    bool ValidatedHistory(float2 uv, float expectedDepth, float depthClass, thread float4& value) const
+    {
+        float2 texel = uv * LowResSize() - 0.5;
+        float2 baseTexel = floor(texel);
+        float2 fraction = texel - baseTexel;
+        const float2 offsets[4] = {float2(0, 0), float2(1, 0), float2(0, 1), float2(1, 1)};
+        float4 sum = 0;
+        float weightSum = 0;
+        for (int i = 0; i < 4; ++i)
+        {
+            float2 tap = clamp(baseTexel + offsets[i], float2(0), LowResSize() - 1);
+            float3 previousDepth = historyDepth.read(uint2(tap)).rgb;
+            float previousViewZ = dot(previousDepth.rg, float2(65280, 255)) * (MaxFogDistance() / 65535);
+            float valid = MatchesSurface(expectedDepth, depthClass, previousViewZ, previousDepth.b) ? 1 : 0;
+            float2 bilinear = mix(1 - fraction, fraction, offsets[i]);
+            float weight = bilinear.x * bilinear.y * valid;
+            sum += history.read(uint2(tap)) * weight;
+            weightSum += weight;
+        }
+        value = sum / max(weightSum, 1e-5);
+        return weightSum > 1e-5;
+    }
+
+    bool ReprojectedHistory(float2 pixel, float depth, float viewZ, float depthClass, thread float4& value) const
+    {
+        if (HistoryInvalid())
+            return false;
+        float4 v = float4(ViewRayAtUnitDepth(pixel) * viewZ, IsSky(depth) ? 0 : 1);
+        float4 previousClip = v.x * C[9] + v.y * C[10] + v.z * C[11] + v.w * C[12];
+        if (previousClip.w <= 1e-3)
+            return false;
+        float2 previousPixel = NdcToPixel(previousClip.xy / previousClip.w);
+        float2 previousUv = LowResTexelToUv(FullPixelToLowResTexel(previousPixel));
+        if (any(previousUv < 0) || any(previousUv > 1))
+            return false;
+        return ValidatedHistory(previousUv, previousClip.w, depthClass, value);
+    }
+
+    bool InsideLowResTarget(float2 lowResTexel) const { return all(lowResTexel >= 0) && all(lowResTexel < LowResSize()); }
+
+    float4 SameSurfaceCurrentAverage(float2 lowResTexel, float viewZ, float depthClass) const
+    {
+        float4 sum = 0;
+        float weightSum = 0;
+        for (int k = 0; k < 9; ++k)
+        {
+            float2 tap = lowResTexel + float2(k % 3, k / 3) - 1;
+            float tapDepth = SampleDepth(LowResTexelToFullPixel(tap));
+            float weight = InsideLowResTarget(tap) &&
+                           MatchesSurface(viewZ, depthClass, LinearDepth(tapDepth), DepthClass(tapDepth)) ? 1 : 0;
+            if (weight > 0)
+                sum += currentMarch.read(uint2(tap));
+            weightSum += weight;
+        }
+        return sum / max(weightSum, 1.0);
+    }
+
+    float4 Temporal(float2 lowResTexel) const
+    {
+        float2 uv = LowResTexelToUv(lowResTexel);
+        float2 pixel = LowResTexelToFullPixel(lowResTexel);
+        float depth = SampleDepth(pixel);
+        float viewZ = LinearDepth(depth);
+        float depthClass = DepthClass(depth);
+        float4 reprojected;
+        if (!ReprojectedHistory(pixel, depth, viewZ, depthClass, reprojected))
+            return SameSurfaceCurrentAverage(lowResTexel, viewZ, depthClass);
+
+        float4 current = currentMarch.read(uint2(lowResTexel));
+        float4 lowest, highest, mean;
+        CurrentNeighbourhood(uv, current, lowest, highest, mean);
+        float4 previous = clamp(reprojected, lowest, highest);
+        return mix(current, previous, LightingHistoryWeight(mean.rgb, previous.rgb));
+    }
+
     // ---- vf_composite.hlsli ----
 
     float Exposure() const { return cComposite.x; }
@@ -1013,13 +1160,14 @@ vertex Varyings vf_fullscreen(uint vid [[vertex_id]])
     constant float4* C [[buffer(0)]], constant float4* localLights [[buffer(1)]],                              \
         DepthTexture depthTexture [[texture(0)]], texture2d<float> fogTexture [[texture(1)]],                  \
         texture2d<float> godRays [[texture(2)]], texture2d<float> currentMarch [[texture(4)]],                 \
+        texture2d<float> history [[texture(5)]], texture2d<float> historyDepth [[texture(6)]],                 \
         texture3d<float> densityNoise [[texture(9)]], texture3d<float> authoredNoise [[texture(10)]]
 
 #define MAKE_FOG                                                                                                \
     constexpr sampler wrappedSampler(filter::linear, address::repeat);                                          \
     constexpr sampler linearSampler(filter::linear, address::clamp_to_edge);                                    \
     Fog fog = {C, localLights, depthTexture, densityNoise, authoredNoise, fogTexture, godRays, currentMarch,     \
-               wrappedSampler, linearSampler}
+               history, historyDepth, wrappedSampler, linearSampler}
 
 // vf_march.hlsl: lowResTexel is ps_3_0's VPOS, the integer texel
 fragment float4 vf_march(Varyings in [[stage_in]], FOG_ARGUMENTS)
@@ -1035,4 +1183,18 @@ fragment float4 vf_composite(Varyings in [[stage_in]], FOG_ARGUMENTS)
     MAKE_FOG;
     float2 pixel = in.position.xy;
     return fog.CompositeAtDepth(pixel, fog.SampleDepth(pixel));
+}
+
+// vf_temporal.hlsl
+fragment float4 vf_temporal(Varyings in [[stage_in]], FOG_ARGUMENTS)
+{
+    MAKE_FOG;
+    return fog.Temporal(floor(in.position.xy));
+}
+
+// vf_history_depth.hlsl
+fragment float4 vf_history_depth(Varyings in [[stage_in]], FOG_ARGUMENTS)
+{
+    MAKE_FOG;
+    return fog.HistoryDepthAt(floor(in.position.xy));
 }

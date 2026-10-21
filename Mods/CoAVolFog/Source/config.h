@@ -71,5 +71,8 @@ struct Config
 // file was read.
 bool LoadConfig(const std::string& path, Config& out);
 
+// Whether two configurations draw the same fog (the temporal history survives only that)
+bool SameFogSettings(const Config& a, const Config& b);
+
 // "Key=value" lines for every setting, for the log
 std::string DescribeConfig(const Config& config);

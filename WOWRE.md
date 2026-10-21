@@ -395,8 +395,13 @@ taşınabilir C++ olarak aynen alınır. Ayar dosyası `Mods/CoAVolFog.ini` (ayn
   **Performans:** 2940×1612, MSAA 2×, kalite 1: sis GPU'ya 4–8 ms ekliyor (Azuremyst 10–11 → 14–19 ms); 60 FPS
   korunuyor ama sınırda — ağır kısım tam çözünürlük kompozit (MSAA'da derinlik kontrolleri + eşleşmeyen
   kenarlarda tam çözünürlük march). Optimizasyon dilim 10'dan öne alınabilir. Test hesabı GM: `.tele`.
-- **Sıradaki — dilim 4:** zamansal filtre (`vf_temporal.hlsl`, `vf_history_depth.hlsl`, `FilterWithHistory`),
-  jitter açılır.
+- **Dilim 4 — TAMAM (2026-10-21):** zamansal filtre (`vf_temporal`, `vf_history_depth` MSL'de; FilterWithHistory:
+  c9–c12 yeniden izdüşüm, c13 ayarlar; iki fp16 geçmiş + RGBA8 paketli geçmiş derinlik; geçerlilik koşulları
+  orijinalle aynı: ölçek, ayarlar, harita, ekran efekti yuvası, ileri yön ≥ 45°, projeksiyon, boyut, < 0,25 s,
+  < 30 yd hareket), march jitter açık. Duskwood'da dönen kamerada hayaletlenme yok (`build/autotest/t-val`),
+  doğrulama 0 hata, 60 FPS, GPU 13,8–16,1 ms.
+- **Sıradaki — dilim 5:** yerel ışıklar (8 slot, `local_light_stabiliser.cpp`, ışık tablosu motordan:
+  `CM2Scene` ışıkları; `vf_local_lights` zaten MSL'de, lit varyant hazır).
 
 **Kabul ölçütü:** her dilimde aynı nokta/saat için Windows CoAVolFog (CrossOver) ↔ WowRe karşılaştırması
 (kullanıcı referans kareyi verir), sıfır Metal doğrulama hatası, kare süresi ölçümü (`WRATHMODERN_FRAMESTATS`).
