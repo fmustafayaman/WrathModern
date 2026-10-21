@@ -1599,15 +1599,16 @@ void CGUnit_C::PreAnimate(CGWorldFrame* frame) {
             wanted = 0;
         }
 
-        // WoWFix335 npc-turn-attack-anim: original calls UpdateBaseAnimation(0, -1) when CanPlayTurnAnim() is nonzero
 #if defined(WRATHMODERN_CLIENT_PATCHES)
-        // Only NPCs came out of it with their attack animation; players keep their turning steps
+        // St0ny #34 "npcanim" (Robinsch, fixed by St0ny; WoWFix335 npc-turn-attack-anim): the turning step is started by
+        // re-evaluating the base animation (0x73E3C9), and NPCs came out of it with their attack animation. Only players
+        // keep the call, so their legs still step while NPCs turn without swinging.
         if (sequence != wanted && this->CanPlayTurnAnim() && (this->m_obj->m_type & TYPEMASK_PLAYER)) {
             this->UpdateBaseAnimation(0, -1);
         }
 #else
-        if (sequence != wanted) {
-            this->CanPlayTurnAnim();
+        if (sequence != wanted && this->CanPlayTurnAnim()) {
+            this->UpdateBaseAnimation(0, -1);
         }
 #endif
     }
@@ -16898,7 +16899,13 @@ void CGUnit_C::OnChannelSpellChanged(int32_t oldSpell) {
         this->m_fishingLineEffect = nullptr;
     }
 
-    // WoWFix335 missing-pre-cast-animation: original ends with UpdateBaseAnimation(0, -1)
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // St0ny #35 "spellanim" (Robinsch; WoWFix335 missing-pre-cast-animation): the original re-evaluates the base
+    // animation here (0x73ECD6) when a channel ends without a new one, which left the preparation animation of a
+    // cancelled channel stuck on the unit
+#else
+    this->UpdateBaseAnimation(0, -1);
+#endif
 }
 
 // VERIFY: 47ba34f4 auto

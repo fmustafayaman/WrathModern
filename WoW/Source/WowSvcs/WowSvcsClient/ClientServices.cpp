@@ -891,7 +891,13 @@ void ClientServices::Logon(const char* username, const char* password) {
         ClientServices::s_newLogin = false;
     }
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // St0ny #15 "skipbnet" (Kebabstorm): always the classic login (je -> jmp at 0x6B2B48). An account name with an '@'
+    // made the client take the Battle.net login step, which private servers do not have.
+    bool battlenet = false;
+#else
     bool battlenet = SStrChr(username, '@') != nullptr;
+#endif
 
     if (ClientServices::s_loginObj && ((ClientServices::s_loginObj->GetLoginServerType() == 1 && !battlenet) || (ClientServices::s_loginObj->GetLoginServerType() == 0 && battlenet))) {
         delete ClientServices::s_loginObj;

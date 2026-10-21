@@ -679,7 +679,7 @@ void CGxDevice::XformPushAndSet(EGxXform xf, const C44Matrix& matrix) {
 // VERIFY: d13c8956 manual
 // OFFSET: 0x00682C50
 void CGxDevice::InitLights() {
-    for (uint32_t i = 0; i < 4; i++) {
+    for (uint32_t i = 0; i < GxMaxLights; i++) {
         this->m_lights[i].m_flags = 0xFF;
         this->m_lights[i].unk_0046 = 0xFF;
         this->m_lights[i].m_enable = 0;

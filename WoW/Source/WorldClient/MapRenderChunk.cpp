@@ -2103,6 +2103,50 @@ void CMapRenderChunk::SetVertexShader(CMapRenderChunk* renderChunk, int32_t laye
 
     CGxShader* shader = CMapRenderChunk::GetVertexShader(pointLights, layerCount - 1, specular, vertexColor, a3, CShadowCache::GetShadowValue());
     g_theGxDevicePtr->RsSet(GxRs_VertexShader, shader);
+
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // St0ny #67 "lights": the ground's lights 4 to 8 in c236-c250, in the layout of c28-c36 for lights 1 to 3 (three
+    // registers each: position minus the camera with w = 1, colour with w = 0, attenuation with w = 0; a free slot is
+    // all 0 with attenuation x = 1), uploaded right before c0-c36 as the exe patch does (0x7D0292). Only the lit
+    // permutations of the new Terrain.bls (64 to 127) read them; the stock shader never does. Written for lit chunks
+    // only, when the device has the registers (251).
+    if (pointLights && g_theGxDevicePtr->Caps().m_shaderConstants[GxSh_Vertex] >= 251) {
+        SVertexShaderConstants::SPointLight extra[5];
+        CM2Light* lights[5];
+        uint32_t count = 0;
+
+        if (lighting.m_lightCount > 3) {
+            lights[count++] = lighting.m_lights[3];
+        }
+
+        for (uint32_t i = 0; i < lighting.m_extraLightCount && count < 5; i++) {
+            lights[count++] = lighting.m_extraLights[i];
+        }
+
+        for (uint32_t i = 0; i < 5; i++) {
+            SVertexShaderConstants::SPointLight& light = extra[i];
+
+            if (i < count) {
+                light.m_position = lights[i]->m_pos - CWorldScene::s_activeWorldView;
+                light.m_positionW = 1.0f;
+                light.m_color = lights[i]->m_dirColor;
+                light.m_colorW = 0.0f;
+                light.m_attenuation = C3Vector(lights[i]->m_constantAttenuation, lights[i]->m_linearAttenuation, lights[i]->m_quadraticAttenuation);
+                light.m_attenuationW = 0.0f;
+            } else {
+                light.m_position = C3Vector(0.0f, 0.0f, 0.0f);
+                light.m_positionW = 0.0f;
+                light.m_color = C3Vector(0.0f, 0.0f, 0.0f);
+                light.m_colorW = 0.0f;
+                light.m_attenuation = C3Vector(1.0f, 0.0f, 0.0f);
+                light.m_attenuationW = 0.0f;
+            }
+        }
+
+        g_theGxDevicePtr->ShaderConstantsSet(GxSh_Vertex, 236, reinterpret_cast<const float*>(extra), 5 * sizeof(extra[0]) / sizeof(C4Vector));
+    }
+#endif
+
     g_theGxDevicePtr->ShaderConstantsSet(GxSh_Vertex, 0, reinterpret_cast<const float*>(&consts), sizeof(SVertexShaderConstants) / sizeof(C4Vector));
 }
 

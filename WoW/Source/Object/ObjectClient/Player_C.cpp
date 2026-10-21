@@ -8329,7 +8329,13 @@ void CGPlayer_C::MeleeModeEnter(const WOWGUID& target) {
     this->SpellInterrupted(this->m_castCount, this->m_castSpellId);
     Spell_C_CancelAutoRepeat(true);
     Spell_C_ClearLastAutoRangedCombatError();
-    // WoWFix335 melee-swing-right-click: original ends with UpdateBaseAnimation(0x40, -1)
+
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // St0ny #33 "swing" (Robinsch, WoWFix335 melee-swing-right-click): the original restarts the base animation with
+    // the attack flag here (0x6E2867), which plays a melee swing on every right-click before any attack happens
+#else
+    this->UpdateBaseAnimation(0x40, -1);
+#endif
 }
 
 // VERIFY: d5f87a32 manual

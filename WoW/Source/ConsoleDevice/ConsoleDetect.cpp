@@ -160,9 +160,14 @@ void ConsoleDetectSaveHardware(const Hardware& hardware, bool& changed) {
 // VERIFY: 7f8168dc manual
 // OFFSET: 0x0076BA30
 void ConsoleDetectDetectHardware(Hardware& hardware, bool& changed) {
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // St0ny #16 "skiprdp" (Kebabstorm): no Remote Desktop check (je -> jmp at 0x76BA40), so the client also runs in a
+    // remote session. macOS reports no remote session anyway (OsIsRemoteSession returns 0 there).
+#else
     if (OsIsRemoteSession()) {
         ShowFatalMessageBox(12, "Running World of Warcraft through a Remote Desktop connection is not supported.  Exiting program.");
     }
+#endif
 
     g_videoHardwareDB.Load(__FILE__, __LINE__);
 

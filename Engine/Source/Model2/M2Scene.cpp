@@ -31,6 +31,11 @@ const uint32_t s_blendModes[3][7] = { { 0, 1, 2, 10, 3, 4, 5 }, { 2, 2, 2, 10, 3
 // STATIC: 0x00AF5898
 uint32_t CM2Scene::s_optFlags = 0xFFFFFFFF;
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+// St0ny #68 "lightstay", set by the lightStay CVar: point lights of models that were not drawn this frame keep lighting
+int32_t CM2Scene::s_lightStay;
+#endif
+
 // STATIC: 0x00AF58A0
 static const float s_lightGridScale = 0.05f;
 
@@ -873,7 +878,15 @@ void CM2Scene::SelectLights(CM2Lighting* lighting) {
             while (light) {
                 CM2Light* next = light->m_lightNext;
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+                // St0ny #68 "lightstay": a light's stamp is set only when its model is drawn (0x828B9C), so turning the
+                // camera away from a torch also took its light off everything still in view, such as the character next
+                // to it. With lightStay the light stays at its last position (je -> jmp at 0x81E548); a model that is
+                // removed still unlinks its lights itself (0x824D30), so none are left behind.
+                if (!light->m_scene || light->m_stamp == this->m_frameStamp || CM2Scene::s_lightStay) {
+#else
                 if (!light->m_scene || light->m_stamp == this->m_frameStamp) {
+#endif
                     lighting->AddLight(light);
                 } else {
                     light->SetVisible(0);

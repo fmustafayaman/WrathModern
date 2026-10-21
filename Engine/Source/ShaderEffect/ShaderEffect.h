@@ -56,6 +56,9 @@ class CShaderEffect : public TSHashObject<CShaderEffect, HASHKEY_STRI> {
     static void SetGlobalLighting(CM2Light* light);
     static void SetLightingEnabled(int32_t enabled);
     static void SetLocalLighting(CM2Lighting* lighting, int32_t enabled, const C3Vector* origin);
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    static void SetExtraLocalLights(const CM2Lighting* lighting, const C3Vector* origin);
+#endif
     static void SetShaders(uint32_t vertexPermute, uint32_t pixelPermute);
     static void SetTexMtx(const C44Matrix& matrix, uint32_t stage);
     static void SetTexMtx_Identity(uint32_t stage);

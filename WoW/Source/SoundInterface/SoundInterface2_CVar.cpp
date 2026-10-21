@@ -154,9 +154,17 @@ void SI2::RegisterSoundEngineCVars() {
     CVar::Register("EnableVoiceChat", "Enables the voice chat feature.", 0, "0", EnableVoiceChatHandler, 5, false, nullptr, false);
     CVar::Register("VoiceChatSelfMute", "Turn off your ability to talk.", 0, "0", SelfMuteHandler, 5, false, nullptr, false);
     CVar::Register("PushToTalkButton", "String representation of the Push-To-Talk button.", 0, "`", PushToTalkButtonHandler, 5, false, nullptr, false);
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // St0ny #84 "sound" (St0ny / FrostAtom): best output quality (48 kHz, the better resampler), 64 instead of 32
+    // channels and reverb on by default (0x4D1204, 0x4D1224, 0x4D124A)
+    CVar::Register("Sound_OutputQuality", "sound quality, default 1 (medium)", 0, "2", nullptr, 7, false, nullptr, false);
+    CVar::Register("Sound_NumChannels", "number of sound channels", 0, "64", nullptr, 7, false, nullptr, false);
+    CVar::Register("Sound_EnableReverb", "", 0, "1", EnableReverbHandler, 7, false, nullptr, false);
+#else
     CVar::Register("Sound_OutputQuality", "sound quality, default 1 (medium)", 0, "1", nullptr, 7, false, nullptr, false);
     CVar::Register("Sound_NumChannels", "number of sound channels", 0, "32", nullptr, 7, false, nullptr, false);
     CVar::Register("Sound_EnableReverb", "", 0, "0", EnableReverbHandler, 7, false, nullptr, false);
+#endif
     CVar::Register("Sound_EnableSoftwareHRTF", "", 0, "0", nullptr, 7, false, nullptr, false);
     CVar::Register("Sound_VoiceChatInputDriverIndex", "", 0, "0", VoiceChatInputDriverIndexHandler, 7, false, nullptr, false);
     CVar::Register("Sound_VoiceChatInputDriverName", "", 0, "Primary Sound Capture Driver", nullptr, 7, false, nullptr, false);
@@ -165,7 +173,14 @@ void SI2::RegisterSoundEngineCVars() {
     CVar::Register("Sound_OutputDriverIndex", "", 0, "0", OutputDriverIndexHandler, 7, false, nullptr, false);
     CVar::Register("Sound_OutputDriverName", "", 0, "Primary Sound Driver", nullptr, 7, false, nullptr, false);
     CVar::Register("Sound_DSPBufferSize", "sound buffer size, default 0", 0, "0", nullptr, 7, false, nullptr, false);
+#if defined(WRATHMODERN_CLIENT_PATCHES) && !defined(WOWDECOMP_PLATFORM_MAC)
+    // St0ny #84 "sound": hardware voices on by default (0x4D137F); with OpenAL Soft on Windows they are what the 126
+    // channel limit in SI2::Init is for. macOS keeps the original "0": the Core Audio output mixes in software and
+    // reports no hardware voices, so the setting would only add a probe of the device before falling back.
+    CVar::Register("Sound_EnableHardware", "Enables Hardware", 0, "1", nullptr, 7, false, nullptr, false);
+#else
     CVar::Register("Sound_EnableHardware", "Enables Hardware", 0, "0", nullptr, 7, false, nullptr, false);
+#endif
     CVar::Register("Sound_EnableMode2", "test", 0, "0", nullptr, 7, false, nullptr, false);
     CVar::Register("Sound_EnableMixMode2", "test", 0, "0", nullptr, 7, false, nullptr, false);
 }

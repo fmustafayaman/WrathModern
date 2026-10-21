@@ -1074,6 +1074,27 @@ int32_t FrameXML_CheckSignature(const char* tocFile, const char* extraFile, cons
     return 3;
 #endif
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // St0ny #19 "glue" (Alastor StrixEfuartus / Kebabstorm, fixed by St0ny): the interface files Blizzard signs, GlueXML,
+    // FrameXML and the Blizzard_ add-ons, count as valid whatever their signature says, so patch archives can replace
+    // the login, character and game interface (Project Reforged ships its own). The digest is the MD5 of the files as
+    // they are, which the callers compare with what they load, so the check still catches a file that changes while
+    // loading.
+    // The exe patch answers "valid" for every .toc, which also makes add-ons without a signature secure, as if
+    // Blizzard had written them: they could call protected functions, the effect of the excluded Lua unlock. Other
+    // add-ons are therefore checked as in the original: unsigned ones stay insecure.
+    static const char* s_blizzardInterface[] = { "Interface\\GlueXML\\", "Interface\\FrameXML\\", "Interface\\AddOns\\Blizzard_" };
+
+    for (uint32_t i = 0; i < sizeof(s_blizzardInterface) / sizeof(s_blizzardInterface[0]); i++) {
+        if (SStrCmpI(tocFile, s_blizzardInterface[i], SStrLen(s_blizzardInterface[i]))) {
+            continue;
+        }
+
+        CalculateSignatureMD5(tocFile, extraFile, digest);
+        return 3;
+    }
+#endif
+
     char sigFile[260];
     SStrPrintf(sigFile, sizeof(sigFile), "%s.sig", tocFile);
 

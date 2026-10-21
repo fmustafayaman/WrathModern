@@ -275,3 +275,53 @@ ban riski ve Windows'a özgülük gerekçesiyle):
 
 - Kendi sunucuda otomatik giriş: `macos` tabanında `WRATHMODERN_AUTOLOGIN` var mı, yoksa taşınmalı mı?
   (Kullanıcı adına giriş yapılmaz; test hesabı/kimlik dosyası kullanıcıdan gelir.)
+
+## Faz 3 — St0ny Reforged yamaları (2026-10-21)
+
+Kaynak: `St0nys-AIO-WoW-EXE-Patcher` (`st0ny-main`, `apply_patches.ps1` + `docs/PATCHES.en.md`), seçim:
+`/Volumes/Yaman SSD/ProjectReforged/presets/patcher_selection.ini`. VA'lar temiz `Wow.exe.ORI` (12340) üzerinde
+capstone ile doğrulandı. Hepsi `WRATHMODERN_CLIENT_PATCHES` arkasında; yamasız derleme orijinal davranışa döner.
+
+| # | Yama | Reforged | Durum | Yer | Kanıt / not |
+|---|---|---|---|---|---|
+| 1 | laa | 1 | no-op (macOS) | — | 64-bit süreç; 2 GB sınırı yok |
+| 3 | itemcache | 1 | önceden var (değiştirilmiş) | `DBCache.h` | 0x6695FD; 30 sn pencere yerine saniyede 1/30 dolum, AntiDOS'a takılmaz |
+| 5 | timer | 1 | yapıldı (Win) / no-op (macOS) | `Os/Win32,Win64/TimeManager.cpp` Calibrate | 0x86AC8E; Mac `Calibrate` zaten her zaman monotonic saati seçer |
+| 7 | mirrorfix | 1 | önceden var | `Unit_C.cpp` | |
+| 8 | wmocube | 1 | önceden var | `MapObjRead.cpp` | |
+| 9 | glyphfix | 1 | önceden var | `GxuFont*` | |
+| 12 | scandll | 1 | önceden var / no-op | `ScanDLLGlue.cpp` | Scan.dll macOS'ta çalışmaz; temiz tarama sayılır |
+| 13 | noserverpatch | 1 | yapıldı | `CGlueMgr::Idle` case 6 | 0x4DAEA8; St0ny indirmeyi atlar (giriş asılı kalır) — burada aktarım reddedilir, oturum kapanır, LOGIN_BADVERSION gösterilir |
+| 14 | nosurvey | 1 | önceden var | `CGlueMgr::Idle` | 0x4DAEBD |
+| 15 | skipbnet | 1 | yapıldı | `ClientServices::Logon` | 0x6B2B48; '@' içeren hesapta da Grunt girişi |
+| 16 | skiprdp | 1 | yapıldı (macOS'ta zaten 0) | `ConsoleDetectDetectHardware` | 0x76BA40 |
+| 17 | nohttp | 1 | önceden var | `OsURLDownload.mm` | |
+| 19 | glue | 1 | yapıldı | `FrameXML_CheckSignature`, `DeleteInterfaceFiles` | 0x8165E0/0x5F4DBF. GlueXML/FrameXML/`Blizzard_` imzası her zaman geçerli (MD5 gerçek dosyadan); **3. parti eklentiler orijinal kontrolde kalır** — St0ny sürümü imzasız eklentileri "secure" yapıyordu (= Lua unlock, dışlandı). `-DWOWDECOMP_DISABLE_SIGNATURE_CHECKS` olmadan giriş + dünya test edildi |
+| 21/22 | mpqnames/localdata | 0 | dışlandı | — | Reforged kapalı |
+| 31 | lux | 1 | Faz 4 | — | DLL yükleyici; `.dylib` portu Faz 4 |
+| 32 | areatrigger | 1 | önceden var | `Player_C.cpp` | |
+| 33 | swing | 1 | var, artık kapılı | `CGPlayer_C::MeleeModeEnter` | 0x6E2867; WoWFix335 girdisinde koşulsuzdu |
+| 34 | npcanim | 1 | var, `#else` orijinale düzeltildi | `CGUnit_C::PreAnimate` | 0x73E3C9 |
+| 35 | spellanim | 1 | var, artık kapılı | `CGUnit_C::OnChannelSpellChanged` | 0x73ECD6 |
+| 36–39, 42 | ghostattack, naked, forcereaction, mail, level101 | 1 | önceden var | | |
+| 54–57, 59 | farclip, horizon, envdetail, grounddist, goscale | 1 | önceden var | | (`sliders`, `cat0`, `deadchat`, `lootopen`, `flash` Reforged'da 0 ama macos dalında eklenmişti; korundu) |
+| 61 | occluder | 1 | yapıldı | `CWorldOcclusion.cpp` `s_occlusionVolumes[0]` | 0xAF0040 harita anahtarı 99999 |
+| 62–66 | bluemoon, notransparency, hdportraits, iconsnap | 1 | önceden var | | |
+| 67 | lights | 1 | yapıldı (motor tarafı) | `CM2Lighting` (+`m_extraLights`), `CShaderEffect::SetExtraLocalLights`, `CWorldScene::SetupLighting`, `CMapRenderChunk::SetVertexShader`, `GxMaxLights` | M2/WMO ışık 5–8 → c236–c246 (≥247 kayıt, yalnız 4 ışıklı permütasyonda), zemin ışık 4–8 → c236–c250 (≥251); sabit fonksiyon 8 slot, en yakın önce. `Data/` içinde `patch-5.MPQ` **yok** → stok shader'lar bu sabitleri okumaz, görüntü değişmez |
+| 68 | lightstay | **0** | yapıldı, CVar `lightStay` (vars. 0) | `CM2Scene::SelectLights` | 0x81E548 |
+| 69–71 | tracker, worldmap, castbars | 1 | önceden var | | |
+| 74 | charrandom | 1 | yapıldı | `CCharacterCreation::InitCharacterComponents` | 0x4E147B |
+| 79 | bubblerange | 1 | önceden var | | |
+| 80/81 | window/maximize | 1 | yapıldı | `RegisterGxCVars` | 0x76A67D/0x76A6B2; macOS'ta görünür alanı kaplayan pencere |
+| 82 | windowfix | 1 | var, artık kapılı | `DesktopGammaCallback` | 0x401A94 |
+| 83 | mouse | 1 | no-op (macOS) | — | Windows SetCursorPos yeniden merkezleme yarışı; Mac mouselook imleci ayırıp NSEvent delta kullanır |
+| 84 | sound | 1 | yapıldı | `SI2::RegisterSoundEngineCVars`, `SI2::Init` | kalite 2, 64 kanal, reverb 1; 126 kanal yalnız donanım seslerinde. macOS'ta `Sound_EnableHardware` 0 kalır (Core Audio yazılım karıştırır) |
+| 11, 23, 24, 47–53, 6, 2 | wardenoff, luaunlock*, hareket hileleri, nothrottle, cache | 0 | dışlandı | — | ban riski / AntiDOS |
+
+**Metal ajanına gereksinimler (#67):** vertex sabit dosyası 256 kayıt kalmalı ve `m_caps.m_shaderConstants[GxSh_Vertex]` ≥ 251
+raporlanmalı; yüklenen aralık shader'ın okuduğu en yüksek kaydı (c250) kapsamalı; sabit fonksiyon yolu `IStateSyncLights`
+ve üretici 8 ışık (`GxMaxLights`) işlemeli — şu an 4 slot döngüsü sun + 3 en yakın ışığı gösterir.
+
+Test: `build/autotest/phase3` (imza kontrolü AÇIK derleme) — giriş ekranı, giriş, dünya (Northshire) normal.
+Doğrulanamayanlar: 8 ışık shader'ları (patch-5.MPQ kurulu değil), sunucu yamasını reddetme yolu (AzerothCore
+12340 için yama göndermez), Windows tarafı (timer) derlenmedi.

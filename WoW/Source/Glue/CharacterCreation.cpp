@@ -576,6 +576,13 @@ void CCharacterCreation::InitCharacterComponents(ComponentData* data, bool rando
 
     CCharacterCreation::m_character->Init(data, nullptr);
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // St0ny #74 "charrandom" (Alyst3r): opening character creation and changing race or gender start from the default
+    // appearance instead of a random one (je -> jmp at 0x4E147B). The randomize button has its own path
+    // (RandomizeCharCustomization) and still works.
+    randomize = false;
+#endif
+
     if (randomize) {
         CCharacterCreation::m_character->SetRandomSkin(COMPONENT_CONTEXT_0);
         CCharacterCreation::m_character->SetRandomHairColor(COMPONENT_CONTEXT_0);
