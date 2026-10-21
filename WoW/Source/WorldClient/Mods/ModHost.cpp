@@ -16,6 +16,7 @@
 #include "Engine/Source/ConsoleBase/Types.h"
 #include "Engine/Source/FrameScript/FrameScript.h"
 #include "Engine/Source/Gx/Gx.h"
+#include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
 #include "Engine/Source/Os/System.h"
 #include "Engine/Source/Os/TimeManager.h"
 #include "WoW/Source/WorldClient/DayNight.h"
@@ -147,6 +148,8 @@ void CaptureWorldState() {
 
     state.time = OsGetAsyncTimeMs() / 1000.0;
     state.elapsed = info.m_deltaSec;
+    state.viewportMinZ = g_theGxDevicePtr ? g_theGxDevicePtr->m_viewport.m_z.m_l : 0.0f;
+    state.viewportMaxZ = g_theGxDevicePtr ? g_theGxDevicePtr->m_viewport.m_z.m_h : 1.0f;
     s_worldStateValid = true;
 }
 
@@ -386,9 +389,10 @@ void ModsRunHook(WMHook hook) {
         return;
     }
 
-    // The first hook of a frame captures the world state again
+    // The first hook of a frame captures the world state again, while the world viewport is current
     if (hook == WM_HOOK_AFTER_OPAQUE) {
         s_worldStateValid = false;
+        CaptureWorldState();
     }
 
     for (LoadedMod* mod : s_mods) {

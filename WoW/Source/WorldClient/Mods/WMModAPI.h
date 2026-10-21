@@ -95,6 +95,15 @@ typedef struct WMWorldState {
     /* Seconds since the client started, and since the previous world frame */
     double time;
     float elapsed;
+
+    /*
+     * The world viewport's depth range as the opaque pass leaves it: the depth buffer holds
+     * viewportMinZ + d (viewportMaxZ - viewportMinZ) for the projection's depth d. The sky and the distant
+     * terrain draw beyond viewportMaxZ. Added after version 2's first release; read it only from a mod
+     * built with the client.
+     */
+    float viewportMinZ;
+    float viewportMaxZ;
 } WMWorldState;
 
 /* The frame a hook draws into. Every object is an unretained Objective-C pointer of the type noted. */

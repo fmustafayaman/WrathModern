@@ -367,6 +367,19 @@ taşınabilir C++ olarak aynen alınır. Ayar dosyası `Mods/CoAVolFog.ini` (ayn
 10. **"Forever'ı aşmak":** Apple GPU'da tam çözünürlük march; gölge haritasıyla **gerçek hacimsel ışık huzmeleri**
     (radyal bulanıklık yerine — ağaç arası huzmeler); daha yüksek FFT çözünürlüğü; MSAA'nın doğrudan okunması.
 
+**İlerleme:**
+- **Dilim 1 — TAMAM (2026-10-21):** `Mods/CoAVolFog` (GPL-3.0, `LICENSE`); `fog_data`/`water_data`/`water_types`/`log.h`
+  orijinalden değiştirilmeden; `config.cpp` taşınabilir ini okuyucu (orijinal anahtar/aralık tabloları);
+  `Logs/CoAVolFog.log`. Veri: Classic 625 ışık/6222 katman/8 renk eğrisi, Forever 4 preset/7 FFT karosu/6 köpük
+  maskesi. `WMWorldState`'e `viewportMinZ/MaxZ` eklendi (opak geçiş sonrası yakalanıyor; dünya `[0, 0.94]`,
+  ötesi gök/WDL — README ile aynı). `DebugView=3` doğrusal derinlik MSAA'da `depth2d_ms`'ten doğrudan okunuyor
+  (Windows'taki kopya hilesi gereksiz). Kanıt: `build/autotest/vf1`. Test sırasında kullanıcının `CoAVolFog.ini`'si
+  yedeklenip birebir geri yüklenir (md5 kontrolü).
+- **Sıradaki — dilim 2 (sis çekirdeği):** `shaders/vf_march.hlsl` + `vf_integrate/vf_common/vf_composite*` →
+  MSL; `renderer.cpp`'nin march/composite kurulumu; `fog_model.cpp` (3.3.5 gün/gece'den katmanlar). MSAA renk
+  hedefi ShaderRead değil — kompozit karıştırma ile çizer, sahne kopyası gereken geçişler için çözümlenmiş
+  renk (`Texture::m_resolve`) host'tan açılacak.
+
 **Kabul ölçütü:** her dilimde aynı nokta/saat için Windows CoAVolFog (CrossOver) ↔ WowRe karşılaştırması
 (kullanıcı referans kareyi verir), sıfır Metal doğrulama hatası, kare süresi ölçümü (`WRATHMODERN_FRAMESTATS`).
 

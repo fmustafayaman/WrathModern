@@ -29,4 +29,5 @@ if (WRATHMODERN_BUILD_MODS)
     # Mods/LuxShoulderCam also builds on its own; it needs only the mod interface and Lua headers
     wrathmodern_add_mod(LuxShoulderCam LuxShoulderCam/LuxShoulderCam.cpp)
     add_subdirectory(AwesomeWotlk)
+    add_subdirectory(CoAVolFog)
 endif ()
