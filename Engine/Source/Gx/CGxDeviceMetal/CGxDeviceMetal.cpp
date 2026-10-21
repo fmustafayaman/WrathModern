@@ -3442,7 +3442,17 @@ int32_t GxMetalAcquireTargets(GxMetalTargets& targets) {
     return device->m_d3dDevice->AcquireExternalTargets(&targets.commandBuffer, &targets.color, &targets.depth, &targets.width, &targets.height, &targets.sampleCount);
 }
 
+// The native device (CGxDeviceMetalNative.mm) is written slice by slice; WRATHMODERN_GX=native
+// selects it for the frame-by-frame comparison with the device below, which stays the default.
+CGxDevice* CreateCGxDeviceMetalNative();
+
 CGxDevice* CreateCGxDeviceMetal() {
+    const char* gx = getenv("WRATHMODERN_GX");
+
+    if (gx && !strcmp(gx, "native")) {
+        return CreateCGxDeviceMetalNative();
+    }
+
     void* memory = SMemAlloc(sizeof(CGxDeviceMetal), __FILE__, __LINE__, 0);
 
     if (!memory) {
