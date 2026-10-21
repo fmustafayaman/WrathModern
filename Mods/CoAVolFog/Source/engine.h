@@ -51,13 +51,14 @@ struct FrameInputs
 constexpr int kSkyColorCount = 6;
 constexpr int kWaterColorPair = 2;
 
-// The water's inputs of the Windows build's engine.h (the ripple contacts follow with the ripples)
+// The water's inputs of the Windows build's engine.h
 struct WaterInputs
 {
     uint32_t skyColors[kSkyColorCount];
     uint32_t riverColors[kWaterColorPair];
     uint32_t oceanColors[kWaterColorPair];
     bool stockFogApplies;
+    WaterContactFrame contacts;
 };
 
 namespace engine

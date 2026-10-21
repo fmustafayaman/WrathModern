@@ -22,6 +22,7 @@
 #include "water_classify.h"
 #include "water_data.h"
 #include "water_fft_metal.h"
+#include "water_ripples_metal.h"
 #include "water_spectrum.h"
 
 namespace
@@ -47,6 +48,7 @@ constexpr float kMinClarity = 0.01f;
 constexpr float kShoreDistancePerDepth = 4.0f;
 constexpr float kMinStockFogRange = 1e-3f;
 constexpr double kMaxFoamStepSeconds = 0.1;
+constexpr double kRippleGapSeconds = 1.0;
 constexpr int kLowQuality = 1;
 constexpr int kSkyReflectionsOnlyVariant = 0;
 constexpr float kReflectionFogActive = 1.0f;
@@ -242,6 +244,8 @@ struct WaterRenderer::Impl
     id<MTLDepthStencilState> classStencil = nil;
     id<MTLDepthStencilState> noDepth = nil;
     std::unique_ptr<WaterFft> fft;
+    std::unique_ptr<WaterRipples> ripples;
+    WaterContactTracker contacts;
     id<MTLTexture> sceneColour = nil;
     id<MTLTexture> sceneDepth = nil;
     id<MTLTexture> waterDepth = nil;
@@ -271,6 +275,13 @@ struct WaterRenderer::Impl
     Float4 rippleWindow = {};
     Float4 rippleShape = {};
     Float4 rippleFade = {};
+    int rippleMapId = 0;
+    double lastRippleSeconds = -1.0;
+    uint32_t rippleRestarts = 0;
+    bool ripplesShaded = false;
+    bool ripplesAvailable = true;
+    bool shadedThisFrame = false;
+    const char* loggedRippleFailure = "";
 
     // Logging (once per change, as the Windows build)
     const char* skip = "";
@@ -614,13 +625,77 @@ struct WaterRenderer::Impl
         return simulated;
     }
 
-    // FillRippleConstants without ripples (slice 8): an empty window, no gain
-    void FillRippleConstants()
+    bool RippleContinuityBroken(double seconds) const
     {
-        const float extent = 1.0f;
-        rippleWindow = {0.0f, 0.0f, 1.0f / extent, 0.0f};
-        rippleShape = {0.0f, 0.0f, extent, 0.0f};
-        rippleFade = {extent * (0.5f - kRippleEdgeRampPerExtent), 1.0f / kRippleFadeYards, 1.0f, 0.0f};
+        return lastRippleSeconds >= 0.0 && (seconds < lastRippleSeconds || seconds - lastRippleSeconds > kRippleGapSeconds ||
+                                            in.mapId != rippleMapId);
+    }
+
+    void RestartRipples()
+    {
+        if (ripples)
+            ripples->Restart();
+        contacts.Reset();
+        ++rippleRestarts;
+    }
+
+    void ReleaseRipples()
+    {
+        ripples.reset();
+        contacts.Reset();
+        lastRippleSeconds = -1.0;
+        ripplesAvailable = true;
+    }
+
+    // SimulateRipples: the contacts' disturbances stepped into the ripple map at its fixed rate
+    bool SimulateRipples(id<MTLCommandBuffer> commands, id<MTLLibrary> library, double seconds)
+    {
+        if (cfg.waterRipples <= 0.0f)
+        {
+            ReleaseRipples();
+            return false;
+        }
+        if (RippleContinuityBroken(seconds))
+            RestartRipples();
+        lastRippleSeconds = seconds;
+        rippleMapId = in.mapId;
+        contacts.Update(water.contacts, seconds);
+        if (!ripples)
+            ripples = std::make_unique<WaterRipples>(device, library);
+        if (!ripples->Running() && !contacts.Emitting())
+            return false;
+        const int texels = cfg.waterQuality == kLowQuality ? kWaterRippleTexelsLow : kWaterRippleTexels;
+        ripplesAvailable = ripples->Prepare(texels);
+        if (!ripplesAvailable)
+        {
+            const char* failure = ripples->LastFailure();
+            if (std::strcmp(failure, loggedRippleFailure) != 0)
+                VF_LOG_INFO("water ripples skipped: %s", failure);
+            loggedRippleFailure = failure;
+            return false;
+        }
+        loggedRippleFailure = "";
+        if (!ripples->Running())
+            contacts.PlaceFootprints(seconds);
+        const WaterRippleSchedule schedule = ripples->Schedule(seconds);
+        const float centre[2] = {in.camTarget[0], in.camTarget[1]};
+        WaterRippleDisturbance disturbances[kMaxWaterRippleDisturbances];
+        for (int step = 0; step < schedule.steps; ++step)
+        {
+            const uint32_t count = contacts.TakeDisturbances(schedule.stepSeconds[step], disturbances, kMaxWaterRippleDisturbances);
+            ripples->Step(commands, centre, disturbances, count);
+        }
+        return ripples->Visible();
+    }
+
+    void FillRippleConstants(double seconds)
+    {
+        const WaterRippleWindow window = ripples ? ripples->Window(seconds) : WaterRippleWindow{};
+        const float extent = window.texels > 0 ? window.extent : 1.0f;
+        const float texelUv = window.texels > 0 ? 1.0f / window.texels : 0.0f;
+        rippleWindow = {window.origin[0], window.origin[1], 1.0f / extent, texelUv};
+        rippleShape = {window.weight, ripplesShaded ? cfg.waterRipples : 0.0f, extent, 0.0f};
+        rippleFade = {extent * (0.5f - kRippleEdgeRampPerExtent), 1.0f / kRippleFadeYards, kWaterRippleTexelYards, 0.0f};
     }
 
     void BuildReflectionFog(const FogData& fogData)
@@ -797,6 +872,20 @@ void WaterRenderer::Release()
     m_impl = nullptr;
 }
 
+bool WaterRenderer::TakeShadedThisFrame()
+{
+    if (!m_impl)
+        return false;
+    const bool shaded = m_impl->shadedThisFrame;
+    m_impl->shadedThisFrame = false;
+    return shaded;
+}
+
+bool WaterRenderer::RipplesAvailable() const
+{
+    return !m_impl || m_impl->ripplesAvailable;
+}
+
 // WaterRenderer::Begin with OnLiquidSurfaceBegin (the forced depth writes)
 void WaterRenderer::LiquidsBegin(const WMModHost* host, const Config& cfg, const WaterData& data, bool fogDrewLastFrame,
                                  bool stockFogPushed)
@@ -863,6 +952,9 @@ void WaterRenderer::LiquidsBegin(const WMModHost* host, const Config& cfg, const
         impl.in = in;
         engine::BuildWaterInputs(impl.water);
         impl.water.stockFogApplies = !stockFogPushed;
+        impl.water.contacts = {};
+        if (cfg.waterRipples > 0.0f)
+            engine::CaptureWaterContacts(in.camTarget, impl.water.contacts);
         impl.cfg = cfg;
         return true;
     };
@@ -925,6 +1017,7 @@ void WaterRenderer::LiquidsEnd(const WMModHost* host, const FogData& fog)
         return;
     impl.armed = false;
     impl.wavesSimulated = false;
+    impl.ripplesShaded = false;
     if (!impl.AnyClassDrawn())
         return;
 
@@ -954,7 +1047,8 @@ void WaterRenderer::LiquidsEnd(const WMModHost* host, const FogData& fog)
     const double seconds = host->GetWorldState() ? host->GetWorldState()->time : 0.0;
     impl.BuildReflectionFog(fog);
     impl.wavesSimulated = impl.SimulateWaves(commands, library, seconds);
-    impl.FillRippleConstants();
+    impl.ripplesShaded = impl.SimulateRipples(commands, library, seconds);
+    impl.FillRippleConstants(seconds);
     if (!impl.CopyLinearDepth(commands, depth, impl.waterDepth, @"CoAVolFog water depth"))
         return;
 
@@ -976,7 +1070,7 @@ void WaterRenderer::LiquidsEnd(const WMModHost* host, const FogData& fog)
     [encoder setFragmentTexture:impl.sceneColour atIndex:kSceneColourStage];
     [encoder setFragmentTexture:impl.sceneDepth atIndex:kSceneDepthStage];
     [encoder setFragmentTexture:impl.waterDepth atIndex:kWaterDepthStage];
-    [encoder setFragmentTexture:impl.flat atIndex:kRippleStage];
+    [encoder setFragmentTexture:impl.ripplesShaded ? impl.ripples->Map() : impl.flat atIndex:kRippleStage];
 
     int shadedClasses = 0;
     for (int index = 1; index < kWaterClassCount; ++index)
@@ -994,10 +1088,21 @@ void WaterRenderer::LiquidsEnd(const WMModHost* host, const FogData& fog)
     }
     [encoder endEncoding];
     impl.lastSeconds = seconds;
+    impl.shadedThisFrame = impl.shadedThisFrame || shadedClasses > 0;
 
     if (LogEnabled(LogLevel::Debug) && (impl.loggedLightSeconds < 0.0 || seconds - impl.loggedLightSeconds > 10.0))
     {
         impl.loggedLightSeconds = seconds;
+        if (impl.water.contacts.count > 0)
+        {
+            const WaterContact& c = impl.water.contacts.contacts[0];
+            VF_LOG_DEBUG("water contacts: %u, first %.2f %.2f %.2f surface %.2f radius %.2f%s; camera %.2f %.2f %.2f, "
+                         "target %.2f %.2f %.2f; ripple window %.2f %.2f",
+                         impl.water.contacts.count, c.position[0], c.position[1], c.position[2], c.surface, c.radius,
+                         c.swimming ? " swimming" : "", impl.in.camPos[0], impl.in.camPos[1], impl.in.camPos[2],
+                         impl.in.camTarget[0], impl.in.camTarget[1], impl.in.camTarget[2], impl.rippleWindow.x,
+                         impl.rippleWindow.y);
+        }
         VF_LOG_DEBUG("water light: day %.3f, to light %.2f %.2f %.2f%s, direct %08X, ambient %08X, sky %08X %08X, "
                      "river %08X %08X, ocean %08X %08X, stock fog %s",
                      impl.in.dayFraction, impl.in.toLight[0], impl.in.toLight[1], impl.in.toLight[2],

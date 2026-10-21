@@ -1201,3 +1201,84 @@ fragment float4 vw_water(Varyings in [[stage_in]], constant float4* C [[buffer(0
     // HLSL VPOS + 0.5: the pixel's centre
     return water.Shade(in.position.xy);
 }
+
+// ---- vw_ripple_step.hlsl ----
+
+constant int kMaxDisturbances = 48;
+constant float kDamping = 0.97;
+constant float kEdgeRampPerUv = 16;
+constant float kNeighbourWeight = 0.5;
+constant float kFootprintCore = 0.20;
+constant float kFootprintRim = 0.79;
+
+#define cRippleStep C[0]
+#define cRippleSegments(i) C[1 + (i)]
+#define cRippleShapes(i) C[49 + (i)]
+
+struct RippleStep
+{
+    constant float4* C;
+    texture2d<float> rippleState; // sRippleState, point, clamped
+
+    float2 WindowShift() const { return cRippleStep.xy; }
+    float InverseTexels() const { return cRippleStep.z; }
+    float DisturbanceCount() const { return cRippleStep.w; }
+    float2 State(float2 uv) const { return rippleState.sample(kPointClamp, uv, level(0)).rg; }
+
+    static float EdgeRamp(float2 uv)
+    {
+        float2 inward = min(uv, 1 - uv) * kEdgeRampPerUv;
+        return saturate(min(inward.x, inward.y));
+    }
+
+    float2 Propagate(float2 uv) const
+    {
+        float texel = InverseTexels();
+        float2 centre = State(uv);
+        float left = State(uv - float2(texel, 0)).r;
+        float down = State(uv - float2(0, texel)).r;
+        float right = State(uv + float2(texel, 0)).r;
+        float up = State(uv + float2(0, texel)).r;
+        float next = kDamping * EdgeRamp(uv) * (kNeighbourWeight * (left + down + right + up) - centre.g);
+        return float2(next, centre.r);
+    }
+
+    static float SegmentDistance(float2 p, float2 from, float2 to)
+    {
+        float2 along = to - from;
+        float lengthSquared = dot(along, along);
+        float t = lengthSquared > 0 ? saturate(dot(p - from, along) / lengthSquared) : 0;
+        return length(p - from - along * t);
+    }
+
+    static float Footprint(float distance, float inverseRadius)
+    {
+        return 1 - smoothstep(kFootprintCore, kFootprintRim, distance * inverseRadius);
+    }
+
+    static float2 Disturb(float2 state, float2 texelCentre, float4 segment, float4 shape)
+    {
+        float weight = Footprint(SegmentDistance(texelCentre, segment.xy, segment.zw), shape.x);
+        float held = weight * shape.z;
+        float height = mix(state.x, shape.y, held) + shape.y * (weight - held);
+        return float2(height, mix(state.y, height, held));
+    }
+
+    float4 At(float2 texel) const
+    {
+        float2 state = Propagate((texel + WindowShift() + 0.5) * InverseTexels());
+        for (int i = 0; i < kMaxDisturbances; i++)
+        {
+            if (i < DisturbanceCount())
+                state = Disturb(state, texel + 0.5, cRippleSegments(i), cRippleShapes(i));
+        }
+        return float4(state, 0, 0);
+    }
+};
+
+fragment float4 vw_ripple_step(Varyings in [[stage_in]], constant float4* C [[buffer(0)]],
+                               texture2d<float> rippleState [[texture(0)]])
+{
+    RippleStep step = {C, rippleState};
+    return step.At(floor(in.position.xy));
+}

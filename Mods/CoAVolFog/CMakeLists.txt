@@ -1,6 +1,6 @@
 # CoAVolFog for WrathModern: Raz0r1337/coa-vfog (GPL-3.0, a fork of jealous-sound/coa-vfog) ported to the
 # native Metal device as a mod. This directory is GPL-3.0 like the original (LICENSE); fog_data, water_data,
-# water_types, water_spectrum, fog_model, engine_lights.h, engine_actors.h and log.h are the original files unchanged.
+# water_types, water_spectrum, water_contacts, fog_model, engine_lights.h, engine_actors.h and log.h are the original files unchanged.
 # Plan and slices: WOWRE.md, "Faz 5". The mod reads CoAVolFog.ini, fogdata.bin and waterdata.bin from the
 # game's Mods folder, where the Windows install keeps them.
 
@@ -37,6 +37,10 @@ wrathmodern_add_mod(CoAVolFog
     Source/engine_mac.mm
     Source/renderer_metal.mm
     Source/water_spectrum.cpp
+    Source/water_contacts.cpp
+    Source/engine_actors_mac.mm
+    Source/water_ripples_metal.mm
+    Source/client_ripple_sprites.mm
     Source/water_fft_metal.mm
     Source/water_metal.mm
 )

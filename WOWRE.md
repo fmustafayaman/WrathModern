@@ -449,8 +449,20 @@ taşınabilir C++ olarak aynen alınır. Ayar dosyası `Mods/CoAVolFog.ini` (ayn
   geçen karede çizdiyse). Kanıt: Azuremyst kıyısı 14:00 (okyanus + göl), doğrulama 0 hata, gemiler yansıyor, kıyıda
   kırılma/şeffaflık; turuncu kıyı köpüğü = bölgenin sıcak doğrudan ışığı `D2A470` (WaterFoam=0 ile kayboluyor).
   Maliyet: +1.3 ms GPU (14.6 → 15.9 ms/kare, 2940×1612, 7 karo @256).
+- **Dilim 8 — TAMAM (2026-10-22):** `water_contacts.cpp` aynen (temas seçimi ve izleme); `engine_actors_mac.mm`
+  görünür nesne listesini istemcinin tipleriyle gezip `CGUnit_C::m_movementData` (transport, konum, swimming,
+  yarıçap/yükseklik) ve `CMapStaticEntity` sıvı bayrakları/`m_liquidHeight` alanlarını okur. `water_ripples_metal.mm`
+  orijinalin 30 Hz adımını, 512 (kalite 1'de 256) RG16F haritasını, pencere taşımayı ve 48 disturbance yüklemesini
+  yapar; `vw_ripple_step` MSL'e taşındı. `WaterRenderer` temasları her karede yakalar, adımlar ve gölgelendirmede
+  `SampleRipples` ile dalga eğimine ekler. `client_ripple_sprites` ripples çizilirken `CWorld::s_waterRipples`
+  kapısını kapatıp istemcinin sıçrama/iz sprite'larını gizler, çizim bitince eski değeri geri koyar.
+  Kanıt: Azuremyst kıyısı (Loradona suda; temas -4808 -12384 -0.81, yüzey 0.00, yarıçap 0.36). `WaterWaves=0` +
+  `WaterRipples=2` iken ayak çevresinde halka, `WaterRipples=0` iken düz su (`build/autotest/w-rip4`: world-2 ↔
+  world-4); doğrulama 0 hata; log "hidden ... shown again". Not: deneme için eklenen `WaterDebugView=7`
+  `saturate(-z)` yüzünden küçük negatif z'yi 1'e doyurup her yeri macenta gösteriyordu; su derinliği/konumu doğru
+  (kopya ~5 yd, `position.z` ~0).
 - **Açık (dilim 10):** orta mesafede tek pikselli güneş parıltısı/SSR noktacıkları (orijinalde de var, TAA yok) —
-  zamansal yumuşatma. Sıradaki: dilim 8 (dalga halkaları/temaslar, `water_ripples`, `water_contacts`).
+  zamansal yumuşatma. Sıradaki: dilim 9 (şeffaf sis, `FarClipMax`), sonra dilim 10.
 
 **Dilim 7 (su) tasarımı (2026-10-21):**
 - Orijinal: sıvı geçişini sarar (`0x790AA2` → `Liquid::CRenderer::Flush(camera, 1)`), her su çizimini

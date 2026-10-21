@@ -14,6 +14,7 @@
 #include "log.h"
 #include "renderer_metal.h"
 #include "water_metal.h"
+#include "client_ripple_sprites.h"
 #include "water_data.h"
 #include "lua.h"
 #include "panel_source.h"
@@ -32,6 +33,7 @@ struct State
     WaterData water;
     FogRenderer renderer;
     WaterRenderer waterRenderer;
+    ClientRippleSprites sprites;
     std::string iniPath;
     engine::StockFog savedStockFog = {};
     bool stockFogPushed = false;
@@ -69,6 +71,13 @@ void OnWorldEnd()
     }
 
     s.renderedLastFrame = s.renderedThisFrame;
+
+    // UpdateClientRippleSprites: the rings replace the client's splash and wake sprites while they are drawn
+    const Config& cfg = s.config;
+    const bool allowed = cfg.enable && cfg.water && cfg.waterRipples > 0.0f && !cfg.waterClientSplashes &&
+                         s.waterRenderer.RipplesAvailable();
+    const WMWorldState* world = s.host->GetWorldState();
+    s.sprites.Update(allowed, s.waterRenderer.TakeShadedThisFrame(), world ? world->time : 0.0);
 }
 
 void OnHook(WMHook hook, void* user)
@@ -177,6 +186,7 @@ void OnScriptContext(uint32_t context, int32_t loaded, void* user)
 
 void Shutdown(void* user)
 {
+    s.sprites.Restore();
     if (s.stockFogPushed)
         engine::WriteStockFog(s.savedStockFog);
     s.renderer.Release();

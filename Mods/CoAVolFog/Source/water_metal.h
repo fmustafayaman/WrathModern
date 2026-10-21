@@ -6,7 +6,8 @@
 // (GxMetalForceDepthWrite); after the liquids, the waves are simulated (water_fft_metal) and each tagged class
 // is shaded over the client's water with its preset (vw_water.metal).
 //
-// Not yet here: the ripples of the water contacts (slice 8: the ripple constants keep them off).
+// The units in water near the camera target disturb a ripple map (water_contacts, water_ripples_metal) whose
+// rings the shading adds to the waves.
 
 #include <cstdint>
 #include "config.h"
@@ -25,6 +26,10 @@ public:
     void LiquidDraw(const void* settings, bool begin);
     void LiquidsEnd(const WMModHost* host, const FogData& fog);
     void Release();
+
+    // Whether water was shaded since the last call (hooks.cpp g_waterShadedThisFrame)
+    bool TakeShadedThisFrame();
+    bool RipplesAvailable() const;
 
 private:
     struct Impl;
