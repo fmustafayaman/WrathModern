@@ -48,6 +48,8 @@ class CGxDeviceMetalNative : public CGxDevice {
     virtual void CapsWindowSizeInScreenCoords(CRect& rect);
     virtual void ScenePresent();
     virtual void SceneClear(uint32_t mask, CImVector color);
+    virtual void DeviceSetGamma(float gamma);
+    virtual void DeviceSetGamma(const CGxGammaRamp& ramp);
     virtual void PoolSizeSet(CGxPool* pool, uint32_t size);
     virtual int32_t TexCopy(CGxTex* dest, const C2iVector& destPos, const C2iVector& sourcePos, const C2iVector& size, uint32_t level, uint32_t plane);
     virtual int32_t TexStretch(CGxTex* dest, const CiRect* destRect, const CiRect* sourceRect, uint32_t level, uint32_t face);
@@ -74,6 +76,8 @@ class CGxDeviceMetalNative : public CGxDevice {
     bool ICreateWindowTargets(const CGxFormat& format);
     void ISetCaps(const CGxFormat& format);
     void IResetDevice();
+    void ISceneBegin();
+    void ISceneEnd();
     void ISetHwTargets(const GxMetal::Target& color, const GxMetal::Target& depth);
     void IPollWindow();
     // The window's client size in pixels

@@ -342,6 +342,19 @@ void CGxDeviceMetalNative::SceneClear(uint32_t mask, CImVector color) {
     this->m_metal->Clear(area, (mask & 0x1) != 0, (mask & 0x2) != 0, rgba, 1.0f);
 }
 
+void CGxDeviceMetalNative::ISceneBegin() {
+    if (!this->m_metal) {
+        return;
+    }
+
+    // The constants of the frame start empty, as on the shim device
+    this->m_inScene = 1;
+}
+
+void CGxDeviceMetalNative::ISceneEnd() {
+    this->m_inScene = 0;
+}
+
 void CGxDeviceMetalNative::ScenePresent() {
     if (!this->m_metal) {
         return;
@@ -349,6 +362,23 @@ void CGxDeviceMetalNative::ScenePresent() {
 
     this->m_metal->MarkTargetsRendered();
     this->m_metal->Present(this->m_backBuffer);
+    this->ISceneEnd();
+}
+
+void CGxDeviceMetalNative::DeviceSetGamma(float gamma) {
+    if (!this->m_metal) {
+        return;
+    }
+
+    CGxGammaRamp ramp;
+    ramp.Set(gamma);
+    this->m_metal->SetGammaRamp(ramp.m_red, ramp.m_green, ramp.m_blue);
+}
+
+void CGxDeviceMetalNative::DeviceSetGamma(const CGxGammaRamp& ramp) {
+    if (this->m_metal) {
+        this->m_metal->SetGammaRamp(ramp.m_red, ramp.m_green, ramp.m_blue);
+    }
 }
 
 void CGxDeviceMetalNative::DeviceReadPixels(CiRect& rect, TSGrowableArray<CImVector>& pixels) {
