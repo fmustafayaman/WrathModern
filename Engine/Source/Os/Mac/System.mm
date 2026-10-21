@@ -208,12 +208,43 @@ void OsFindTextSectionBounds() {
     SErrDisplayAppFatal("Unable to find .text section");
 }
 
+// Text segments of the mods the client loaded itself (Mods/*.dylib). Their Lua functions and console
+// variable callbacks pass the same check as the client's own code; code from anywhere else still fails.
+static struct {
+    uintptr_t m_start;
+    uintptr_t m_end;
+} s_modText[64];
+static uint32_t s_modTextCount;
+
+void OsAllowFunctionPointerImage(const void* header) {
+    unsigned long size = 0;
+    uint8_t* text = header ? getsegmentdata(static_cast<const mach_header_64*>(header), "__TEXT", &size) : nullptr;
+
+    if (text && s_modTextCount < sizeof(s_modText) / sizeof(s_modText[0])) {
+        s_modText[s_modTextCount].m_start = reinterpret_cast<uintptr_t>(text);
+        s_modText[s_modTextCount].m_end = reinterpret_cast<uintptr_t>(text) + size;
+        s_modTextCount++;
+    }
+}
+
+static bool IsModText(uintptr_t address) {
+    for (uint32_t i = 0; i < s_modTextCount; i++) {
+        if (address >= s_modText[i].m_start && address < s_modText[i].m_end) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void OsValidateFunctionPointer(const void* ptr) {
     if (!s_textStart || !s_textEnd) {
         OsFindTextSectionBounds();
     }
 
-    if (reinterpret_cast<uintptr_t>(ptr) < s_textStart || reinterpret_cast<uintptr_t>(ptr) >= s_textEnd) {
+    uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
+
+    if ((address < s_textStart || address >= s_textEnd) && !IsModText(address)) {
         char buffer[64];
         SStrPrintf(buffer, sizeof(buffer), "Invalid function pointer: %p", ptr);
         SErrDisplayAppFatal(buffer);
