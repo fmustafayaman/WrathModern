@@ -1623,3 +1623,23 @@ void FrameScript_CreateEvents(const char** names, uint32_t count) {
         }
     }
 }
+
+#if defined(WRATHMODERN_MODS)
+// Mods: events named by mods follow the client's own, so the indices the client uses are unchanged
+uint32_t FrameScript_AppendEvents(const char** names, uint32_t count) {
+    uint32_t base = s_scriptEvents.Count();
+    s_scriptEvents.SetCount(base + count);
+
+    for (uint32_t i = 0; i < count; i++) {
+        FrameScript_EventObject* event = s_scriptEventsHash.Ptr(names[i]);
+
+        if (!event) {
+            event = s_scriptEventsHash.New(names[i], 0, 0);
+        }
+
+        s_scriptEvents[base + i] = event;
+    }
+
+    return base;
+}
+#endif

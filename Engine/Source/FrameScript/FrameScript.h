@@ -75,6 +75,10 @@ void FrameScript_SignalEvent(uint32_t index, const char* format, ...);
 void FrameScript_SignalEvent(uint32_t index, lua_State* L, int32_t argCount);
 char* FrameScript_Sprintf(lua_State* L, int32_t index, char* buffer, uint32_t bufferLen);
 void FrameScript_UnregisterFunction(const char* name);
+#if defined(WRATHMODERN_MODS)
+// Adds events after the ones FrameScript_CreateEvents made; returns the index of the first
+uint32_t FrameScript_AppendEvents(const char** names, uint32_t count);
+#endif
 void FrameScript_UnregisterScriptEvent(FrameScript_Object* object, FrameScript_EventObject* event);
 void SetDecimalConversion(int32_t convert);
 void vFrameScript_SignalEvent(uint32_t index, const char* format, va_list args);

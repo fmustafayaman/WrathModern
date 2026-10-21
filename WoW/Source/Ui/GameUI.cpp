@@ -1,4 +1,5 @@
 #include "GameUI.h"
+#include "WoW/Source/WorldClient/Mods/ModHost.h"
 #include "WoW/Source/DB/Rec/FileDataRec.h"
 #include "WoW/Source/DB/Rec/MovieFileDataRec.h"
 #include "WoW/Source/DB/Rec/MovieRec.h"
@@ -1714,7 +1715,9 @@ void CGGameUI::InitializeFrameXML() {
     FrameScript_Destroy();
     FrameScript_Initialize(g_scriptProfileCVar->m_intValue);
     LoadScriptFunctions();
+    WRATHMODERN_MOD_SCRIPT_FUNCTIONS(WM_SCRIPT_GAME);
     FrameScript_CreateEvents(g_scriptEvents, NUM_SCRIPT_EVENTS);
+    WRATHMODERN_MOD_SCRIPT_EVENTS(WM_SCRIPT_GAME);
     CGGameUI::RegisterGameCVars();
     CGUIBindings::Initialize();
     CGWorldFrame::RegisterFrames();
@@ -1797,6 +1800,7 @@ void CGGameUI::InitializeFrameXML() {
 
     BugReportRegister();
     LoadAddOns(&status);
+    WRATHMODERN_MOD_SCRIPTS_LOADED(WM_SCRIPT_GAME);
     FrameXML_RegisterLoadProgressCallback(nullptr, nullptr, 0);
     CGGameUI::Initialize();
     LoadSavedVariables(&status);

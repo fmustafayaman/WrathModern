@@ -12,7 +12,11 @@
 #include <string>
 #include <unistd.h>
 #include <vector>
+#include "Engine/Source/ConsoleBase/ConsoleVar.h"
+#include "Engine/Source/ConsoleBase/Types.h"
+#include "Engine/Source/FrameScript/FrameScript.h"
 #include "Engine/Source/Gx/Gx.h"
+#include "Engine/Source/Os/System.h"
 #include "Engine/Source/Os/TimeManager.h"
 #include "WoW/Source/WorldClient/DayNight.h"
 #include "WoW/Source/WorldClient/DayNight__DNInfo.h"
@@ -33,6 +37,31 @@ std::vector<LoadedMod*> s_mods;
 FILE* s_log;
 WMWorldState s_worldState;
 bool s_worldStateValid;
+
+// Interface scripts. Lua functions and events of every mod, registered again in each new Lua state.
+struct ModLuaFunction {
+    std::string name;
+    WMLuaFunction function;
+    uint32_t contexts;
+};
+
+struct ModEvent {
+    std::string name;
+    uint32_t contexts;
+    // Index in the current context's event table, or -1 when the event is not part of it
+    int32_t index;
+};
+
+struct ModCVar {
+    std::string name;
+    WMCVarChanged changed;
+    void* user;
+};
+
+std::vector<ModLuaFunction> s_luaFunctions;
+std::vector<ModEvent> s_events;
+std::vector<ModCVar*> s_cvars;
+uint32_t s_scriptContext;
 
 void LogLine(const char* format, ...) {
     if (!s_log) {
@@ -147,6 +176,93 @@ int32_t HostAcquireFrameTargets(WMFrameTargets* targets) {
     return 1;
 }
 
+void HostRegisterLuaFunction(const char* name, WMLuaFunction function, uint32_t contexts) {
+    if (!name || !function || !(contexts & WM_SCRIPT_ALL)) {
+        return;
+    }
+
+    s_luaFunctions.push_back({ name, function, contexts });
+
+    // Available at once when the current Lua state is one of the contexts
+    if (s_scriptContext & contexts) {
+        FrameScript_RegisterFunction(name, reinterpret_cast<lua_CFunction>(function));
+    }
+}
+
+int32_t HostRegisterEvent(const char* name, uint32_t contexts) {
+    if (!name || !(contexts & WM_SCRIPT_ALL)) {
+        return -1;
+    }
+
+    // Events join a context's table when the context is created; one registered later waits for the
+    // next context (the interface is recreated on every login and /reload)
+    s_events.push_back({ name, contexts, -1 });
+    return static_cast<int32_t>(s_events.size() - 1);
+}
+
+void HostSignalEvent(int32_t event, const char* format, ...) {
+    if (event < 0 || static_cast<size_t>(event) >= s_events.size() || s_events[event].index < 0) {
+        return;
+    }
+
+    va_list args;
+    va_start(args, format);
+    vFrameScript_SignalEvent(static_cast<uint32_t>(s_events[event].index), format, args);
+    va_end(args);
+}
+
+void HostExecuteLua(const char* source, const char* chunkName) {
+    if (source && s_scriptContext) {
+        FrameScript_Execute(source, chunkName ? chunkName : "mod", nullptr);
+    }
+}
+
+lua_State* HostGetLuaState() {
+    return s_scriptContext ? FrameScript_GetContext() : nullptr;
+}
+
+uint32_t HostGetScriptContext() {
+    return s_scriptContext;
+}
+
+bool ModCVarCallback(CVar* var, const char* oldValue, const char* newValue, void* arg) {
+    ModCVar* cvar = static_cast<ModCVar*>(arg);
+    return !cvar->changed || cvar->changed(cvar->name.c_str(), oldValue, newValue, cvar->user) != 0;
+}
+
+int32_t HostRegisterCVar(const char* name, const char* help, const char* defaultValue, WMCVarChanged changed, void* user) {
+    if (!name || !defaultValue) {
+        return 0;
+    }
+
+    auto* cvar = new ModCVar { name, changed, user };
+    CVar* var = CVar::Register(name, help ? help : "", 0, defaultValue, ModCVarCallback, CATEGORY_GAME, false, cvar, false);
+
+    if (!var) {
+        delete cvar;
+        return 0;
+    }
+
+    s_cvars.push_back(cvar);
+    return 1;
+}
+
+const char* HostGetCVar(const char* name) {
+    CVar* var = name ? CVar::Lookup(name) : nullptr;
+    return var ? var->m_stringValue.m_str : nullptr;
+}
+
+int32_t HostSetCVar(const char* name, const char* value) {
+    CVar* var = name && value ? CVar::Lookup(name) : nullptr;
+
+    if (!var) {
+        return 0;
+    }
+
+    var->Set(value, true, false, false, true);
+    return 1;
+}
+
 void LoadMod(const std::string& path, const std::string& name) {
     void* library = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
 
@@ -163,6 +279,13 @@ void LoadMod(const std::string& path, const std::string& name) {
         return;
     }
 
+    // The client accepts Lua functions and console variable callbacks only from code it loaded itself
+    Dl_info image;
+
+    if (dladdr(reinterpret_cast<const void*>(load), &image) && image.dli_fbase) {
+        OsAllowFunctionPointerImage(image.dli_fbase);
+    }
+
     auto* mod = new LoadedMod();
     mod->library = library;
     mod->directory = s_gameDirectory + "/Mods/" + name;
@@ -175,17 +298,32 @@ void LoadMod(const std::string& path, const std::string& name) {
     host.Log = HostLog;
     host.GetWorldState = HostGetWorldState;
     host.AcquireFrameTargets = HostAcquireFrameTargets;
+    host.size = sizeof(WMModHost);
+    host.RegisterLuaFunction = HostRegisterLuaFunction;
+    host.RegisterEvent = HostRegisterEvent;
+    host.SignalEvent = HostSignalEvent;
+    host.ExecuteLua = HostExecuteLua;
+    host.GetLuaState = HostGetLuaState;
+    host.GetScriptContext = HostGetScriptContext;
+    host.RegisterCVar = HostRegisterCVar;
+    host.GetCVar = HostGetCVar;
+    host.SetCVar = HostSetCVar;
 
     mod->info = WMModInfo();
 
-    if (!load(&mod->host, &mod->info) || mod->info.version != WM_MOD_API_VERSION) {
+    if (!load(&mod->host, &mod->info) || mod->info.version < 1 || mod->info.version > WM_MOD_API_VERSION) {
         LogLine("%s: declined to load (interface version %u, the client's is %u)", name.c_str(), mod->info.version, WM_MOD_API_VERSION);
         delete mod;
         dlclose(library);
         return;
     }
 
-    LogLine("%s: loaded as \"%s\"", name.c_str(), mod->info.name ? mod->info.name : name.c_str());
+    // A version 1 mod has no members after Shutdown
+    if (mod->info.version < 2) {
+        mod->info.OnScriptContext = nullptr;
+    }
+
+    LogLine("%s: loaded as \"%s\" (interface version %u)", name.c_str(), mod->info.name ? mod->info.name : name.c_str(), mod->info.version);
     s_mods.push_back(mod);
 }
 
@@ -251,6 +389,59 @@ void ModsRunHook(WMHook hook) {
     for (LoadedMod* mod : s_mods) {
         if (mod->info.OnHook) {
             mod->info.OnHook(hook, mod->info.user);
+        }
+    }
+}
+
+void ModsInitialize() {
+    if (!s_initialized) {
+        Initialize();
+    }
+}
+
+void ModsRegisterScriptFunctions(uint32_t context) {
+    ModsInitialize();
+    s_scriptContext = context;
+
+    for (const ModLuaFunction& function : s_luaFunctions) {
+        if (function.contexts & context) {
+            FrameScript_RegisterFunction(function.name.c_str(), reinterpret_cast<lua_CFunction>(function.function));
+        }
+    }
+}
+
+void ModsCreateEvents(uint32_t context) {
+    std::vector<const char*> names;
+
+    for (ModEvent& event : s_events) {
+        if (event.contexts & context) {
+            names.push_back(event.name.c_str());
+        } else {
+            event.index = -1;
+        }
+    }
+
+    if (!names.empty()) {
+        uint32_t index = FrameScript_AppendEvents(names.data(), static_cast<uint32_t>(names.size()));
+
+        for (ModEvent& event : s_events) {
+            if (event.contexts & context) {
+                event.index = static_cast<int32_t>(index++);
+            }
+        }
+    }
+
+    for (LoadedMod* mod : s_mods) {
+        if (mod->info.OnScriptContext) {
+            mod->info.OnScriptContext(context, 0, mod->info.user);
+        }
+    }
+}
+
+void ModsScriptsLoaded(uint32_t context) {
+    for (LoadedMod* mod : s_mods) {
+        if (mod->info.OnScriptContext) {
+            mod->info.OnScriptContext(context, 1, mod->info.user);
         }
     }
 }

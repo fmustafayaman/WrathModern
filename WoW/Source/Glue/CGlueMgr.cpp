@@ -37,6 +37,7 @@
 #include "Engine/Source/Tempest/C3Vector.h"
 #include "Engine/Source/Tempest/C44Matrix.h"
 #include "Engine/Source/Tempest/CRect.h"
+#include "WoW/Source/WorldClient/Mods/ModHost.h"
 #include "WoW/Source/Client.h"
 #include "WoW/Source/DB/DBClient/DBClient.h"
 #include "WoW/Source/DB/Rec/ChrClassesRec.h"
@@ -717,8 +718,10 @@ void CGlueMgr::Resume() {
     SI2::RegisterScriptFunctions();
     AccountMsg_RegisterScriptFunctions();
     CGVideoOptions::RegisterScriptFunctions();
+    WRATHMODERN_MOD_SCRIPT_FUNCTIONS(WM_SCRIPT_GLUE);
     CGlueMgr::s_scriptFunctionsLoaded = 1;
     FrameScript_CreateEvents(g_glueScriptEvents, sizeof(g_glueScriptEvents) / sizeof(g_glueScriptEvents[0]));
+    WRATHMODERN_MOD_SCRIPT_EVENTS(WM_SCRIPT_GLUE);
 
     CCharacterSelection::Initialize();
     CCharacterCreation::Initialize();
@@ -763,6 +766,7 @@ void CGlueMgr::Resume() {
 #endif
 
             FrameScript_SignalEvent(GLUE_EVENT_FRAMES_LOADED, nullptr);
+            WRATHMODERN_MOD_SCRIPTS_LOADED(WM_SCRIPT_GLUE);
             CGlueMgr::InitializeFFX();
 
             ClientServices::SetMessageHandler(SMSG_CHARACTER_RENAME_RESULT, CGlueMgr::OnCharRenameResult, nullptr);
