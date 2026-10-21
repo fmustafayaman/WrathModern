@@ -464,6 +464,41 @@ taşınabilir C++ olarak aynen alınır. Ayar dosyası `Mods/CoAVolFog.ini` (ayn
 - **Açık (dilim 10):** orta mesafede tek pikselli güneş parıltısı/SSR noktacıkları (orijinalde de var, TAA yok) —
   zamansal yumuşatma. Sıradaki: dilim 9 (şeffaf sis, `FarClipMax`), sonra dilim 10.
 
+**Oturum devri — 2026-10-22 00:55 (OpenCode / DeepSeek V4.1):**
+- **Dilim 8 kapandı ve commit'lendi:** `fad7f7d CoAVolFog slice 8: water ripples and contacts`. Yeni dosyalar
+  `Source/water_contacts.{h,cpp}` (orijinalin aynısı), `Source/engine_actors_mac.mm` (görünür nesne listesi +
+  `CGUnit_C::m_movementData` / `CMapStaticEntity` sıvı alanları), `Source/water_ripples_metal.{h,mm}`
+  (512/256 RG16F, 30 Hz adım, pencere taşıma, 48 disturbance), `Source/client_ripple_sprites.{h,mm}`
+  (`CWorld::s_waterRipples` kapısı); `vw_water.metal`'e `vw_ripple_step`, `WaterRenderer`'a
+  `SimulateRipples`/`FillRippleConstants`/`TakeShadedThisFrame`/`RipplesAvailable`.
+- **Kesin kanıt:** `build/autotest/w-rip4` (`WaterWaves=0`, `WaterRipples=2` → `world-2`; `WaterRipples=0` →
+  `world-4`): ayak çevresinde belirgin halka ↔ düz su. `build/autotest/w-rip3`: Metal doğrulaması 0 hata,
+  log "splash and wake sprites hidden ... shown again". Kullanıcının `CoAVolFog.ini`'si her koşuda md5 ile
+  korundu.
+- **Yanlış alarm (tekrar kovalamayın):** deneme için eklenen `WaterDebugView=7` (`saturate(-w.position.z)`)
+  küçük negatif z'yi 1'e doyuruyor ve tüm suyu macenta gösteriyordu. `WaterDebugView=8` ile ölçüldü:
+  `waterZ` ~5 yd, `position.z` ~0; derinlik/konum doğru. Geçici 7/8 kodları **geri alındı**; commit'te
+  `WaterDebugView` yine orijinal 0..6.
+- **Ayar paneli:** `Source/panel.lua`'ya "Water" grubu eklendi (Water, WaterQuality, WaterWaves, WaterWind,
+  WaterFoam, WaterReflections, WaterSpecular, WaterClarity, WaterZoneColors, WaterRipples,
+  WaterClientSplashes, LiquidDepth, WaterDebugView). Panel `build/autotest/panel{,2}`'de açılıyor; ancak
+  otomatik testte kaydırma çubuğunun azami değeri 0 kaldığı için Water grubu ekran görüntüsüne gelmedi — panel
+  değişikliği veri-güdümlü, tüm anahtarlar `CoAVolFog_Get`'ten geçerli dönüyor; **görsel kaydırma testi açık**.
+- **God rays:** `build/autotest/rays3`/`rays4` logları `god rays drawn (strength 0.55, sun at -70, 576)`
+  gösteriyor; güneş kadrajın sol kenarındayken huzmeler devreye giriyor. Tam kadraj doğrulaması hâlâ açık.
+  Test tuzağı: `WRATHMODERN_TIME_OF_DAY` yalnız `DNInfo` ışık bantlarını değiştiriyor; **gökyüzü kubbesi
+  gerçek sunucu saatini** kullanıyor, bu yüzden 16:00 testinde gökyüzünde yıldızlar görünüyor (mod hatası değil).
+- **Dilim 9 notu:** bu dalda `World::ValidateFarClip` zaten `WRATHMODERN_CLIENT_PATCHES` ile 10000'e kadar izin
+  veriyor; `FarClipMax` bu yüzden çoğunlukla no-op. Asıl iş şeffaf sis: erken kompozit (su sonrası, transparent
+  M2'lerden önce) + `CShaderEffect::SetFogParams`/M2 batch sisi için `FitStockFog` (orijinal
+  `transparent_fog.cpp`, 582 satır, portlanabilir) ve `TransparentFog` ayarı. Bizim mevcut kompozit
+  `BEFORE_SCREEN_EFFECTS`'te olduğu için erken geçiş `FogRenderer`'ı ikiye bölmeyi gerektiriyor (march+kompozit
+  erken, rays+grade geç).
+- **Durum:** `build/mac` güncel ve oyun dizinine kopyalandı; çalışan oyun/autotest yok; çalışma ağacında yalnız
+  `panel.lua` değişikliği var (bu notla birlikte commit'lenecek). Test klasörleri: `w-depth` (yanlış alarm
+  ölçümü), `w-rip3` (doğrulama + sprite logu), `w-rip4` (ripple on/off kanıtı), `rays*` (god rays),
+  `panel{,2}` (panel).
+
 **Dilim 7 (su) tasarımı (2026-10-21):**
 - Orijinal: sıvı geçişini sarar (`0x790AA2` → `Liquid::CRenderer::Flush(camera, 1)`), her su çizimini
   (`CMaterialWater::Render`, `CMaterialWaterNoSpec::Render` vtable yuvaları) sınıflandırıp (göl/nehir/okyanus/iç

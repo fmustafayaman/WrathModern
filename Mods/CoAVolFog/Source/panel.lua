@@ -40,6 +40,20 @@ local SETTINGS = {
     {"InteriorAware", "Interior aware"},
     {"InteriorDensity", "Interior density"},
     {"InteriorFarFog", "Interior distance fog"},
+    {"Water"},
+    {"Water", "Forever water"},
+    {"WaterQuality", "Water quality (1 low - 3 high)"},
+    {"WaterWaves", "Waves"},
+    {"WaterWind", "Wind"},
+    {"WaterFoam", "Foam"},
+    {"WaterReflections", "Reflections"},
+    {"WaterSpecular", "Sun glint"},
+    {"WaterClarity", "Clarity"},
+    {"WaterZoneColors", "Zone water colours"},
+    {"WaterRipples", "Ripples and wakes"},
+    {"WaterClientSplashes", "Keep the client's splashes"},
+    {"LiquidDepth", "Water writes depth"},
+    {"WaterDebugView", "Debug view (1 normal, 2 foam, 3 transmittance, 4 reflection, 5 class, 6 ripples)"},
 }
 
 local ROW = 38
