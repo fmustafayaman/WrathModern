@@ -50,6 +50,21 @@ struct FrameInputs
 
 namespace engine
 {
+// The day/night fog groups (0xD38B90/94 and 0xD38BA4/A8: DNInfo::m_fog and m_fogInterior)
+constexpr int kDayNightFogGroupCount = 2;
+constexpr int kFrameInputsFogGroup = 1;
+
+struct StockFog
+{
+    float start[kDayNightFogGroupCount];
+    float end[kDayNightFogGroupCount];
+};
+
+StockFog ReadStockFog();
+void WriteStockFog(const StockFog& fog);
+// 0xCD8794, the liquid the camera is in
+bool CameraInLiquid();
+
 // The inputs of the frame being drawn, from the world state the client captured after the opaque pass and
 // the frame's target size (the world viewport covers the whole target)
 bool BuildFrameInputs(const WMWorldState& world, uint32_t width, uint32_t height, FrameInputs& out);

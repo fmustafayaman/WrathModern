@@ -13,6 +13,7 @@
 #include "WoW/Source/WorldClient/MapObjDef.h"
 #include "WoW/Source/WorldClient/MapObjGroup.h"
 #include "WoW/Source/WorldClient/World.h"
+#include "WoW/Source/WorldClient/WorldScene.h"
 
 namespace
 {
@@ -59,6 +60,26 @@ bool CameraInInterior()
 
 namespace engine
 {
+
+StockFog ReadStockFog()
+{
+    const DayNight::DNInfo& info = DayNight::g_dnInfo;
+    return {{info.m_fog.m_start, info.m_fogInterior.m_start}, {info.m_fog.m_end, info.m_fogInterior.m_end}};
+}
+
+void WriteStockFog(const StockFog& fog)
+{
+    DayNight::DNInfo& info = DayNight::g_dnInfo;
+    info.m_fog.m_start = fog.start[0];
+    info.m_fog.m_end = fog.end[0];
+    info.m_fogInterior.m_start = fog.start[1];
+    info.m_fogInterior.m_end = fog.end[1];
+}
+
+bool CameraInLiquid()
+{
+    return s_liquidTypeId != 0;
+}
 
 bool BuildFrameInputs(const WMWorldState& world, uint32_t width, uint32_t height, FrameInputs& out)
 {
