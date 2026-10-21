@@ -6,6 +6,7 @@ wrathmodern_add_mod(AwesomeWotlk
     UnitAPI.cpp
     Item.cpp
     NamePlates.cpp
+    Interaction.cpp
     Camera.cpp
     Window.mm
 )

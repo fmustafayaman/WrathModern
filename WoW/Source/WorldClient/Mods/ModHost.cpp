@@ -500,6 +500,14 @@ void ModsWorld(int32_t entered) {
     }
 }
 
+void ModsFrameTick(float elapsed) {
+    for (LoadedMod* mod : s_mods) {
+        if (mod->info.OnFrame) {
+            mod->info.OnFrame(elapsed, mod->info.user);
+        }
+    }
+}
+
 void ModsShutdown() {
     for (LoadedMod* mod : s_mods) {
         if (mod->info.Shutdown) {

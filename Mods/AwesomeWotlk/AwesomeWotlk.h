@@ -34,6 +34,12 @@ void Register();
 void OnCVarChanged(const char* name, float value);
 }
 
+namespace interaction {
+void Register();
+void OnFrame(float elapsed, void* user);
+void OnWorld(int32_t entered, void* user);
+}
+
 namespace window {
 void Register();
 }

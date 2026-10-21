@@ -22,6 +22,16 @@ void Log(const char* format, ...) {
 
 namespace {
 
+// The world callbacks of the modules
+void OnWorld(int32_t entered, void* user) {
+    camera::OnWorld(entered, user);
+    interaction::OnWorld(entered, user);
+}
+
+void OnFrame(float elapsed, void* user) {
+    interaction::OnFrame(elapsed, user);
+}
+
 void OnScriptContext(uint32_t context, int32_t loaded, void* user) {
     // luaOpenAwesomeWotlk: the version global exists in every new Lua state before any interface file runs
     if (!loaded) {
@@ -47,12 +57,14 @@ extern "C" __attribute__((visibility("default"))) int32_t WMModLoad(const WMModH
     awesome::unit_api::Register();
     awesome::item::Register();
     awesome::nameplates::Register();
+    awesome::interaction::Register();
     awesome::window::Register();
 
     info->version = WM_MOD_API_VERSION;
     info->name = "Awesome WotLK";
     info->OnScriptContext = awesome::OnScriptContext;
     info->OnCameraCreated = awesome::camera::OnCameraCreated;
-    info->OnWorld = awesome::camera::OnWorld;
+    info->OnWorld = awesome::OnWorld;
+    info->OnFrame = awesome::OnFrame;
     return 1;
 }

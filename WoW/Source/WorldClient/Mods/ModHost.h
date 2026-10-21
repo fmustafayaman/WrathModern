@@ -20,6 +20,8 @@ void ModsScriptsLoaded(uint32_t context);
 void ModsCameraTarget(const float* cameraPosition, float* targetPosition);
 void ModsCameraCreated(float* fieldOfView);
 void ModsWorld(int32_t entered);
+// Once per frame while the world is rendered
+void ModsFrameTick(float elapsed);
 void ModsShutdown();
 #define WRATHMODERN_MOD_HOOK(hook) ModsRunHook(hook)
 #define WRATHMODERN_MOD_SCRIPT_FUNCTIONS(context) ModsRegisterScriptFunctions(context)
@@ -28,6 +30,7 @@ void ModsShutdown();
 #define WRATHMODERN_MOD_CAMERA_TARGET(camera, target) ModsCameraTarget(camera, target)
 #define WRATHMODERN_MOD_CAMERA_CREATED(fov) ModsCameraCreated(fov)
 #define WRATHMODERN_MOD_WORLD(entered) ModsWorld(entered)
+#define WRATHMODERN_MOD_FRAME(elapsed) ModsFrameTick(elapsed)
 #else
 #define WRATHMODERN_MOD_HOOK(hook) ((void)0)
 #define WRATHMODERN_MOD_SCRIPT_FUNCTIONS(context) ((void)0)
@@ -36,6 +39,7 @@ void ModsShutdown();
 #define WRATHMODERN_MOD_CAMERA_TARGET(camera, target) ((void)0)
 #define WRATHMODERN_MOD_CAMERA_CREATED(fov) ((void)0)
 #define WRATHMODERN_MOD_WORLD(entered) ((void)0)
+#define WRATHMODERN_MOD_FRAME(elapsed) ((void)0)
 #endif
 
 #endif

@@ -1674,6 +1674,8 @@ void CGWorldFrame::OnWorldRender() {
         return;
     }
 
+    WRATHMODERN_MOD_FRAME(this->m_elapsedSec);
+
     g_theGxDevicePtr->RsPush();
     GxRsSet(GxRs_Multisample, 1);
     CGWorldFrame::UpdateScreenEffectParams();

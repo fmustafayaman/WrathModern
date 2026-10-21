@@ -215,6 +215,8 @@ typedef struct WMModInfo {
     void (*OnCameraCreated)(float* fieldOfView, void* user);
     /* Called as the game enters (entered = 1) and leaves (0) the world, before the client's own handling */
     void (*OnWorld)(int32_t entered, void* user);
+    /* Called once per frame while the world is rendered; elapsed is the frame time in seconds */
+    void (*OnFrame)(float elapsed, void* user);
 } WMModInfo;
 
 /*
