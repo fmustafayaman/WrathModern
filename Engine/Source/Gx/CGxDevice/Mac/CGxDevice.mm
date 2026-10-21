@@ -6,12 +6,10 @@
 #import <CoreGraphics/CoreGraphics.h>
 #import <Metal/Metal.h>
 #include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
-#include "Engine/Source/Gx/CGxDeviceMetal/D3D9/Device.h"
 
 // The adapter queries of CGxDevice for macOS: the Metal device and the main display stand for the
 // Direct3D adapter and the Windows display device.
 
-static const D3D9Metal::D3DFORMAT s_adapterDepthFormats[4] = { D3D9Metal::D3DFMT_D16, D3D9Metal::D3DFMT_D24X8, D3D9Metal::D3DFMT_D24S8, D3D9Metal::D3DFMT_D32 };
 static const CGxFormat::Format s_gxDepthFormats[4] = { CGxFormat::Fmt_Ds160, CGxFormat::Fmt_Ds24X, CGxFormat::Fmt_Ds248, CGxFormat::Fmt_Ds320 };
 static const uint32_t s_multisampleCounts[4] = { 1, 2, 4, 8 };
 
@@ -24,8 +22,9 @@ int32_t CGxDevice::AdapterFormats(EGxApi api, TSGrowableArray<CGxFormat>& format
         return 0;
     }
 
-    D3D9Metal::Direct3D* d3d = D3D9Metal::Direct3D::Create();
-    if (!d3d) {
+    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+
+    if (!device) {
         return 0;
     }
 
@@ -34,82 +33,45 @@ int32_t CGxDevice::AdapterFormats(EGxApi api, TSGrowableArray<CGxFormat>& format
     for (CGxFormat::Format colorFormat : s_colorFormats) {
         for (uint32_t depth = 0; depth < 4; depth++) {
             for (uint32_t samples : s_multisampleCounts) {
-                D3D9Metal::D3DMULTISAMPLE_TYPE type = samples > 1 ? static_cast<D3D9Metal::D3DMULTISAMPLE_TYPE>(samples) : D3D9Metal::D3DMULTISAMPLE_NONE;
+                if (samples > 1 && ![device supportsTextureSampleCount:samples]) {
+                    continue;
+                }
 
-                if (D3D9Metal::Succeeded(d3d->CheckDeviceMultiSampleType(0, D3D9Metal::D3DFMT_X8R8G8B8, 0, type, nullptr)) && D3D9Metal::Succeeded(d3d->CheckDeviceMultiSampleType(0, s_adapterDepthFormats[depth], 0, type, nullptr))) {
-                    CGxFormat format;
-                    memset(&format, 0, sizeof(format));
-                    format.m_colorFormat = colorFormat;
-                    format.m_depthFormat = s_gxDepthFormats[depth];
-                    format.m_multisampleCount = samples;
+                CGxFormat format;
+                memset(&format, 0, sizeof(format));
+                format.m_colorFormat = colorFormat;
+                format.m_depthFormat = s_gxDepthFormats[depth];
+                format.m_multisampleCount = samples;
 
-                    if (!CGxDevice::FormatExists(formats, format)) {
-                        *formats.New() = format;
-                    }
+                if (!CGxDevice::FormatExists(formats, format)) {
+                    *formats.New() = format;
                 }
             }
         }
     }
 
-    d3d->Release();
     return formats.Count() != 0;
 }
 
 int32_t CGxDevice::DeviceAdapterID(uint16_t& vendorID, uint16_t& deviceID, uint32_t& driverVersionHi, uint32_t& driverVersionLo) {
-    vendorID = 0xFFFF;
-    deviceID = 0xFFFF;
+    // Metal has no adapter identifiers; the GPU's registry id stands in for them and the driver has
+    // no version number to report
+    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+    vendorID = 0x106B;  // Apple
+    deviceID = device ? static_cast<uint16_t>(device.registryID & 0xFFFF) : 0xFFFF;
     driverVersionHi = 0;
     driverVersionLo = 0;
 
-    int32_t result = 0;
-    D3D9Metal::Direct3D* d3d = D3D9Metal::Direct3D::Create();
-
-    if (d3d) {
-        D3D9Metal::AdapterIdentifier identifier;
-        if (D3D9Metal::Succeeded(d3d->GetAdapterIdentifier(0, 0, &identifier))) {
-            vendorID = static_cast<uint16_t>(identifier.VendorId);
-            deviceID = static_cast<uint16_t>(identifier.DeviceId);
-            driverVersionHi = identifier.DriverVersionHigh;
-            driverVersionLo = identifier.DriverVersionLow;
-            result = 1;
-        }
-        d3d->Release();
-    }
-
-    CGxDevice::Log("CGxDevice::DeviceAdapterID(): RET: %d, VID: %x, DID: %x, DVER: %x.%x", result, vendorID, deviceID, driverVersionHi, driverVersionLo);
-
-    return result;
+    CGxDevice::Log("CGxDevice::DeviceAdapterID(): RET: 1, VID: %x, DID: %x", vendorID, deviceID);
+    return device ? 1 : 0;
 }
 
 int32_t CGxDevice::DeviceAdapterInfer(uint16_t& deviceID) {
-    deviceID = 0;
-
-    D3D9Metal::Direct3D* d3d = D3D9Metal::Direct3D::Create();
-    if (!d3d) {
-        return 0;
-    }
-
-    // The same classification as the Windows version: hardware transform and lighting, more than
-    // two texture units and pixel shader 2.0
-    D3D9Metal::D3DCAPS9 caps;
-    int32_t result = 0;
-
-    if (D3D9Metal::Succeeded(d3d->GetDeviceCaps(0, &caps))) {
-        if ((caps.DevCaps & D3D9Metal::D3DDEVCAPS_HWTRANSFORMANDLIGHT) && caps.MaxSimultaneousTextures > 2 && static_cast<uint16_t>(caps.PixelShaderVersion) >= 0x200) {
-            deviceID = 3;
-        } else if ((caps.DevCaps & D3D9Metal::D3DDEVCAPS_HWTRANSFORMANDLIGHT) && caps.MaxSimultaneousTextures > 2 && static_cast<uint16_t>(caps.PixelShaderVersion) >= 0x101) {
-            deviceID = 2;
-        } else if ((caps.DevCaps & D3D9Metal::D3DDEVCAPS_HWTRANSFORMANDLIGHT) && caps.MaxSimultaneousTextures >= 2) {
-            deviceID = 1;
-        }
-
-        result = 1;
-    }
-
-    d3d->Release();
-    CGxDevice::Log("CGxDevice::DeviceAdapterInfer(): RET: %d, DID: %x", result, deviceID);
-
-    return result;
+    // Metal devices always have hardware transform and lighting, eight texture units and shader
+    // model 3, which the Windows classification reports as its highest tier
+    deviceID = 3;
+    CGxDevice::Log("CGxDevice::DeviceAdapterInfer(): RET: 1, DID: 3");
+    return 1;
 }
 
 int32_t CGxDevice::AdapterDesktopMode(CGxMonitorMode& mode) {

@@ -2966,12 +2966,36 @@ void CGxDeviceMetalNative::DeviceUnk82() {
 void CGxDeviceMetalNative::DeviceUnk83(uint32_t a, uint32_t b) {
 }
 
+// The device the client creates for GxApi_Metal
+CGxDevice* CreateCGxDeviceMetal() {
+    return new CGxDeviceMetalNative();
+}
+
 CGxDevice* CreateCGxDeviceMetalNative() {
     return new CGxDeviceMetalNative();
 }
 
 // The mod interface (Gx.h): the Metal device, command buffer and targets for code that draws with
-// Metal itself. Null unless the native device is the one in use.
+// Metal itself.
+void* GxMetalDevice() {
+    CGxDeviceMetalNative* device = dynamic_cast<CGxDeviceMetalNative*>(g_theGxDevicePtr);
+    return device && device->m_metal ? (__bridge void*)device->m_metal->m_device : nullptr;
+}
+
+int32_t GxMetalAcquireTargets(GxMetalTargets& targets) {
+    CGxDeviceMetalNative* device = dynamic_cast<CGxDeviceMetalNative*>(g_theGxDevicePtr);
+
+    if (!device || !device->m_metal) {
+        return 0;
+    }
+
+    return device->m_metal->AcquireExternalTargets(&targets.commandBuffer, &targets.color, &targets.depth, &targets.width, &targets.height, &targets.sampleCount) ? 1 : 0;
+}
+
+// macOS draws the system cursor; there is no software cursor to scale
+void GxCursorSetScale(float scale) {
+}
+
 void* GxMetalNativeDevice() {
     CGxDeviceMetalNative* device = dynamic_cast<CGxDeviceMetalNative*>(g_theGxDevicePtr);
     return device && device->m_metal ? (__bridge void*)device->m_metal->m_device : nullptr;

@@ -314,6 +314,7 @@ class CGxDeviceMetalNative : public CGxDevice {
     void IClientSize(int32_t* width, int32_t* height);
 };
 
+CGxDevice* CreateCGxDeviceMetal();
 CGxDevice* CreateCGxDeviceMetalNative();
 
 #endif
