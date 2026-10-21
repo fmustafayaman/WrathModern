@@ -175,6 +175,39 @@ Shader/ShaderTranslator.*  bytecode → MSL
 
 Başlangıç noktası: commit `f917b1c`, etiket `wowre-start` (`git diff wowre-start` o andan beri yapılan her şeyi gösterir).
 
+### 2026-10-21 gece — test altyapısı (kullanıcı uyurken, tüm kararlar bana bırakıldı)
+
+- `WoW/Source/Autotest.{h,cpp}` + `Tools/autotest.sh`: istemci gözetimsiz çalışır, kendi sunucuya
+  girer, oyunun **kendi** ekran görüntüsü yoluyla (`ScrnScreenshot`, 88 baytlık istemci damgası
+  zorunlu; 0 verilirse ImageWriter başlamaz) kare alır, çıkar. WTF yedeklenip geri yüklenir; bir
+  seferde tek test (`/tmp/wrathmodern-autotest.lock`).
+  - `Tools/autotest.sh <çıktı> "glue@15"` → giriş ekranı;
+    `Tools/autotest.sh <çıktı> "world@15,world@30"` → dünyada iki kare.
+  - Ortam: `WOWRE_APP`, `WOWRE_LOGIN` (kimlik dosyası), `WOWRE_CHARACTER`, `WOWRE_REALM(LIST)`.
+- Hesaplar (şifreler yalnızca 600 izinli dosyalarda, repoda/log'da yok):
+  - `~/.wrathmodern-wowre-autologin` → `loradona` (kullanıcının hesabı); test karakteri **Rhon**
+    (insan rogue 1, Northshire). Ana karakter `Loradona`'ya dokunulmaz.
+  - `~/.wrathmodern-selfwow-autologin` → `SELFWOW`; karakter **Selfwow**. Paralel ajan bunu kullanır.
+  - Realm `Azeroth`, realmlist `100.71.234.118`.
+- **Öğrenilen tuzak:** otomatik "Enter World" bir girdi olayı üretmediği için `CSimpleTop::s_eventTime`
+  0 kalıyor; `CGGameUI` 30 dk boşta kontrolü anında `CMSG_LOGOUT_REQUEST` gönderiyordu. Sürücü artık
+  tıklama gibi `s_eventTime`'ı tazeliyor. Teşhis `WRATHMODERN_NETLOG=1` (opcode günlüğü) ile yapıldı.
+- Sunucu Mac Warden modülünü istiyor (`Warden.log`); `ClientResponseDelay=600`, `FailAction=0`
+  → yalnızca log. Kendi sunucumuzda sorun değil.
+- **Referans görüntüler (D3D9 shim'li hal):** `build/autotest/ref-shim/{glue,world,world-2}.png`
+  (2560×1440). Faz 1'in her adımı bunlarla karşılaştırılır. Dünya karesi gece/NPC hareketi
+  nedeniyle piksel piksel aynı olamaz; göz + ortalama fark ile karşılaştırılır.
+- Derleme seçeneği: `-DWOWDECOMP_DISABLE_SIGNATURE_CHECKS=ON` şart (Reforged GlueXML'i
+  değiştirmiş; aksi halde "GlueXML is modified or corrupt" ve istemci girişte kalır). Faz 3 #19 bunu
+  kalıcı yapacak.
+
+### Paralel iş düzeni
+
+- `../WrathModern-WowRe-patches`, dal `WowRe-patches` (WowRe'den): **Faz 3** (St0ny Reforged
+  yamaları) bir alt ajanda. `Engine/Source/Gx/CGxDeviceMetal/**`'a dokunmaz (Faz 1 orada). Uygulama
+  adı `WrathModern-WowRe-patches.app`, hesap `SELFWOW`. Bitince `WowRe`'ye merge edilir.
+- `WowRe` (bu worktree): Faz 1.
+
 ## Sıradaki adımlar (yarıda kalırsa buradan devam)
 
 1. [x] Faz 1 tasarımı (yukarıda "Faz 1 tasarımı").
