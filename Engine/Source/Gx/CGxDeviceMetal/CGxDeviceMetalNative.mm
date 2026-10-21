@@ -2688,7 +2688,8 @@ bool CGxDeviceMetalNative::IDrawPrepare(const CGxBatch* batch) {
     GxMetal::Texture* depthTarget = this->m_metal->DepthTarget().m_texture;
     bool stencilTag = this->m_stencilTag != 0 && depthTarget &&
                       depthTarget->m_format.m_pixelFormat == MTLPixelFormatDepth32Float_Stencil8;
-    [encoder setDepthStencilState:this->m_pipelines->DepthStencil(this->m_hw.m_depthCompare, this->m_hw.m_depthWrite, stencilTag)];
+    bool depthWrite = this->m_hw.m_depthWrite || this->m_forceDepthWrite;
+    [encoder setDepthStencilState:this->m_pipelines->DepthStencil(this->m_hw.m_depthCompare, depthWrite, stencilTag)];
     if (stencilTag) {
         [encoder setStencilReferenceValue:this->m_stencilTag];
     }
@@ -3293,6 +3294,14 @@ void GxMetalSetStencilTag(uint32_t tag) {
 
     if (device) {
         device->m_stencilTag = tag & 0xFF;
+    }
+}
+
+void GxMetalForceDepthWrite(bool force) {
+    CGxDeviceMetalNative* device = dynamic_cast<CGxDeviceMetalNative*>(g_theGxDevicePtr);
+
+    if (device) {
+        device->m_forceDepthWrite = force;
     }
 }
 

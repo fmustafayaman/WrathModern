@@ -437,9 +437,20 @@ taşınabilir C++ olarak aynen alınır. Ayar dosyası `Mods/CoAVolFog.ini` (ayn
   döngü saati `MakeWaterLoopClock`), satır/sütun butterfly (`WaterButterflyTexels` tablosu), displacement birleştirme,
   yüzey + köpük (`vw_fft_surface`, `WaterFoamStep`), mip (`vw_fft_mip`). CPU tabloları `water_spectrum.cpp`'den aynen.
   Doğrulama: orijinalin `WaterReferenceDisplacement`/`WaterReferenceSurface` CPU referansıyla GPU sonucunu karşılaştır.
-- **Sıradaki — 7.2:** su öncesi sahne + doğrusal derinlik kopyası, `water_fft`/`water_spectrum` (GPU FFT, Forever
-  karoları), `vw_*.hlsl` → MSL, sınıf başına stencil testli `vw_water` geçişi; `LiquidDepth` (sıvı geçişinde derinlik
-  yazımı zorlama).
+- **Dilim 7.2–7.4 — TAMAM (2026-10-22):** `water_spectrum.{h,cpp}` aynen; `water_fft_metal.mm` + `vw_water.metal`
+  compute kernel'leri (evolve, satır/sütun butterfly — bir threadgroup bir satırı tüm aşamalardan geçirir, aynı tablo
+  ve aşama aritmetiği —, displacement birleştirme, yüzey+köpük, mip). Kütüphane `MTLMathModeSafe` + kesin fonksiyonlar.
+  Doğrulama (oyunsuz araç, orijinal `water_fft_checks.h` toleransları): GPU ↔ double referans en kötü 3.7e-7 (sınır
+  1e-5), Parseval 2e-7, yüzey momentleri fp16 toleransının 0.76'sı, köpük 7e-8, mip'ler 0.75; birlikte/tek tek
+  simülasyon bit-bit aynı. Gölgelendirme `vw_constants/surface/optics/reflection/water` → MSL (SSR 0/16/32 varyantı),
+  `water_metal.mm` Begin (sahne rengi + R32F doğrusal derinlik + stencil temizliği) / Tag / End (su derinliği, FFT,
+  sınıf başına stencil testli geçiş, köpük maskeleri, yansıma sisi, bölge renkleri `m_bands.m_waterColors`).
+  Cihaza `GxMetalForceDepthWrite` (orijinalin `ForceDepthWrite`'ı: modern su çizilirken, ya da `LiquidDepth` ile sis
+  geçen karede çizdiyse). Kanıt: Azuremyst kıyısı 14:00 (okyanus + göl), doğrulama 0 hata, gemiler yansıyor, kıyıda
+  kırılma/şeffaflık; turuncu kıyı köpüğü = bölgenin sıcak doğrudan ışığı `D2A470` (WaterFoam=0 ile kayboluyor).
+  Maliyet: +1.3 ms GPU (14.6 → 15.9 ms/kare, 2940×1612, 7 karo @256).
+- **Açık (dilim 10):** orta mesafede tek pikselli güneş parıltısı/SSR noktacıkları (orijinalde de var, TAA yok) —
+  zamansal yumuşatma. Sıradaki: dilim 8 (dalga halkaları/temaslar, `water_ripples`, `water_contacts`).
 
 **Dilim 7 (su) tasarımı (2026-10-21):**
 - Orijinal: sıvı geçişini sarar (`0x790AA2` → `Liquid::CRenderer::Flush(camera, 1)`), her su çizimini

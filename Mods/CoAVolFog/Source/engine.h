@@ -48,6 +48,18 @@ struct FrameInputs
     LocalLightInputs localLights;
 };
 
+constexpr int kSkyColorCount = 6;
+constexpr int kWaterColorPair = 2;
+
+// The water's inputs of the Windows build's engine.h (the ripple contacts follow with the ripples)
+struct WaterInputs
+{
+    uint32_t skyColors[kSkyColorCount];
+    uint32_t riverColors[kWaterColorPair];
+    uint32_t oceanColors[kWaterColorPair];
+    bool stockFogApplies;
+};
+
 namespace engine
 {
 // The day/night fog groups (0xD38B90/94 and 0xD38BA4/A8: DNInfo::m_fog and m_fogInterior)
@@ -67,6 +79,10 @@ bool CameraInLiquid();
 // ClassifyWaterSettings: the class of a liquid draw from its Liquid::CMaterialSettings (the settings bank
 // 0xD43B1C gives the LiquidType id, whose row gives the material and sound bank; texture 0 its folder)
 WaterClass ClassifyWaterSettings(const void* settings);
+
+// BuildWaterInputs: the sky and water colours of the light bands (0xD38BE0.., 0xD38C0C.. and 0xD38C14..:
+// DNInfo::m_bands.m_skyColors, m_waterColors[0..1] for the ocean and [2..3] for rivers and lakes)
+void BuildWaterInputs(WaterInputs& out);
 
 // The current screen effect (0xD45780) is the death effect (0xB74368)
 bool GhostEffectRuns();

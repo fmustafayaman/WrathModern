@@ -272,4 +272,17 @@ bool BuildFrameInputs(const WMWorldState& world, uint32_t width, uint32_t height
     return std::isfinite(in.camPos[0]) && width > 0 && height > 0;
 }
 
+void BuildWaterInputs(WaterInputs& out)
+{
+    const DayNight::DNInfo& info = DayNight::g_dnInfo;
+    out = {};
+    for (int i = 0; i < kSkyColorCount; ++i)
+        out.skyColors[i] = Argb(info.m_bands.m_skyColors[i]);
+    for (int i = 0; i < kWaterColorPair; ++i)
+    {
+        out.oceanColors[i] = Argb(info.m_bands.m_waterColors[i]);
+        out.riverColors[i] = Argb(info.m_bands.m_waterColors[kWaterColorPair + i]);
+    }
+}
+
 }

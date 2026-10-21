@@ -1,6 +1,6 @@
 # CoAVolFog for WrathModern: Raz0r1337/coa-vfog (GPL-3.0, a fork of jealous-sound/coa-vfog) ported to the
 # native Metal device as a mod. This directory is GPL-3.0 like the original (LICENSE); fog_data, water_data,
-# water_types, fog_model, engine_lights.h, engine_actors.h and log.h are the original files unchanged.
+# water_types, water_spectrum, fog_model, engine_lights.h, engine_actors.h and log.h are the original files unchanged.
 # Plan and slices: WOWRE.md, "Faz 5". The mod reads CoAVolFog.ini, fogdata.bin and waterdata.bin from the
 # game's Mods folder, where the Windows install keeps them.
 
@@ -11,6 +11,12 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${COAVOLFOG_SHADE
 file(READ ${COAVOLFOG_SHADER} COAVOLFOG_SHADER_TEXT)
 file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/vf_fog_source.h
     "#pragma once\n// Generated from Shaders/vf_fog.metal\nstatic const char kVfFogSource[] = R\"MSL(${COAVOLFOG_SHADER_TEXT})MSL\";\n")
+
+set(COAVOLFOG_WATER_SHADER ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/vw_water.metal)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${COAVOLFOG_WATER_SHADER})
+file(READ ${COAVOLFOG_WATER_SHADER} COAVOLFOG_WATER_SHADER_TEXT)
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/vw_water_source.h
+    "#pragma once\n// Generated from Shaders/vw_water.metal\nstatic const char kVwWaterSource[] = R\"MSL(${COAVOLFOG_WATER_SHADER_TEXT})MSL\";\n")
 
 set(COAVOLFOG_PANEL ${CMAKE_CURRENT_SOURCE_DIR}/Source/panel.lua)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${COAVOLFOG_PANEL})
@@ -30,6 +36,8 @@ wrathmodern_add_mod(CoAVolFog
     Source/local_light_stabiliser.cpp
     Source/engine_mac.mm
     Source/renderer_metal.mm
+    Source/water_spectrum.cpp
+    Source/water_fft_metal.mm
     Source/water_metal.mm
 )
 target_include_directories(CoAVolFog PRIVATE ${CMAKE_CURRENT_BINARY_DIR})

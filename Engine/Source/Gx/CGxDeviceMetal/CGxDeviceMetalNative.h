@@ -179,6 +179,8 @@ class CGxDeviceMetalNative : public CGxDevice {
     uint32_t m_samples;
     // GxMetalSetStencilTag: written to the stencil plane by every draw while it is not 0
     uint32_t m_stencilTag = 0;
+    // GxMetalForceDepthWrite: every draw writes depth while set
+    bool m_forceDepthWrite = false;
     int32_t m_hwCursorDirty;
     void* m_hwCursorImage;
     CGxTex* m_texture3B58;

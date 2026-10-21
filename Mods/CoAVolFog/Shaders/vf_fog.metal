@@ -1305,9 +1305,3 @@ fragment float4 vf_grade(Varyings in [[stage_in]], constant float4* C [[buffer(0
     }
     return float4(mix(colour, graded, C[1].x), 1);
 }
-
-// WaterDebugView 5: the liquid class each pixel was tagged with, one stencil-tested pass per class
-fragment float4 vw_debug_class(Varyings in [[stage_in]], constant float4& colour [[buffer(0)]])
-{
-    return colour;
-}

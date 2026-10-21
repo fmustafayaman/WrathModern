@@ -92,12 +92,15 @@ void OnHook(WMHook hook, void* user)
         OnWorldBegin();
         break;
     case WM_HOOK_LIQUIDS_BEGIN:
-        s.waterRenderer.LiquidsBegin(s.config);
+        @autoreleasepool
+        {
+            s.waterRenderer.LiquidsBegin(s.host, s.config, s.water, s.renderedLastFrame, s.stockFogPushed);
+        }
         break;
     case WM_HOOK_LIQUIDS_END:
         @autoreleasepool
         {
-            s.waterRenderer.LiquidsEnd(s.host, s.config);
+            s.waterRenderer.LiquidsEnd(s.host, s.fog);
         }
         break;
     case WM_HOOK_BEFORE_SCREEN_EFFECTS:
