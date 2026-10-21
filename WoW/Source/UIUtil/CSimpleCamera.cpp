@@ -6,6 +6,7 @@
 #include "Engine/Source/Tempest/C44Matrix.h"
 #include "Engine/Source/Tempest/CRect.h"
 #include "Engine/Source/Storm/H/storm.h"
+#include "WoW/Source/WorldClient/Mods/ModHost.h"
 #include <cmath>
 
 // VERIFY: fbf6cda8 auto
@@ -35,6 +36,8 @@ C3Vector CSimpleCamera::Up() const {
 // VERIFY: 24a464c0 manual
 // OFFSET: 0x00607C20
 CSimpleCamera::CSimpleCamera(float nearZ, float farZ, float fov) {
+    // Mods: Awesome WotLK's cameraFov replaces the field of view here (it detoured 0x00607C20)
+    WRATHMODERN_MOD_CAMERA_CREATED(&fov);
     this->m_scene = nullptr;
     this->m_facing.a0 = 1.0f;
     this->m_facing.a1 = 0.0f;

@@ -324,6 +324,8 @@ void LoadMod(const std::string& path, const std::string& name) {
     if (mod->info.version < 2) {
         mod->info.OnScriptContext = nullptr;
         mod->info.OnCameraTarget = nullptr;
+        mod->info.OnCameraCreated = nullptr;
+        mod->info.OnWorld = nullptr;
     }
 
     LogLine("%s: loaded as \"%s\" (interface version %u)", name.c_str(), mod->info.name ? mod->info.name : name.c_str(), mod->info.version);
@@ -480,6 +482,22 @@ void ModsCameraTarget(const float* cameraPosition, float* targetPosition) {
     }
 
     std::memcpy(targetPosition, camera.targetPosition, sizeof(camera.targetPosition));
+}
+
+void ModsCameraCreated(float* fieldOfView) {
+    for (LoadedMod* mod : s_mods) {
+        if (mod->info.OnCameraCreated) {
+            mod->info.OnCameraCreated(fieldOfView, mod->info.user);
+        }
+    }
+}
+
+void ModsWorld(int32_t entered) {
+    for (LoadedMod* mod : s_mods) {
+        if (mod->info.OnWorld) {
+            mod->info.OnWorld(entered, mod->info.user);
+        }
+    }
 }
 
 void ModsShutdown() {

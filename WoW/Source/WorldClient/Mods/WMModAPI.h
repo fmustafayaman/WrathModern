@@ -208,6 +208,13 @@ typedef struct WMModInfo {
     void (*OnScriptContext)(uint32_t context, int32_t loaded, void* user);
     /* Called each time the camera computes its orbit target (see WMCameraTarget); may be NULL */
     void (*OnCameraTarget)(WMCameraTarget* camera, void* user);
+    /*
+     * Called as each camera (CSimpleCamera: the world camera and those of model frames) is created, with its
+     * vertical field of view in radians, which the mod may change. May be NULL.
+     */
+    void (*OnCameraCreated)(float* fieldOfView, void* user);
+    /* Called as the game enters (entered = 1) and leaves (0) the world, before the client's own handling */
+    void (*OnWorld)(int32_t entered, void* user);
 } WMModInfo;
 
 /*

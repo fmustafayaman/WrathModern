@@ -3676,6 +3676,8 @@ void CGGameUI::EnterWorld() {
         return;
     }
 
+    WRATHMODERN_MOD_WORLD(1);
+
     CGGameUI::s_inWorld = 1;
     CGChat::Pause();
     CGPlayer_C* player = static_cast<CGPlayer_C*>(ClntObjMgrObjectPtr(ClntObjMgrGetActivePlayer(), TYPEMASK_PLAYER, __FILE__, __LINE__));
@@ -8117,6 +8119,8 @@ void CGGameUI::LeaveWorld() {
     if (!CGGameUI::s_inWorld) {
         return;
     }
+
+    WRATHMODERN_MOD_WORLD(0);
 
     CGGameUI::s_inWorld = 0;
 
