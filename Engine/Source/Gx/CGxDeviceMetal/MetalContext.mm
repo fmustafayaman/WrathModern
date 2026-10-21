@@ -111,8 +111,8 @@ Context::~Context() {
         this->Flush(true);
     }
 
-    Clear(this->m_color.m_texture);
-    Clear(this->m_depth.m_texture);
+    GxMetal::Clear(this->m_color.m_texture);
+    GxMetal::Clear(this->m_depth.m_texture);
     // Completion handlers of committed buffers may still count into the statistics
     (void)this->m_stats;
 }

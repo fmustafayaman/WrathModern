@@ -1,181 +1,243 @@
-// The Metal graphics device (Objective-C++ only).
-//
-// CGxDevice drives it as it drives the original Direct3D 9 and OpenGL devices. The structure is
-// CGxDeviceOpenGl's: IRsSendToHw and the IStateSync functions translate the client's render
-// states (EGxRenderState) straight into the device's native state, m_hw, in Metal terms (blend
-// factors, compare functions, cull mode, sampler keys, fixed-function stage operations, lights,
-// material, fog, viewport ...), and Draw turns m_hw into pipeline, depth and sampler objects and
-// encodes the draw. The semantics of each state follow CGxDeviceD3d, whose behaviour the client was
-// tuned against (projection fix-up, ambient-only lighting, texgen matrices, pool locking); each
-// function names the original it follows.
-//
-// Supporting classes: MetalContext (command buffers, passes, clears, copies, present), MetalResources
-// (buffers, textures, queries), MetalPipeline (shaders, vertex layouts, state object caches),
-// MetalFixedFunction (fixed-function shader generation) and Shader/ (Direct3D 9 shader bytecode,
-// which the client's .bls shader files carry, translated to Metal Shading Language).
+// The Metal graphics device: CGxDeviceD3d ported to the Direct3D 9 device implemented on Metal
+// (D3D9/Device.h). The state handling, resource management and draw paths follow CGxDeviceD3d
+// function by function; the window comes from the macOS Os layer, and NVAPI stereo is absent.
 
 #ifndef ENGINE_SOURCE_GX_CGXDEVICEMETAL_CGXDEVICEMETAL_H
 #define ENGINE_SOURCE_GX_CGXDEVICEMETAL_CGXDEVICEMETAL_H
 
-#import <Metal/Metal.h>
-
 #include <cstddef>
 #include <cstdint>
 #include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
-#include "Engine/Source/Gx/CGxDeviceMetal/MetalContext.h"
-#include "Engine/Source/Gx/CGxDeviceMetal/MetalPipeline.h"
+#include "Engine/Source/Gx/CGxDeviceMetal/D3D9/Device.h"
 #include "Engine/Source/Storm/H/stpl.h"
 
 class CGxDeviceMetal : public CGxDevice {
     public:
-    // A texture stage of the fixed-function pixel and vertex pipelines
-    struct HwStage {
-        uint8_t m_colorOp;                // GxMetal::StageOp
-        uint8_t m_alphaOp;
-        uint8_t m_texcoordIndex;          // input texture coordinate set
-        uint8_t m_texGen;                 // GxMetal::TexGen
-        uint8_t m_transformCount;         // components the texture transform produces, 0: none
-        uint8_t m_projected;              // the lookup divides by the last component
-        float m_transform[16];
+    enum EDeviceState {
+        Ds_SrcBlend = 0,
+        Ds_DstBlend = 1,
+        Ds_TssMagFilter0 = 2,
+        Ds_TssMagFilter1 = 3,
+        Ds_TssMagFilter2 = 4,
+        Ds_TssMagFilter3 = 5,
+        Ds_TssMagFilter4 = 6,
+        Ds_TssMagFilter5 = 7,
+        Ds_TssMagFilter6 = 8,
+        Ds_TssMagFilter7 = 9,
+        Ds_TssMagFilter8 = 10,
+        Ds_TssMagFilter9 = 11,
+        Ds_TssMagFilter10 = 12,
+        Ds_TssMagFilter11 = 13,
+        Ds_TssMagFilter12 = 14,
+        Ds_TssMagFilter13 = 15,
+        Ds_TssMagFilter14 = 16,
+        Ds_TssMagFilter15 = 17,
+        Ds_TssMinFilter0 = 18,
+        Ds_TssMinFilter1 = 19,
+        Ds_TssMinFilter2 = 20,
+        Ds_TssMinFilter3 = 21,
+        Ds_TssMinFilter4 = 22,
+        Ds_TssMinFilter5 = 23,
+        Ds_TssMinFilter6 = 24,
+        Ds_TssMinFilter7 = 25,
+        Ds_TssMinFilter8 = 26,
+        Ds_TssMinFilter9 = 27,
+        Ds_TssMinFilter10 = 28,
+        Ds_TssMinFilter11 = 29,
+        Ds_TssMinFilter12 = 30,
+        Ds_TssMinFilter13 = 31,
+        Ds_TssMinFilter14 = 32,
+        Ds_TssMinFilter15 = 33,
+        Ds_TssMipFilter0 = 34,
+        Ds_TssMipFilter1 = 35,
+        Ds_TssMipFilter2 = 36,
+        Ds_TssMipFilter3 = 37,
+        Ds_TssMipFilter4 = 38,
+        Ds_TssMipFilter5 = 39,
+        Ds_TssMipFilter6 = 40,
+        Ds_TssMipFilter7 = 41,
+        Ds_TssMipFilter8 = 42,
+        Ds_TssMipFilter9 = 43,
+        Ds_TssMipFilter10 = 44,
+        Ds_TssMipFilter11 = 45,
+        Ds_TssMipFilter12 = 46,
+        Ds_TssMipFilter13 = 47,
+        Ds_TssMipFilter14 = 48,
+        Ds_TssMipFilter15 = 49,
+        Ds_TssWrapU0 = 50,
+        Ds_TssWrapU1 = 51,
+        Ds_TssWrapU2 = 52,
+        Ds_TssWrapU3 = 53,
+        Ds_TssWrapU4 = 54,
+        Ds_TssWrapU5 = 55,
+        Ds_TssWrapU6 = 56,
+        Ds_TssWrapU7 = 57,
+        Ds_TssWrapU8 = 58,
+        Ds_TssWrapU9 = 59,
+        Ds_TssWrapU10 = 60,
+        Ds_TssWrapU11 = 61,
+        Ds_TssWrapU12 = 62,
+        Ds_TssWrapU13 = 63,
+        Ds_TssWrapU14 = 64,
+        Ds_TssWrapU15 = 65,
+        Ds_TssWrapV0 = 66,
+        Ds_TssWrapV1 = 67,
+        Ds_TssWrapV2 = 68,
+        Ds_TssWrapV3 = 69,
+        Ds_TssWrapV4 = 70,
+        Ds_TssWrapV5 = 71,
+        Ds_TssWrapV6 = 72,
+        Ds_TssWrapV7 = 73,
+        Ds_TssWrapV8 = 74,
+        Ds_TssWrapV9 = 75,
+        Ds_TssWrapV10 = 76,
+        Ds_TssWrapV11 = 77,
+        Ds_TssWrapV12 = 78,
+        Ds_TssWrapV13 = 79,
+        Ds_TssWrapV14 = 80,
+        Ds_TssWrapV15 = 81,
+        Ds_TssTexTransformFlags0 = 82,
+        Ds_TssTexTransformFlags1 = 83,
+        Ds_TssTexTransformFlags2 = 84,
+        Ds_TssTexTransformFlags3 = 85,
+        Ds_TssTexTransformFlags4 = 86,
+        Ds_TssTexTransformFlags5 = 87,
+        Ds_TssTexTransformFlags6 = 88,
+        Ds_TssTexTransformFlags7 = 89,
+        Ds_TssMaxAnisotropy0 = 90,
+        Ds_TssMaxAnisotropy1 = 91,
+        Ds_TssMaxAnisotropy2 = 92,
+        Ds_TssMaxAnisotropy3 = 93,
+        Ds_TssMaxAnisotropy4 = 94,
+        Ds_TssMaxAnisotropy5 = 95,
+        Ds_TssMaxAnisotropy6 = 96,
+        Ds_TssMaxAnisotropy7 = 97,
+        Ds_TssMaxAnisotropy8 = 98,
+        Ds_TssMaxAnisotropy9 = 99,
+        Ds_TssMaxAnisotropy10 = 100,
+        Ds_TssMaxAnisotropy11 = 101,
+        Ds_TssMaxAnisotropy12 = 102,
+        Ds_TssMaxAnisotropy13 = 103,
+        Ds_TssMaxAnisotropy14 = 104,
+        Ds_TssMaxAnisotropy15 = 105,
+        Ds_TssTexCoordIndex0 = 106,
+        Ds_TssTexCoordIndex1 = 107,
+        Ds_TssTexCoordIndex2 = 108,
+        Ds_TssTexCoordIndex3 = 109,
+        Ds_TssTexCoordIndex4 = 110,
+        Ds_TssTexCoordIndex5 = 111,
+        Ds_TssTexCoordIndex6 = 112,
+        Ds_TssTexCoordIndex7 = 113,
+        Ds_TssColorOp0 = 114,
+        Ds_TssColorOp1 = 115,
+        Ds_TssColorOp2 = 116,
+        Ds_TssColorOp3 = 117,
+        Ds_TssColorOp4 = 118,
+        Ds_TssColorOp5 = 119,
+        Ds_TssColorOp6 = 120,
+        Ds_TssColorOp7 = 121,
+        Ds_TssAlphaOp0 = 122,
+        Ds_TssAlphaOp1 = 123,
+        Ds_TssAlphaOp2 = 124,
+        Ds_TssAlphaOp3 = 125,
+        Ds_TssAlphaOp4 = 126,
+        Ds_TssAlphaOp5 = 127,
+        Ds_TssAlphaOp6 = 128,
+        Ds_TssAlphaOp7 = 129,
+        Ds_TssColorArg10 = 130,
+        Ds_TssColorArg11 = 131,
+        Ds_TssColorArg12 = 132,
+        Ds_TssColorArg13 = 133,
+        Ds_TssColorArg14 = 134,
+        Ds_TssColorArg15 = 135,
+        Ds_TssColorArg16 = 136,
+        Ds_TssColorArg17 = 137,
+        Ds_TssColorArg20 = 138,
+        Ds_TssColorArg21 = 139,
+        Ds_TssColorArg22 = 140,
+        Ds_TssColorArg23 = 141,
+        Ds_TssColorArg24 = 142,
+        Ds_TssColorArg25 = 143,
+        Ds_TssColorArg26 = 144,
+        Ds_TssColorArg27 = 145,
+        Ds_TssAlphaArg10 = 146,
+        Ds_TssAlphaArg11 = 147,
+        Ds_TssAlphaArg12 = 148,
+        Ds_TssAlphaArg13 = 149,
+        Ds_TssAlphaArg14 = 150,
+        Ds_TssAlphaArg15 = 151,
+        Ds_TssAlphaArg16 = 152,
+        Ds_TssAlphaArg17 = 153,
+        Ds_TssAlphaArg20 = 154,
+        Ds_TssAlphaArg21 = 155,
+        Ds_TssAlphaArg22 = 156,
+        Ds_TssAlphaArg23 = 157,
+        Ds_TssAlphaArg24 = 158,
+        Ds_TssAlphaArg25 = 159,
+        Ds_TssAlphaArg26 = 160,
+        Ds_TssAlphaArg27 = 161,
+        Ds_AmbientMaterialSource = 162,
+        Ds_DiffuseMaterialSource = 163,
+        Ds_SpecularMaterialSource = 164,
+        Ds_EmissiveMaterialSource = 165,
+        Ds_Ambient = 166,
+        Ds_AlphaBlendEnable = 167,
+        Ds_AlphaTestEnable = 168,
+        Ds_AlphaRef = 169,
+        Ds_FogEnable = 170,
+        Ds_ZWriteEnable = 171,
+        Ds_ColorWriteEnable = 172,
+        Ds_Lighting = 173,
+        Ds_SpecularEnable = 174,
+        Ds_CullMode = 175,
+        Ds_ClipPlaneEnable = 176,
+        Ds_ZFunc = 177,
+        Ds_PointScaleA = 178,
+        Ds_PointScaleB = 179,
+        Ds_PointScaleC = 180,
+        Ds_PointScaleEnable = 181,
+        DeviceStates_Last = 182,
     };
 
-    struct HwLight {
-        bool m_enabled;
-        uint8_t m_type;                   // GxMetal::LightType
-        float m_position[4];              // world space
-        float m_direction[4];
-        float m_diffuse[4];
-        float m_ambient[4];
-        float m_specular[4];
-        float m_attenuation[3];
-    };
+    struct GxVertexDecl {
+        uint32_t m_count;
+        D3D9Metal::D3DVERTEXELEMENT9 m_elements [15];
+        D3D9Metal::VertexDeclaration* m_d3dDecl;
 
-    struct HwStream {
-        GxMetal::Buffer* m_buffer;
-        uint32_t m_offset;
-        uint32_t m_stride;
-    };
-
-    // The device state in Metal terms
-    struct HwState {
-        // Blending and output
-        bool m_blendEnable;
-        MTLBlendFactor m_srcBlend;
-        MTLBlendFactor m_dstBlend;
-        float m_blendColor[4];
-        MTLColorWriteMask m_colorWrite;
-        MTLCompareFunction m_depthCompare;
-        bool m_depthWrite;
-        bool m_alphaTest;
-        uint32_t m_alphaRef;
-
-        // Rasterizer
-        MTLCullMode m_cullMode;
-        MTLTriangleFillMode m_fillMode;
-        float m_depthBias;
-        bool m_scissorTest;
-        GxMetal::Rect m_scissor;
-        float m_viewport[6];              // x, y, width, height, min z, max z in target pixels
-        uint32_t m_clipPlaneMask;
-        float m_clipPlanes[6][4];
-        float m_pointSize;
-        float m_pointSizeMin;
-        float m_pointSizeMax;
-        bool m_pointScale;
-        float m_pointScaleAttenuation[3];
-        bool m_pointSprite;
-
-        // Fog
-        bool m_fog;
-        float m_fogStart;
-        float m_fogEnd;
-        float m_fogColor[4];
-
-        // Fixed-function vertex processing
-        bool m_lighting;
-        bool m_normalizeNormals;
-        float m_globalAmbient[4];
-        uint8_t m_diffuseSource;          // GxMetal::MaterialSource
-        uint8_t m_ambientSource;
-        uint8_t m_specularSource;
-        uint8_t m_emissiveSource;
-        float m_materialDiffuse[4];
-        float m_materialAmbient[4];
-        float m_materialSpecular[4];
-        float m_materialEmissive[4];
-        float m_materialPower;
-        bool m_specularEnable;
-        HwLight m_lights[GxMetal::kMaxLights];
-        float m_world[16];
-        float m_view[16];
-        float m_projection[16];
-        HwStage m_stages[8];
-
-        // Textures, retained, and their samplers
-        GxMetal::Texture* m_textures[16];
-        GxMetal::SamplerKey m_samplers[16];
-
-        // Shaders, retained, and their constants
-        GxMetal::Shader* m_vertexShader;
-        GxMetal::Shader* m_pixelShader;
-        float m_vsConstants[256 * 4];
-        float m_psConstants[256 * 4];
-
-        // Geometry: streams and index buffer retained
-        GxMetal::VertexLayout* m_layout;
-        HwStream m_streams[16];
-        GxMetal::Buffer* m_indices;
-    };
-
-    // What the open render encoder already has, valid while the context's pass id matches
-    struct Bound {
-        uint64_t m_passId;
-        id<MTLRenderPipelineState> m_pipeline;
-        id<MTLDepthStencilState> m_depthStencil;
-        int32_t m_cull;
-        int32_t m_fill;
-        float m_depthBias;
-        bool m_blendColorSet;
-        float m_blendColor[4];
-        MTLViewport m_viewport;
-        MTLScissorRect m_scissor;
-        bool m_viewportSet;
-        id<MTLBuffer> m_vertexBuffers[16];
-        uint32_t m_vertexOffsets[16];
-        id<MTLTexture> m_textures[16];
-        id<MTLSamplerState> m_samplers[16];
-        uint64_t m_vertexFunction;
-        uint64_t m_fragmentFunction;
+        bool Compare(const D3D9Metal::D3DVERTEXELEMENT9* elements, uint32_t count);
     };
 
     void* m_hwnd;
     int32_t m_ownhwnd;
-    GxMetal::Context* m_metal;
-    GxMetal::PipelineCache* m_pipelines;
-    HwState m_hw;
-    Bound m_bound;
-    bool m_vsConstantsDirty;
-    bool m_psConstantsDirty;
-    bool m_vertexStateDirty;
-    bool m_pixelStateDirty;
-    bool m_fixedVertexDirty;
-    GxMetal::VertexLayout* m_formatLayouts [GxVertexBufferFormats_Last];
-    TSGrowableArray<GxMetal::VertexLayout*> m_customLayouts;
+    D3D9Metal::Direct3D* m_d3d;
+    D3D9Metal::Device* m_d3dDevice;
+    D3D9Metal::D3DCAPS9 m_d3dCaps;
+    int32_t m_d3dIsHwDevice;
+    float m_d3dStereoConvergence;
+    float m_d3dStereoSeparation;
+    TSGrowableArray<CGxDeviceMetal::GxVertexDecl> m_gxVertexDecl;
+    D3D9Metal::VertexDeclaration* m_d3dVertexDecl [14];
+    D3D9Metal::DisplayMode m_desktopDisplayMode;
     int32_t m_inScene;
     int32_t m_ambientOnlyMode;
-    // The window's targets: back buffer, its depth buffer, and the depth buffer of texture
-    // targets without their own (CGxDeviceD3d::m_defDepthStencilSurface)
-    GxMetal::Texture* m_backBuffer;
-    GxMetal::Texture* m_depthBuffer;
-    GxMetal::Texture* m_textureDepthBuffer;
-    GxMetal::Target m_savedDepthTarget;
-    uint32_t m_samples;
+    D3D9Metal::D3DFORMAT m_devDepthFormat;
+    D3D9Metal::D3DFORMAT m_devAdapterFormat;
+    D3D9Metal::Surface* m_defDepthStencilSurface;
+    D3D9Metal::Surface* m_defColorSurface;
+    D3D9Metal::Surface* m_defDepthSurface;
+    D3D9Metal::Surface* m_surface3B44;
+    D3D9Metal::Query* m_eventQuery;
     int32_t m_hwCursorDirty;
-    void* m_hwCursorImage;
+    D3D9Metal::Texture* m_hwCursorTexture;
+    D3D9Metal::Surface* m_hwCursorBitmap;
     CGxTex* m_texture3B58;
+    D3D9Metal::VertexDeclaration* m_d3dCurrentVertexDecl;
+    D3D9Metal::IndexBuffer* m_d3dCurrentIndexBuf;
+    D3D9Metal::VertexBuffer* m_d3dVertexStreamBuf [8];
+    uint32_t m_d3dVertexStreamOfs [8];
+    uint32_t m_d3dVertexStreamStride [8];
+    uint32_t m_deviceStates [182];
     bool m_texEnabled [8];
-    float m_stereoConvergence;
-    float m_stereoSeparation;
 
     virtual void ITexMarkAsUpdated(CGxTex* texId);
     virtual void IRsSendToHw(EGxRenderState which);
@@ -237,57 +299,64 @@ class CGxDeviceMetal : public CGxDevice {
     virtual void DeviceUnk82();
     virtual void DeviceUnk83(uint32_t a, uint32_t b);
 
-    static const MTLBlendFactor s_srcBlend[GxBlends_Last];
-    static const MTLBlendFactor s_dstBlend[GxBlends_Last];
-    static const MTLCompareFunction s_cmpFunc[4];
-    static const MTLCullMode s_cullMode[3];
+    static const D3D9Metal::D3DFORMAT s_GxFormatToD3dFormat[CGxFormat::Formats_Last];
+    static const D3D9Metal::D3DFORMAT s_GxTexFmtToD3dFmt[GxTexFormats_Last];
     static EGxTexFormat s_GxTexFormatToUse[GxTexFormats_Last];
     static const EGxTexFormat s_tolerableTexFmtMapping[GxTexFormats_Last];
-    static const uint32_t s_gxAttribSize[7];
+    static const D3D9Metal::D3DCUBEMAP_FACES s_faceTypes[6];
+    static const D3D9Metal::D3DPRIMITIVETYPE s_primitiveConversion[GxPrims_Last];
+    static const D3D9Metal::D3DBLEND s_srcBlend[12];
+    static const D3D9Metal::D3DBLEND s_dstBlend[12];
+    static const D3D9Metal::D3DCMPFUNC s_cmpFunc[4];
+    static const D3D9Metal::D3DCULL s_cullMode[3];
+    static D3D9Metal::D3DTEXTUREFILTERTYPE s_filterModes[GxTexFilters_Last][3];
+    static const D3D9Metal::D3DTEXTUREADDRESS s_wrapModes[2];
+    static const uint32_t s_gxAttribToD3dAttribSize[7];
+    static D3D9Metal::D3DDECLTYPE s_gxAttribToD3dAttribType[7];
+    static const D3D9Metal::D3DDECLUSAGE s_gxAttribToD3dAttribUsage[GxVAs_Last];
+    static const uint32_t s_gxAttribToD3dAttribUsageIndex[GxVAs_Last];
 
     CGxDeviceMetal();
     virtual ~CGxDeviceMetal();
+    void DsSet(EDeviceState state, uint32_t value);
+    int32_t ICheckDepthStencilFormat(D3D9Metal::D3DFORMAT format);
+    void ICreateDepthStencilSurface(uint32_t width, uint32_t height);
+    void ICreateReadbackSurface();
     void IBindPixelShader(CGxShader* shader);
     void IBindVertexShader(CGxShader* shader);
     char* IBufLock(CGxBuf* buf);
     void IBufUnlock(CGxBuf* buf);
-    GxMetal::Buffer* ICreateBuffer(CGxPool* pool, uint32_t size);
+    D3D9Metal::VertexDeclaration* ICreateD3dVertexDecl(const D3D9Metal::D3DVERTEXELEMENT9* elements, uint32_t count);
     int32_t CreatePoolAPI(CGxPool* pool);
-    int32_t ICreateMetal();
-    int32_t ICreateMetalDevice(const CGxFormat& format);
-    bool ICreateWindowTargets(const CGxFormat& format);
-    void ICreateTextureDepthBuffer(uint32_t width, uint32_t height);
+    int32_t ICreateD3d();
+    int32_t ICreateD3dDevice(const CGxFormat& format);
+    D3D9Metal::IndexBuffer* ICreateD3dIB(EGxPoolUsage usage, uint32_t size);
+    D3D9Metal::VertexBuffer* ICreateD3dVB(EGxPoolUsage usage, uint32_t size);
     int32_t ICreateWindow(CGxFormat& format);
-    void IDestroyMetal();
-    void IDraw(EGxPrim primType, bool indexed, uint32_t start, uint32_t primitiveCount);
-    bool IDrawPrepare(EGxPrim primType, id<MTLRenderCommandEncoder> encoder);
-    void IDrawBindTextures(const GxMetal::ShaderInfo* pixelInfo, uint32_t samplerMask, id<MTLRenderCommandEncoder> encoder);
-    void IDrawFixedVertexState(id<MTLRenderCommandEncoder> encoder);
-    GxMetal::VertexLayout* ILayoutFor(const GxMetal::VertexElement* elements, uint32_t count);
-    void IReleasePool(CGxPool* pool);
-    void IReleasePools(int32_t freePools);
-    void IReleaseQueries();
-    void IReleaseResources(int32_t freeTextures);
-    void IReleaseShaders(int32_t freeShaders);
-    void IReleaseLayouts();
-    void IResetDevice();
+    void IDestroyD3d();
+    void IReleaseD3dPool(CGxPool* pool);
+    void IReleaseD3dPools(int32_t freePools);
+    void IReleaseD3dQueries();
+    void IReleaseD3dResources(int32_t freeTextures);
+    void IReleaseD3dShaders(int32_t freeShaders);
+    void IReleaseD3dVertexDecl();
     void ISceneBegin();
     void ISceneEnd();
     void ISetAlphaOp(uint32_t tmu, uint32_t op);
     void ISetCaps(const CGxFormat& format);
     void ISetColorOp(uint32_t tmu, uint32_t op);
-    void ISetHwTargets(const GxMetal::Target& color, const GxMetal::Target& depth);
+    void ISetPresentParms(D3D9Metal::PresentParameters& d3dpp, const CGxFormat& format);
     void ISetMaterial(CImVector diffuse, CImVector emissive, CImVector specular, float specularExp);
     void ISetTexCoord(uint32_t tmu, uint32_t coord);
     void ISetTexCoordIndex(uint32_t tmu, int32_t texGen, uint32_t coord);
     void ISetTexGen(uint32_t tmu, int32_t texGen);
     void ISetTexture(uint32_t tmu, CGxTex* texId);
-    void ISetVertexBuffer(uint32_t stream, GxMetal::Buffer* buffer, uint32_t offset, uint32_t stride);
+    void ISetVertexBuffer(uint32_t stream, D3D9Metal::VertexBuffer* buffer, uint32_t offset, uint32_t stride);
     void ISetWindowFocus(int32_t focus);
     void IShaderCreatePixel(CGxShader* shader);
     void IShaderConstantsFlush();
     void IShaderCreateVertex(CGxShader* shader);
-    void IStateSetDefaults();
+    void IStateSetD3DDefaults();
     void IStateSync();
     void IStateSyncClipPlanes();
     void IStateSyncEnables();
@@ -298,7 +367,6 @@ class CGxDeviceMetal : public CGxDevice {
     void IStateSyncXforms();
     void ITexCreate(CGxTex* texId);
     void ITexForceRecreation(int32_t all);
-    GxMetal::Target ITexTarget(CGxTex* texId, uint32_t face, uint32_t level);
     void ITexUpload(CGxTex* texId);
     void IXformSetTex(uint32_t tmu);
     void IXformSetViewport();
