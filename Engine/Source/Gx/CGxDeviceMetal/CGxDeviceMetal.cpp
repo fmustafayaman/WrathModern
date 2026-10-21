@@ -3427,22 +3427,42 @@ void GxCursorSetScale(float scale) {
     }
 }
 
+void* GxMetalNativeDevice();
+int32_t GxMetalNativeAcquireTargets(GxMetalTargets& targets);
+
 void* GxMetalDevice() {
     CGxDeviceMetal* device = dynamic_cast<CGxDeviceMetal*>(g_theGxDevicePtr);
-    return device && device->m_d3dDevice ? device->m_d3dDevice->GetMetalDevice() : nullptr;
+
+    if (device && device->m_d3dDevice) {
+        return device->m_d3dDevice->GetMetalDevice();
+    }
+
+    return GxMetalNativeDevice();
 }
 
 int32_t GxMetalAcquireTargets(GxMetalTargets& targets) {
     CGxDeviceMetal* device = dynamic_cast<CGxDeviceMetal*>(g_theGxDevicePtr);
 
     if (!device || !device->m_d3dDevice) {
-        return 0;
+        return GxMetalNativeAcquireTargets(targets);
     }
 
     return device->m_d3dDevice->AcquireExternalTargets(&targets.commandBuffer, &targets.color, &targets.depth, &targets.width, &targets.height, &targets.sampleCount);
 }
 
+// The native device (CGxDeviceMetalNative.mm) is written slice by slice; WRATHMODERN_GX=native
+// selects it for the frame-by-frame comparison with the device below, which stays the default.
+CGxDevice* CreateCGxDeviceMetalNative();
+
 CGxDevice* CreateCGxDeviceMetal() {
+    // The native device is the default; WRATHMODERN_GX=shim keeps the old Direct3D 9 shim device for
+    // frame-by-frame comparison
+    const char* gx = getenv("WRATHMODERN_GX");
+
+    if (!gx || strcmp(gx, "shim")) {
+        return CreateCGxDeviceMetalNative();
+    }
+
     void* memory = SMemAlloc(sizeof(CGxDeviceMetal), __FILE__, __LINE__, 0);
 
     if (!memory) {

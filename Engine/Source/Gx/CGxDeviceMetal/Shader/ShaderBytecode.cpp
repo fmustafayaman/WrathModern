@@ -3,7 +3,7 @@
 #include <cstdarg>
 #include <cstdio>
 
-namespace D3D9Metal {
+namespace GxMetal {
 
 namespace {
 

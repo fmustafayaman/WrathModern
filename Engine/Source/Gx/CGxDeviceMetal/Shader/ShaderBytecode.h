@@ -3,15 +3,15 @@
 //
 // This file has no Metal or engine dependencies so tools can use it on their own.
 
-#ifndef ENGINE_SOURCE_GX_CGXDEVICEMETAL_D3D9_SHADERBYTECODE_H
-#define ENGINE_SOURCE_GX_CGXDEVICEMETAL_D3D9_SHADERBYTECODE_H
+#ifndef ENGINE_SOURCE_GX_CGXDEVICEMETAL_SHADER_SHADERBYTECODE_H
+#define ENGINE_SOURCE_GX_CGXDEVICEMETAL_SHADER_SHADERBYTECODE_H
 
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
 
-namespace D3D9Metal {
+namespace GxMetal {
 
 enum ShaderStage {
     STAGE_VERTEX,

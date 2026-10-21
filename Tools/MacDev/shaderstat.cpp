@@ -4,7 +4,7 @@
 //
 //   shaderstat <file.bls>...
 
-#include "../../Engine/Source/Gx/CGxDeviceMetal/D3D9/ShaderBytecode.h"
+#include "../../Engine/Source/Gx/CGxDeviceMetal/Shader/ShaderBytecode.h"
 
 #include <cstdio>
 #include <cstring>
@@ -12,7 +12,7 @@
 #include <string>
 #include <vector>
 
-using namespace D3D9Metal;
+using namespace GxMetal;
 
 namespace {
 

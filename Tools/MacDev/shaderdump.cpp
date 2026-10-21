@@ -1,11 +1,11 @@
 // Prints the Metal translation of one permutation of a .bls file.
 //   shaderdump <file.bls> <permutation>
-#include "../../Engine/Source/Gx/CGxDeviceMetal/D3D9/ShaderTranslator.h"
+#include "../../Engine/Source/Gx/CGxDeviceMetal/Shader/ShaderTranslator.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
-using namespace D3D9Metal;
+using namespace GxMetal;
 int main(int argc, char** argv) {
     if (argc < 3) return 1;
     FILE* f = fopen(argv[1], "rb");

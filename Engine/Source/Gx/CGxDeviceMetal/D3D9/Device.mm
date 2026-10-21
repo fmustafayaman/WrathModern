@@ -3,6 +3,8 @@
 #import <AppKit/AppKit.h>
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <mach/mach_time.h>
 #include <string>
 
 namespace D3D9Metal {
@@ -230,8 +232,31 @@ fragment float4 utility_blit(UtilityVaryings in [[stage_in]], texture2d<float> s
 
 }
 
+// Frame statistics (WRATHMODERN_FRAMESTATS=1): every five seconds the average wall time between
+// presents, the GPU time of the frame's command buffers and the time the CPU spent blocked on
+// drawables and on the in-flight limit, written to stderr
+struct FrameStats {
+    bool m_enabled = getenv("WRATHMODERN_FRAMESTATS") != nullptr;
+    double m_windowStart = 0.0;
+    double m_lastPresent = 0.0;
+    uint32_t m_frames = 0;
+    double m_wall = 0.0;
+    double m_blocked = 0.0;
+    std::atomic<uint64_t> m_gpuNanoseconds { 0 };
+    std::atomic<uint32_t> m_gpuBuffers { 0 };
+};
+
+static double NowSeconds() {
+    static mach_timebase_info_data_t s_timebase = {};
+    if (!s_timebase.denom) {
+        mach_timebase_info(&s_timebase);
+    }
+    return static_cast<double>(mach_absolute_time()) * s_timebase.numer / s_timebase.denom * 1e-9;
+}
+
 struct DeviceImpl::ImplState {
     CAMetalLayer* m_layer = nil;
+    FrameStats m_stats;
     UploadHeap m_uploads;
 
     // Command buffers of the current serial, and the encoder open in the render command buffer
@@ -618,7 +643,11 @@ id<MTLCommandBuffer> DeviceImpl::Commands() {
 
     if (!s.m_commands) {
         // Limit the command buffers in flight, which paces the CPU to the GPU
+        double waitStart = s.m_stats.m_enabled ? NowSeconds() : 0.0;
         dispatch_semaphore_wait(s.m_inFlight, DISPATCH_TIME_FOREVER);
+        if (s.m_stats.m_enabled) {
+            s.m_stats.m_blocked += NowSeconds() - waitStart;
+        }
         s.m_commands = [this->m_queue commandBuffer];
         s.m_commands.label = @"D3D9 frame";
     }
@@ -668,8 +697,14 @@ void DeviceImpl::Flush(bool wait) {
     uint64_t serial = this->m_serial;
     dispatch_semaphore_t inFlight = s.m_inFlight;
     std::atomic<uint64_t>* completed = &this->m_completed;
+    FrameStats* stats = s.m_stats.m_enabled ? &s.m_stats : nullptr;
 
     [commands addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
+        if (stats && buffer.GPUEndTime > buffer.GPUStartTime) {
+            stats->m_gpuNanoseconds += static_cast<uint64_t>((buffer.GPUEndTime - buffer.GPUStartTime) * 1e9);
+            stats->m_gpuBuffers++;
+        }
+
         if (buffer.status == MTLCommandBufferStatusError) {
             Log("command buffer %llu failed: %s", serial, buffer.error.localizedDescription.UTF8String);
         }
@@ -2025,7 +2060,11 @@ HRESULT DeviceImpl::PresentImpl() {
     }
 
     id<MTLTexture> source = s.m_backBuffer->ResolvedTexture();
+    double drawableStart = s.m_stats.m_enabled ? NowSeconds() : 0.0;
     id<CAMetalDrawable> drawable = [s.m_layer nextDrawable];
+    if (s.m_stats.m_enabled) {
+        s.m_stats.m_blocked += NowSeconds() - drawableStart;
+    }
 
     if (drawable) {
         id<MTLTexture> target = drawable.texture;
@@ -2081,6 +2120,30 @@ HRESULT DeviceImpl::PresentImpl() {
     }
 
     this->Flush(false);
+
+    if (s.m_stats.m_enabled) {
+        FrameStats& stats = s.m_stats;
+        double now = NowSeconds();
+        if (stats.m_lastPresent > 0.0) {
+            stats.m_wall += now - stats.m_lastPresent;
+            stats.m_frames++;
+        } else {
+            stats.m_windowStart = now;
+        }
+        stats.m_lastPresent = now;
+
+        if (now - stats.m_windowStart >= 5.0 && stats.m_frames) {
+            uint32_t buffers = stats.m_gpuBuffers.exchange(0);
+            uint64_t gpu = stats.m_gpuNanoseconds.exchange(0);
+            double frames = stats.m_frames;
+            fprintf(stderr, "framestats: %u frames, wall %.2f ms, cpu %.2f ms, blocked %.2f ms, gpu %.2f ms (%u buffers)\n", stats.m_frames, stats.m_wall / frames * 1e3, (stats.m_wall - stats.m_blocked) / frames * 1e3, stats.m_blocked / frames * 1e3, gpu * 1e-6 / frames, buffers);
+            stats.m_frames = 0;
+            stats.m_wall = 0.0;
+            stats.m_blocked = 0.0;
+            stats.m_windowStart = now;
+        }
+    }
+
     return D3D_OK;
 }
 
