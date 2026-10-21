@@ -11,6 +11,8 @@
 // falls back to the tick count when it misbehaves; the macOS monotonic clock is always reliable, so
 // it is the performance counter here (nanoseconds, including time asleep like QPC) and calibration
 // always succeeds. The tick count method stays available for clients that ask for it.
+// St0ny's precise timer patch (#5, skipping the 250 ms tick count comparison) therefore has nothing to change on
+// macOS: the precise clock is always chosen unless timingMethod asks for the tick count.
 
 static OsTimeManager* s_OsTimeMgr;
 

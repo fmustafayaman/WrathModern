@@ -3202,7 +3202,7 @@ void CGxDeviceOpenGl::IStateSyncLights() {
         uint16_t force = this->m_viewDirty ? 2 : 0;
         GLenum glLight = GL_LIGHT0;
 
-        for (uint32_t i = 0; i < 4; i++, glLight++) {
+        for (uint32_t i = 0; i < GxMaxLights; i++, glLight++) {
             CGxApiLight& light = this->m_lights[i];
             uint16_t flags = force | (mask & light.m_flags & light.unk_0046);
 
@@ -3300,7 +3300,7 @@ void CGxDeviceOpenGl::IStateSyncLights() {
         if (!this->m_ambientOnlyMode) {
             this->m_ambientOnlyMode = 1;
 
-            for (uint32_t i = 0; i < 4; i++) {
+            for (uint32_t i = 0; i < GxMaxLights; i++) {
                 glDisable(GL_LIGHT0 + i);
 
                 if (this->m_lights[i].m_enable) {

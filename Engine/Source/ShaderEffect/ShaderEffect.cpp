@@ -592,10 +592,44 @@ void CShaderEffect::SetLocalLighting(CM2Lighting* lighting, int32_t enabled, con
     if (CShaderEffect::s_localLightCount) {
         CShaderEffect::ComputeLocalLights(&CShaderEffect::s_localLights, CShaderEffect::s_localLightCount, lighting->m_lights, origin);
         GxShaderConstantsSet(GxSh_Vertex, 17, reinterpret_cast<const float*>(&CShaderEffect::s_localLights), sizeof(LocalLights) / sizeof(C4Vector));
+
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+        CShaderEffect::SetExtraLocalLights(lighting, origin);
+#endif
     }
 
     CShadowCache::SetShadowMapGenericInterior(lighting->m_flags & 8);
 }
+
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+// St0ny #67 "lights": lights 5 to 8 for the vertex shaders of models (SetLocalLighting, 0x873E85) and buildings
+// (CWorldScene::SetupLighting, 0x7A91A9), in c236-c246 with the layout of c17-c27 for lights 1 to 4:
+//   c236-c239 colour (rgb, w = 1; a free slot is all 0), c240-c243 view space position (w = 1),
+//   c244 / c245 / c246 constant / linear / quadratic attenuation, x to w for the four lights.
+// Only the "4 lights" permutations of the shaders from github.com/Raz0r1337/WoW-lights-patch-shader read them; the
+// stock shaders never do, so with those the registers are simply unused. They are written only when that permutation
+// can be chosen (four main lights) and the device has the registers (247, every shader model 2 or 3 device has 256).
+// Terrain uses c236-c250 in its own layout (CMapRenderChunk::SetVertexShader); each shader reads them right after its
+// own upload.
+void CShaderEffect::SetExtraLocalLights(const CM2Lighting* lighting, const C3Vector* origin) {
+    if (lighting->m_lightCount < 4 || g_theGxDevicePtr->Caps().m_shaderConstants[GxSh_Vertex] < 247) {
+        return;
+    }
+
+    LocalLights extra;
+    CShaderEffect::ComputeLocalLights(&extra, lighting->m_extraLightCount, const_cast<CM2Light**>(lighting->m_extraLights), origin);
+
+    // A free slot divides by its attenuation in the new shaders like a used one; colour 0 makes it dark, attenuation
+    // 1, 0, 0 keeps the division finite (the exe patch starts its buffer with constant attenuation 1 for that)
+    for (uint32_t i = lighting->m_extraLightCount; i < 4; i++) {
+        extra.m_constantAttenuation[i] = 1.0f;
+        extra.m_linearAttenuation[i] = 0.0f;
+        extra.m_quadraticAttenuation[i] = 0.0f;
+    }
+
+    GxShaderConstantsSet(GxSh_Vertex, 236, reinterpret_cast<const float*>(&extra), sizeof(LocalLights) / sizeof(C4Vector));
+}
+#endif
 
 // VERIFY: fd00dfa0 manual
 // OFFSET: 0x00873EE0

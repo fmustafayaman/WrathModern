@@ -1324,6 +1324,17 @@ int32_t SI2::Init(int32_t restart) {
         numChannels = s_numChannels->m_intValue;
     }
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // St0ny #84 "sound" (FrostAtom's part): the sound engine is started with 126 channels (0x4C83C2). The exe patch
+    // does it unconditionally; it is meant as the hardware voice limit, so here it applies with hardware voices only and
+    // the software mixer keeps Sound_NumChannels (64 by default).
+    static CVar* s_enableHardware = CVar::Lookup("Sound_EnableHardware");
+
+    if (s_enableHardware && s_enableHardware->m_intValue) {
+        numChannels = 126;
+    }
+#endif
+
     int32_t outputDriverIndex = 0;
     const char* outputDriverName = "";
 

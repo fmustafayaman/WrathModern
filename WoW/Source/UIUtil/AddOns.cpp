@@ -155,7 +155,16 @@ void DeleteInterfaceFiles() {
     for (uint32_t i = 0; i < sizeof(directories) / sizeof(directories[0]); i++) {
         const char* directory = directories[i];
 
-        if (OsDirectoryExists(directory)) {
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+        // St0ny #19 "glue": loose Interface\GlueXML and Interface\FrameXML folders are no longer renamed to *.old
+        // (je -> jmp at 0x5F4DBF), so a custom interface can also be installed as plain files. Loose Blizzard_ add-on
+        // folders are still moved aside below; the Blizzard_ exception of FrameXML_CheckSignature relies on that.
+        bool rename = false;
+#else
+        bool rename = OsDirectoryExists(directory);
+#endif
+
+        if (rename) {
             char oldPath[260];
             SStrPrintf(oldPath, sizeof(oldPath), "%s.old", directory);
             OsRemoveDirectoryRecurse(oldPath, 1);

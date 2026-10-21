@@ -64,6 +64,14 @@ class CM2Lighting {
     /* 00B4 */ float m_fogDensity;
     /* 00B8 */ C3Vector m_fogColor;
     /* 00C4 */ C4Plane m_liquidPlane;
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // St0ny #67 "lights": the fifth to eighth nearest point lights, nearest first. The four nearest stay in m_lights,
+    // where the shader permutations (m_lightCount) and the original vertex constants c17-c27 expect them; these go to
+    // c236-c246 for models and buildings and to c239-c250 for the ground.
+    /* 00D4 */ CM2Light* m_extraLights [4];
+    /* 00E4 */ float m_extraLightDist [4];
+    /* 00F4 */ uint32_t m_extraLightCount = 0;
+#endif
 
     CM2Lighting();
     CM2Lighting(const CAaSphere& sphere);
@@ -72,6 +80,9 @@ class CM2Lighting {
     void AddAmbient(const C3Vector& color);
     void AddDiffuse(const C3Vector& color, const C3Vector& dir);
     void AddLight(CM2Light* light);
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    void AddExtraLight(CM2Light* light, float dist);
+#endif
     void CameraSpace();
     int32_t GetPointLight(uint32_t index, C3Vector& pos, C3Vector& color, C3Vector& attenuation);
     int32_t GetSunLight(C3Vector& dir, C3Vector& ambient, C3Vector& diffuse, C3Vector& specular);

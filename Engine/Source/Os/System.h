@@ -58,5 +58,9 @@ void OsSetSleepInBackground(int32_t sleep);
 int32_t OsSleepInBackground();
 void OsSystemEnableCpuLog();
 void OsValidateFunctionPointer(const void* ptr);
+#if defined(WOWDECOMP_PLATFORM_MAC)
+// Accepts function pointers into the text segment of a loaded image (a mach_header_64) from now on
+void OsAllowFunctionPointerImage(const void* header);
+#endif
 
 #endif

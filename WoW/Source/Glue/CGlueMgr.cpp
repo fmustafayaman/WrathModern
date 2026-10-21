@@ -37,6 +37,7 @@
 #include "Engine/Source/Tempest/C3Vector.h"
 #include "Engine/Source/Tempest/C44Matrix.h"
 #include "Engine/Source/Tempest/CRect.h"
+#include "WoW/Source/WorldClient/Mods/ModHost.h"
 #include "WoW/Source/Client.h"
 #include "WoW/Source/DB/DBClient/DBClient.h"
 #include "WoW/Source/DB/Rec/ChrClassesRec.h"
@@ -717,8 +718,10 @@ void CGlueMgr::Resume() {
     SI2::RegisterScriptFunctions();
     AccountMsg_RegisterScriptFunctions();
     CGVideoOptions::RegisterScriptFunctions();
+    WRATHMODERN_MOD_SCRIPT_FUNCTIONS(WM_SCRIPT_GLUE);
     CGlueMgr::s_scriptFunctionsLoaded = 1;
     FrameScript_CreateEvents(g_glueScriptEvents, sizeof(g_glueScriptEvents) / sizeof(g_glueScriptEvents[0]));
+    WRATHMODERN_MOD_SCRIPT_EVENTS(WM_SCRIPT_GLUE);
 
     CCharacterSelection::Initialize();
     CCharacterCreation::Initialize();
@@ -763,6 +766,7 @@ void CGlueMgr::Resume() {
 #endif
 
             FrameScript_SignalEvent(GLUE_EVENT_FRAMES_LOADED, nullptr);
+            WRATHMODERN_MOD_SCRIPTS_LOADED(WM_SCRIPT_GLUE);
             CGlueMgr::InitializeFFX();
 
             ClientServices::SetMessageHandler(SMSG_CHARACTER_RENAME_RESULT, CGlueMgr::OnCharRenameResult, nullptr);
@@ -1174,14 +1178,30 @@ int32_t CGlueMgr::Idle(const void* data, void* param) {
                 const char* fileName = ClientServices::LoginConnection()->m_fileName;
 
                 if (!SStrCmpI(fileName, "Patch", STORM_MAX_STR)) {
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+                    // St0ny #13 "noserverpatch" (Kebabstorm), as Project Reforged selects it: the login server cannot
+                    // push a client patch (wow-patch.mpq) and have it installed. The exe patch only skips the download
+                    // (0x4DAEA8), which leaves the login waiting; here the transfer is declined, the login ends and
+                    // the player is told the version was not accepted, as a server that does not know the build says.
+                    if (!ClientServices::LoginConnection()->GetLoginServerType()) {
+                        ClientServices::FileAccept(false, 0);
+                    }
+
+                    CGlueMgr::LogConnectionStatus("Login server offered a client patch; declined");
+                    ClientServices::LoginConnection()->Logoff();
+                    CGlueMgr::m_idleState = IDLE_NONE;
+                    CGlueMgr::m_showedDisconnect = 0;
+                    FrameScript_SignalEvent(GLUE_EVENT_OPEN_STATUS_DIALOG, "%s%s", "OKAY", FrameScript_GetText("LOGIN_BADVERSION", -1, GENDER_NOT_APPLICABLE));
+#else
                     CGlueMgr::PatchDownloadStart();
+#endif
                     return 1;
                 }
 
                 if (!SStrCmpI(fileName, "Survey", STORM_MAX_STR)) {
 #if defined(WRATHMODERN_CLIENT_PATCHES)
-                    // A hardware survey runs code the login server sends and reports the machine back; the transfer is
-                    // declined. Client patches still install, as long as they carry Blizzard's signature.
+                    // St0ny #14 "nosurvey" (Kebabstorm): a hardware survey runs code the login server sends and reports
+                    // the machine back; the transfer is declined.
                     if (!ClientServices::LoginConnection()->GetLoginServerType()) {
                         ClientServices::FileAccept(false, 0);
                     }

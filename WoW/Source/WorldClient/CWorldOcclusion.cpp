@@ -233,7 +233,15 @@ static C3Vector s_occlusionVolumeVerts61[4] = { C3Vector(-475.600006f, 2173.8000
 
 // STATIC: 0x00AF0040
 static OcclusionVolume s_occlusionVolumes[62] = {
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // St0ny #61 "occluder" (Kebful): the built-in Stormwind volume (Eastern Kingdoms, map 0) gets a map key no map has
+    // (99999 at 0xAF0040), so it never hides buildings and objects of a rebuilt Stormwind (Open Azeroth, Reforged
+    // environment packs). It is a vertical quad from (-8814.8, 474.9) to (-8986.5, 679.7), 0 to 138.9 high, inside the
+    // city; the other 61 volumes are on Northrend and instance maps and stay.
+    { 99999, 0, { CAaBox(C3Vector(0.0f, 0.0f, 0.0f), C3Vector(0.0f, 0.0f, 0.0f)), s_occlusionVolumeVerts0, 4 } },
+#else
     { 0, 0, { CAaBox(C3Vector(0.0f, 0.0f, 0.0f), C3Vector(0.0f, 0.0f, 0.0f)), s_occlusionVolumeVerts0, 4 } },
+#endif
     { 571, 0, { CAaBox(C3Vector(0.0f, 0.0f, 0.0f), C3Vector(0.0f, 0.0f, 0.0f)), s_occlusionVolumeVerts1, 8 } },
     { 571, 2, { CAaBox(C3Vector(0.0f, 0.0f, 0.0f), C3Vector(0.0f, 0.0f, 0.0f)), s_occlusionVolumeVerts2, 6 } },
     { 571, 0, { CAaBox(C3Vector(0.0f, 0.0f, 0.0f), C3Vector(0.0f, 0.0f, 0.0f)), s_occlusionVolumeVerts3, 4 } },
