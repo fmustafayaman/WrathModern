@@ -4,6 +4,8 @@ wrathmodern_add_mod(AwesomeWotlk
     Entry.cpp
     CVars.cpp
     UnitAPI.cpp
+    Item.cpp
+    NamePlates.cpp
     Camera.cpp
     Window.mm
 )

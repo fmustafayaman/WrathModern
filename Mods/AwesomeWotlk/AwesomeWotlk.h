@@ -25,6 +25,15 @@ namespace unit_api {
 void Register();
 }
 
+namespace item {
+void Register();
+}
+
+namespace nameplates {
+void Register();
+void OnCVarChanged(const char* name, float value);
+}
+
 namespace window {
 void Register();
 }

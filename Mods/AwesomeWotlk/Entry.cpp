@@ -45,6 +45,8 @@ extern "C" __attribute__((visibility("default"))) int32_t WMModLoad(const WMModH
 
     awesome::cvars::Register();
     awesome::unit_api::Register();
+    awesome::item::Register();
+    awesome::nameplates::Register();
     awesome::window::Register();
 
     info->version = WM_MOD_API_VERSION;

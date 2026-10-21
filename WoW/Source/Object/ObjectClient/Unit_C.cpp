@@ -113,6 +113,7 @@
 #include "WoW/Source/Object/CMovementStatus.h"
 #include "WoW/Source/Object/MovementShared.h"
 #include "WoW/Source/Object/ObjectClient/UnitCombat_C.h"
+#include "WoW/Source/Object/ObjectClient/NamePlateTuning.h"
 #include "WoW/Source/Object/ObjectClient/UnitCombatLog_C.h"
 #include "WoW/Source/Object/ObjectClient/UnitSound_C.h"
 #include "WoW/Source/Object/WGUID.h"
@@ -20054,11 +20055,18 @@ const char* GetObjectNameFromGuid(const WOWGUID& guid) {
     return name;
 }
 
+// The tuning values of NamePlateTuning.h. The original loads its 0.6666667 constant at 0x0071573B and
+// its 1681.0 (41^2) at 0x0071578D+; wow_awesome's nameplatePlacement/nameplateDistance rewrite those
+// operand addresses. Keeping them as variables lets a mod set the same numbers without patching code.
+float g_namePlateMaxDistanceSq = 1681.0f;
+float g_tabTargetMaxDistanceSq = 1681.0f;
+float g_namePlateHeightOffset = 0.6666667f;
+
 // VERIFY: a8083a71 auto
 // OFFSET: 0x00715720
 static bool GetNamePlateScreenPos(CGUnit_C* unit, CGWorldFrame* worldFrame, C3Vector* screen) {
     C3Vector position = unit->GetNamePosition();
-    position.z = position.z + 0.6666667f;
+    position.z = position.z + g_namePlateHeightOffset;
     return worldFrame->GetScreenCoordinates(position, screen, nullptr);
 }
 
@@ -20443,7 +20451,7 @@ int32_t CGUnit_C::ShouldShowNamePlate(CGWorldFrame* worldFrame, C3Vector* positi
     if (!map || map->m_instanceType != 4) {
         C3Vector delta = this->GetPosition() - target->GetPosition();
 
-        if (delta.y * delta.y + delta.x * delta.x + delta.z * delta.z > 1681.0f) {
+        if (delta.y * delta.y + delta.x * delta.x + delta.z * delta.z > g_namePlateMaxDistanceSq) {
             return 0;
         }
     }

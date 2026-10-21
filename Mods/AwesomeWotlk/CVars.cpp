@@ -82,6 +82,7 @@ const Definition kCVars[] = {
 // The modules that act on a variable as it changes
 void Changed(const char* name, float value) {
     camera::OnCVarChanged(name, value);
+    nameplates::OnCVarChanged(name, value);
 }
 
 int32_t OnChanged(const char* name, const char* oldValue, const char* newValue, void* user) {

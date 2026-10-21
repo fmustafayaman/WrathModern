@@ -58,6 +58,7 @@
 #include "WoW/Source/Object/ObjectClient/Item_C.h"
 #include "WoW/Source/Object/ObjectClient/Player_C.h"
 #include "WoW/Source/Object/ObjectClient/SimpleScript.h"
+#include "WoW/Source/Object/ObjectClient/NamePlateTuning.h"
 #include "WoW/Source/Object/ObjectClient/Unit_C.h"
 #include "WoW/Source/Object/ObjectClient/UnitCombatLog_C.h"
 #include "WoW/Source/Object/ObjectClient/Vehicle_C.h"
@@ -5136,7 +5137,7 @@ static int32_t TargetUpdateProc(WOWGUID guid, void* param) {
     float maxDistanceSq;
 
     if (s_coneAngle > delta || 6.2831855f - s_coneAngle < delta) {
-        maxDistanceSq = 1681.0f;
+        maxDistanceSq = g_tabTargetMaxDistanceSq;
         inFront = 1;
     } else {
         maxDistanceSq = 100.0f;
