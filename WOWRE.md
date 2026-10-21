@@ -289,6 +289,47 @@ commit'lendi, devam edecek) → spesifikasyon ajanı yalnızca gerekirse. Küç�
 ## Sıradaki adımlar (yarıda kalırsa buradan devam)
 
 1. [x] Faz 1 tasarımı (yukarıda "Faz 1 tasarımı").
+2. [x] 2a görsel taban (referans görüntüler `build/autotest/ref-shim/`).
+3. [~] Faz 1 (native Metal) — **park edildi**, WIP `WowRe-metal` @ `81ed11e`. Devam edilecekse:
+   `CGxDeviceMetal.mm` içindeki eski shim gövdesi (176 `m_d3dDevice` çağrısı) yeni `HwState`'e
+   çevrilecek; başlık ve yardımcı sınıflar hazır. Dosya artık `.mm` (başlık Metal/ObjC tipleri
+   taşıyor).
+4. [ ] AwesomeWotlk B (aşağıdaki liste).
+5. [ ] CoAVolFog (Faz 5) — **kapsam ölçüldü**: 1,7 MB DLL, `fogdata.bin` (756 KB) + `waterdata.bin`
+   (8,4 MB), kendi hacimsel sis/su shader'ları ve oyun içi ayar penceresi. Sıfırdan tersine
+   mühendislik gerektirir; Faz 1'in okunabilir derinliğine bağlı.
+6. [ ] Lexara + MSDF fontları (ortak), çerçeve yakalama, TTS.
+
+### AwesomeWotlk B — kalan iş (keşif yapıldı, kod yazılmadı)
+
+- **Interaction** (`Misc.cpp` ~200 satır): istemcide gerekli her şey var —
+  `ClntObjMgrEnumVisibleObjects(func, param)` (ObjectMgrClient.h:65), `CGGameUI::OnSpriteRightClick(guid)`
+  (GameUI.cpp:2308; hedefler + `object->OnRightClick()`), `CGObject_C::ShowHighlightType(type)` /
+  `HideHighlightType(type)` (tip 0/1 istemcide kullanılıyor, 2 boş; `m_modelFlags` bit 24-26).
+  Oyuncu: `ClntObjMgrGetActivePlayer()` + `TYPEMASK_PLAYER`; mesafe `GetPosition()` farkından;
+  koni `GetFacing()`. Obje süzgeci orijinalde: gameobject alt tipleri (door, button, questgiver,
+  chest, binder, chair, spellfocus, goober, fishingnode, mailbox, meetingstone, guildbank) +
+  `CanUse()/CanUseNow()`; unit için lootable/skinnable/`CanAssist(unit, true)` + NPC bayrakları.
+  Bizde `GetInteractDistanceSq` yok → sabit 5 yarda kullan. **Gereken host eklentisi:** kare başına
+  bir tick (`WMModInfo::OnFrame`) — şu an yalnızca render hook'ları var (WM_HOOK_*, 4 kez/kare).
+- **Nameplate olayları / `C_NamePlate`**: `CGNamePlateFrame::Initialize(CGUnit_C*)` (NamePlateFrame.cpp)
+  ve `CGUnit_C::NamePlateClearAll` (Unit_C.cpp:20269) çengellenmeli; Lua tarafında frame nesnesi
+  `C_NamePlate.GetNamePlateForUnit` için script nesnesi kaydı gerekir. `nameplateN` token'ları
+  `Script_GetGUIDFromToken` / `Script_GetTokenIDsFromGUID` tarafında host token kaydı ister
+  (WMModAPI'de yok). Tahmini 300-500 satır + ABI büyümesi.
+- **Küçük ve hazır olanlar:** sohbet/combat log dosya adı (`s_chatLogNames`, ChatFrame_Scripts.cpp:1473
+  — `static`, mod için erişimci gerekir; yalnızca oyuncu sohbet kaydını açtıysa görünür, bu yüzden
+  ertelendi), `objectHighlightMode` (loot parıltısı), `cameraIndirectVisibility` (doodad'ların kamerayı
+  kesmesini kaldırma + M2 solma).
+- **Portre çözünürlüğü zaten karşılanıyor:** `kPortraitSize` `WRATHMODERN_CLIENT_PATCHES` ile 256
+  (PortraitButton.cpp:74); `portraitResolution` CVar'ı bu yüzden işlevsiz, belgelenmeli.
+- **Shader gerektirenler (ertelendi):** `uiHalfPixelFix`, `uiPixelSnap`, `uiTextureSampling`, MSDF —
+  hepsi `CGxShaderExt` benzeri bir shader değiştirme katmanı istiyor; D3D9 shim varken HLSL derlemek
+  ayrı bir iş.
+
+## Sıradaki adımlar (yarıda kalırsa buradan devam)
+
+1. [x] Faz 1 tasarımı (yukarıda "Faz 1 tasarımı").
 2. [ ] 2a görsel taban — GUI testi; kullanıcı oyunda değilken (bkz. hafıza `gui-testing-etiquette`).
 3. [ ] 2b → 2c → 3a → 3b → 3c → 3d → 4 (tasarımdaki sırayla, her biri ayrı commit).
 
