@@ -551,7 +551,14 @@ void RegisterStereoCVars() {
 // OFFSET: 0x0076A630
 void RegisterGxCVars() {
     const CGxFormat& format = *s_defaults.m_format;
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // St0ny #80 "window" and #81 "maximize": the game starts as a maximized window by default (both defaults "1" at
+    // 0x76A67D and 0x76A6B2). On macOS that is a titled window over the visible screen area, with the Dock and the menu
+    // bar still reachable.
+    bool window = true;
+#else
     bool window = s_locale == 4;
+#endif
     char value[260];
 
     s_cvWidescreen = CVar::Register("widescreen", "Allow widescreen support", 0, "1", nullptr, CATEGORY_GRAPHICS, false, nullptr, false);
