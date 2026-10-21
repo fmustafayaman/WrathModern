@@ -121,9 +121,22 @@ struct alignas(16) VertexStateBlock {
     float m_pointSize[4];        // x: size, y: minimum, z: maximum
 };
 
+// Comparison codes of d3d_compare in kShaderPrelude (the alpha test function), numbered as the
+// bytecode's own comparison functions
+enum ShaderCompare : uint32_t {
+    SHADERCOMPARE_NEVER = 1,
+    SHADERCOMPARE_LESS = 2,
+    SHADERCOMPARE_EQUAL = 3,
+    SHADERCOMPARE_LESSEQUAL = 4,
+    SHADERCOMPARE_GREATER = 5,
+    SHADERCOMPARE_NOTEQUAL = 6,
+    SHADERCOMPARE_GREATEREQUAL = 7,
+    SHADERCOMPARE_ALWAYS = 8,
+};
+
 struct alignas(16) PixelStateBlock {
     float m_fogColor[4];
-    uint32_t m_flags[4];         // x: apply fixed-function fog, y: alpha func (D3DCMPFUNC), z: alpha ref
+    uint32_t m_flags[4];         // x: apply fixed-function fog, y: alpha func (ShaderCompare), z: alpha ref
     float m_bumpEnvMat[8][4];    // per stage: 00, 01, 10, 11
     float m_bumpEnvLum[8][4];    // per stage: x scale, y offset
     float m_textureFactor[4];
