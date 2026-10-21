@@ -206,7 +206,12 @@ Başlangıç noktası: commit `f917b1c`, etiket `wowre-start` (`git diff wowre-s
 - `../WrathModern-WowRe-patches`, dal `WowRe-patches` (WowRe'den): **Faz 3** (St0ny Reforged
   yamaları) bir alt ajanda. `Engine/Source/Gx/CGxDeviceMetal/**`'a dokunmaz (Faz 1 orada). Uygulama
   adı `WrathModern-WowRe-patches.app`, hesap `SELFWOW`. Bitince `WowRe`'ye merge edilir.
-- `WowRe` (bu worktree): Faz 1.
+- `../WrathModern-WowRe-metal`, dal `WowRe-metal`: **Faz 1** (native Metal) bir alt ajanda. Uygulama
+  `WrathModern-WowRe-metal.app`, hesap `loradona`/Rhon. Modların cihazla tek sözleşmesi `Gx.h`
+  (`GxMetalDevice`, `GxMetalAcquireTargets`) — Faz 1 bunu korur, böylece Faz 2/4/5 bağımsız ilerler.
+- Analiz ajanı: dört modun (Lux, Lexara, AwesomeWotlk, CoAVolFog) hook/adres → decompile fonksiyon
+  eşlemesi ve Mod API v2 gereksinimleri → `/tmp/wowre-specs/*.md` (bitince repoya `Docs/Mods/` olarak alınır).
+- `WowRe` (bu worktree): koordinasyon, Faz 2 (Mod API v2), dalların birleştirilmesi ve doğrulama.
 
 ## Sıradaki adımlar (yarıda kalırsa buradan devam)
 
