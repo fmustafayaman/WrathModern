@@ -186,7 +186,7 @@ Başlangıç noktası: commit `f917b1c`, etiket `wowre-start` (`git diff wowre-s
   - Ortam: `WOWRE_APP`, `WOWRE_LOGIN` (kimlik dosyası), `WOWRE_CHARACTER`, `WOWRE_REALM(LIST)`.
 - Hesaplar (şifreler yalnızca 600 izinli dosyalarda, repoda/log'da yok):
   - `~/.wrathmodern-wowre-autologin` → `loradona` (kullanıcının hesabı); test karakteri **Rhon**
-    (insan rogue 1, Northshire). Ana karakter `Loradona`'ya dokunulmaz.
+    (insan rogue 1, Northshire). `Loradona` (Azuremyst) da test için kullanılabilir — kullanıcı 2026-10-21'de istedi (`WOWRE_CHARACTER=Loradona`); test karakteri yürütmez, yalnızca girer/bakar.
   - `~/.wrathmodern-selfwow-autologin` → `SELFWOW`; karakter **Selfwow**. Paralel ajan bunu kullanır.
   - Realm `Azeroth`, realmlist `100.71.234.118`.
 - **Öğrenilen tuzak:** otomatik "Enter World" bir girdi olayı üretmediği için `CSimpleTop::s_eventTime`
