@@ -1473,6 +1473,16 @@ static int32_t Script_GetChannelRosterInfo(lua_State* L) {
 // STATIC: 0x00AC7A40
 static const char* s_chatLogNames[2] = { "Logs\\WoWChatLog.txt", "Logs\\WoWCombatLog.txt" };
 
+// OFFSET: (mod interface) - the name the client opens the chat (index 0) or combat (index 1) log with.
+// It is read when the player enables logging, so a mod sets it at start-up; the string must stay valid
+// for the session. awesome_wotlk's chatLogSessionKey/combatLogSessionKey write the same two globals
+// (0x00AC7A40 / 0x00AC7A44) to name a log per session.
+void ChatFrame_SetLogFileName(int32_t index, const char* name) {
+    if (index >= 0 && index < 2 && name) {
+        s_chatLogNames[index] = name;
+    }
+}
+
 // VERIFY: 2b604692 auto
 // OFFSET: 0x004FBC60
 static int32_t EnableLogging(lua_State* L, int32_t index) {

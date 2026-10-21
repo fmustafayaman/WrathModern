@@ -10,6 +10,9 @@
 #include "WoW/Source/WowSvcs/WowSvcsClient/AccountData.h"
 #include "WoW/Source/Ui/Types.h"
 
+// The file the client opens the chat (index 0) or combat (index 1) log with; see ChatFrame_Scripts.cpp
+void ChatFrame_SetLogFileName(int32_t index, const char* name);
+
 struct lua_State;
 class CDataStore;
 class CGPlayer_C;
