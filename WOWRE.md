@@ -390,9 +390,13 @@ taşınabilir C++ olarak aynen alınır. Ayar dosyası `Mods/CoAVolFog.ini` (ayn
   ile stok sis 50000'e itilip geri konuyor (yalnız önceki karede sis çizildiyse ve kamera sıvıda değilse).
   Kanıt: `build/autotest/f-off` ↔ `f-on` (Azuremyst, harita 530 → gün/gece'den türetilen 4 katman, 1/4
   çözünürlük 735×403, 16 adım), Metal doğrulaması 0 hata. Bilerek eksik: jitter kapalı (zamansal filtre 4. dilim).
-- **Sıradaki — dilim 3:** Classic veri yolu (Kalimdor/Doğu Krallıklar haritalarında `fogdata.bin` katmanları +
-  authored noise) — kod zaten bağlı (`FogData::Resolve`, noisy varyant); harita 0/1'de test edilecek. Ardından
-  dilim 4 (zamansal filtre, `vf_temporal.hlsl`, `vf_history_depth.hlsl`).
+- **Dilim 3 — doğrulandı (2026-10-21):** Classic veri yolu harita 0'da çalışıyor (Northshire: 3 katman; Duskwood
+  `.tele duskwood` ile — kanıt `build/autotest/dw-off` ↔ `dw-on`, Darkshire gece sisi). Metal doğrulaması 0 hata.
+  **Performans:** 2940×1612, MSAA 2×, kalite 1: sis GPU'ya 4–8 ms ekliyor (Azuremyst 10–11 → 14–19 ms); 60 FPS
+  korunuyor ama sınırda — ağır kısım tam çözünürlük kompozit (MSAA'da derinlik kontrolleri + eşleşmeyen
+  kenarlarda tam çözünürlük march). Optimizasyon dilim 10'dan öne alınabilir. Test hesabı GM: `.tele`.
+- **Sıradaki — dilim 4:** zamansal filtre (`vf_temporal.hlsl`, `vf_history_depth.hlsl`, `FilterWithHistory`),
+  jitter açılır.
 
 **Kabul ölçütü:** her dilimde aynı nokta/saat için Windows CoAVolFog (CrossOver) ↔ WowRe karşılaştırması
 (kullanıcı referans kareyi verir), sıfır Metal doğrulama hatası, kare süresi ölçümü (`WRATHMODERN_FRAMESTATS`).
