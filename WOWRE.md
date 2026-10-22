@@ -826,3 +826,22 @@ Shim'i çalıştırmaya gerek kalmadan iki fark noktası kod düzeyinde karşıl
   durumu **birebir** bunu uyguluyor. Karonun yerleşimi doğru.
 Sonuç: shim çalıştırmak bu soruyu ayırt etmez; kalan olasılık paylaşılan gölge matematiğinin
 (ShadowCache/ShadowQuery/terrain shader `else` yedeği) rekonstrüksiyonu veya istemcinin kendi görünümü.
+
+### Windows referansı geldi (2026-10-22 20:00, CrossOver)
+Aynı nokta, aynı yön: **kaya yüzü tamamen düz ve aydınlık; gölge lekesi, sert sınır yok.** Yani hata bizim
+portta. Bu, "istemcinin kendi görünümü" olasılığını kapattı.
+
+Yeni ölçümler:
+- **Uzak alanı band2 (640) belirliyor**: Texture8 "aydın" zorlanınca kaya piksellerinin %12'si (ort. 3.9
+  seviye) değişiyor; Texture5/6/7 ~0. Kayanın shader'da band0/band1 kutularının *dışında* olduğu doğrulandı.
+- Band örnekleme matrisleri doğru konumda: `m_pos` == `m_lastPos` == iniş noktası; matrisin u/v ötelemesi
+  `0.148 / 0.037` → shader'ın kendi `v*0.5+0.5` dönüşümünden sonra **0.574** (band merkezi + hücre snap'i).
+  Yani "matris 628 yd kaymış" ilk okuması yanlıştı; ölçek shader içinde uygulanıyor.
+- `hwPCF` (donanım PCF) kapatılınca görünüm belirgin değişiyor (kaya 46.97 → 48.32, %13 piksel).
+- Terrain gölge vertex shader'ı (`07d0ef64…vsh`) gölge texcoord'unun **w** bileşenine matrisin 4. satırını
+  (c46/c47/c48) yazıyor; pixel shader'ın "kutu dışı" yedeği band2'yi bu w'lerden türetiyor. Bizim
+  `s_shadowMatrices` düzeni (4 matris × 3 satır = c37..c48) bu beklentiyle **çelişiyor**: shader c46..c48'i
+  "üç matrisin w satırı" sanıyor, bizde ise orada band2'nin u/v/z satırları var → yedek yol band2'yi
+  anlamsız bir koordinatta örnekliyor. Sıradaki doğrulama: bu yedeğin ürettiği band2 koordinatını renk
+  olarak basıp kaya üzerinde [0,1] içinde mi diye bakmak; ardından `PostUpdate`'in 12 vektörünü
+  (3 matris × 4 satır: u, v, z, derinlik-w) shader'ın beklediği gibi yazmak.
