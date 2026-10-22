@@ -538,9 +538,24 @@ taşınabilir C++ olarak aynen alınır. Ayar dosyası `Mods/CoAVolFog.ini` (ayn
 - Sonuç (Stormwind, giriş + 2 dk dönen kamera, vsync, tam ayarlar): yükleme ekranı kalktıktan sonra 0 kaçırılmış
   yenileme; ilk ~10 sn'de 1–3 tek kare: Questie'nin kendi C_Timer işi (`Questie-335/Compat/Compat.lua:145`, ~50 ms,
   üçüncü taraf eklenti) ve ara sıra 18–19 ms'lik bir GPU tamponu. Vsync'siz aynı yer 7.8 ms/kare.
-- **Kalınan yer (2026-10-22):** oynanabilir; Release paketi git.vmyaman.com'da (WowRe dalı, release eki). Sıradaki:
-  ara sıra 18–19 ms GPU karesinin kaynağı (gölge bandı hücre değişimi şüphesi; `COAVOLFOG_GPU_PROFILE` ile
-  eşleştir), Questie başlangıç işi için yapılabilecek bir şey var mı (eklentiye dokunmadan).
+- Tam ekran (d07c24c): eskiden seçilen çözünürlük (2560×1440) tüm panele (1.54:1) gerdiriliyordu (%16 uzun).
+  Artık pencere çentiğin altındaki güvenli alanı kaplar, drawable seçilen çözünürlüğün pencere oranına
+  genişletilmiş hâlidir (2560×1609), `Screen::GetAspectRatio` macOS'ta çizim boyutunu kullanır; `gxResolution`
+  değişmez. Kullanıcı letterbox istemiyor (kenar boşluğu yok, gerdirme yok).
+- Ekran görüntüsü (014bdf7): `Screenshot()`/Print Screen JPEG'de çöküyordu — libjpeg `INT32` = `long` (macOS'ta
+  64 bit) → renk tablosu 16 KB > `MAX_ALLOC_CHUNK`, WoW'un `error_exit`'i geri döner, NULL tabloya yazılır.
+  `INT32` = `int`. Ayrıca `fopen` ters eğik çizgili adla oyun köküne yazıyordu; Windows dışında `/`'a çevrilir.
+  Başka LP64 `long` varsayımları olabilir (zlib/pcre kendi tiplerini kullanıyor; dekompile kodda tara).
+- GPU kareleri: vsync altında GPU saati düşük, kareler 13–15 ms (vsync'siz aynı yer 8 ms). 640 yd gölge
+  bandının çizildiği her 4. kare ~2 ms ağır; 2 dk'da ≤1 kaçırma. Bir 66 ms takılma GPU değil: drawable 57 ms
+  geri gelmedi, 3 kare düştü (pencere sunucusu). Game Mode etkin mi bilinmiyor (gamepolicyd log bırakmıyor);
+  kenarlıksız pencere yerel tam ekran değil.
+- Su sınıfları (log `Logs/CoAVolFog.log`, her koşuda sıfırlanır): göl = tür 1/5/13 (Lakeshire, Stormwind),
+  iç mekân = 17 (Wailing Caverns, çizildi ama kadraja alınamadı), okyanus = 2, lav 181 → none. Nehir (tür 9)
+  hiç görülmedi. Dalgacık sabitleri sınıftan bağımsız (aynı `rippleShape`). Not: WC girişinde seviye ~20
+  yaratıklar var; Loradona (8) öldü — orada `.gm on` kullan, sonra `.gm off`.
+- **Kalınan yer (2026-10-22 öğlen):** oynanabilir. Açık: iç mekân suyunun görüntü kontrolü, nehir (tür 9) için
+  yer bulmak, Game Mode/yerel tam ekran, ilk saniyelerdeki tek tük kareler (Questie hariç).
 
 **Dilim 7 (su) tasarımı (2026-10-21):**
 - Orijinal: sıvı geçişini sarar (`0x790AA2` → `Liquid::CRenderer::Flush(camera, 1)`), her su çizimini
