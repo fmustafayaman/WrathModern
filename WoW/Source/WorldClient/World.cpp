@@ -2045,7 +2045,16 @@ void CWorldScene::BuildHorizonProjection(C44Matrix* projection) {
     CGCamera* camera = CGWorldFrame::GetActiveCamera();
     float farZ = camera->m_farZ;
     float fov = camera->FOV();
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // The world camera turns its diagonal field of view into a vertical one with 1 / sqrt(1 + aspect^2)
+    // (GxuXformCreateProjection_SG); the stock client uses 0.6 here, that factor at 4:3 only. On a wider
+    // display the horizon was drawn and culled with a different field of view from the world in front of
+    // it (0.6 against 0.532 at 1.59:1), so distant mountains slid against the terrain while the camera
+    // turned, going in and out of view behind it.
+    GxuXformCreateProjection_SG(fov, camera->m_aspect, farZ - 50.0f, World::s_horizonFarClipScale * World::s_farClip, *projection);
+#else
     GxuXformCreateProjection_Exact(fov * 0.60000002f, camera->m_aspect, farZ - 50.0f, World::s_horizonFarClipScale * World::s_farClip, *projection);
+#endif
 }
 
 // VERIFY: 6cb64bd1 manual
