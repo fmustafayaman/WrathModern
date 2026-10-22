@@ -3043,6 +3043,12 @@ void CGxDeviceMetalNative::IDraw(const CGxBatch* batch, bool indexed, uint32_t b
     }
 
     if (indexed) {
+        // Some skins have a section past the end of their indices (the Azuremyst sky); such a draw is
+        // undefined in D3D9 and would read past the buffer in Metal, so it is skipped
+        if ((static_cast<uint64_t>(first) + count) * 2 > this->m_indexBuf->m_length) {
+            return;
+        }
+
         this->m_indexBuf->m_use.m_lastUse = this->m_indexBuf->m_use.m_lastRenderUse = this->m_metal->CurrentSerial();
         [encoder drawIndexedPrimitives:primitive indexCount:count indexType:MTLIndexTypeUInt16 indexBuffer:this->m_indexBuf->m_buffer indexBufferOffset:first * 2 instanceCount:1 baseVertex:baseVertexIndex baseInstance:0];
         return;

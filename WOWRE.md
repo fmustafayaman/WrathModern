@@ -520,6 +520,13 @@ taşınabilir C++ olarak aynen alınır. Ayar dosyası `Mods/CoAVolFog.ini` (ayn
   (Westfall 19:45, güç 1.2–1.36, hesaplanan güneş pikseli görüntüyle örtüşüyor).
 - Ölçüm araçları: `COAVOLFOG_GPU_PROFILE=1` (geçiş başına GPU ms, log; ilk mod geçişi istemcinin kuyruğunu da sayar),
   `WRATHMODERN_NO_VSYNC=1`, framestats satırlarında saat. CPU profili: `sample <pid> 6` (Xcode/Instruments yok).
+- Shader kaynakları diskte (`Cache/WrathModern/Shaders`), açılışta arka planda derleniyor (42c5a58); ilk kez görülen
+  fonksiyonun ~40 ms takılması yalnız ilk oturumda kalır.
+- Metal doğrulama turu (Lakeshire gölü, Stormwind kanalı, Azuremyst okyanusu; `WaterDebugView` 5/6 ve 0;
+  `MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1`): Azuremyst gök M2'sinin bir skin bölümü indekslerinin sonundan
+  başlıyor (`m_start` 11364, `m_count` 6, tampon 11364 indeks) → tampon dışı okuma. Cihaz artık tampona sığmayan
+  indeksli çizimi atlıyor; tur 0 doğrulama hatası (`build/autotest/feat6`). Yığını bulmak için:
+  `MTL_DEBUG_LAYER_ERROR_MODE=assert` + autotest'in ikilisini `lldb -b -o run -k bt` ile çalıştırmak.
 
 **Dilim 7 (su) tasarımı (2026-10-21):**
 - Orijinal: sıvı geçişini sarar (`0x790AA2` → `Liquid::CRenderer::Flush(camera, 1)`), her su çizimini
