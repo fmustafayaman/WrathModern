@@ -88,6 +88,71 @@ logger off in `WowClient` with `-DWOWCLIENT_CRASH_LOG=OFF`.
 2. Point `Data/<locale>/realmlist.wtf` at the server you want to connect to.
 3. Start `bin/Win/WowClient64.exe` (or `Wow64.exe`).
 
+## macOS (WowRe branch)
+
+The `WowRe` branch builds a native macOS client for Apple Silicon. It renders through Metal directly, with no
+Direct3D or OpenGL translation layer, and it can load optional mods from the game's `Mods` folder.
+
+### Requirements
+
+- macOS on Apple Silicon (tested on an M4)
+- Xcode Command Line Tools, CMake 3.10 or newer and Ninja
+- The Metal toolchain (the `metal` shader compiler)
+- A World of Warcraft **3.3.5a (12340)** client
+
+### Building
+
+```sh
+# Release build
+cmake -S . -B build/mac-release -G Ninja -DCMAKE_BUILD_TYPE=Release
+ninja -C build/mac-release
+
+# Development build: copies the app and mods into a game directory after each build
+cmake -S . -B build/mac -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DWRATHMODERN_GAME_DIR="/path/to/World of Warcraft" -DWRATHMODERN_APP_NAME=WrathModern-WowRe
+ninja -C build/mac
+```
+
+The optimised configurations are built with `-O3 -mcpu=apple-m1`. The client is written to
+`bin/Mac/WrathModern.app` and the mods to `<build dir>/lib/*.dylib`.
+
+| CMake option | Default | Effect |
+|---|---|---|
+| `WRATHMODERN_CLIENT_PATCHES` | `ON` | Client improvements, such as keeping the loading screen up until the first world frames are steady |
+| `WRATHMODERN_MODS` | `ON` | Load mods from the game's `Mods` folder |
+| `WRATHMODERN_BUILD_MODS` | `ON` | Build the mods in `Mods/` with the client |
+| `WRATHMODERN_GAME_DIR` | empty | Game directory that the app and mods are copied into after each build |
+| `WRATHMODERN_APP_NAME` | `WrathModern` | Name of the app copied into the game directory |
+
+### Installing
+
+Copy the app, `Mods/` and `Interface/AddOns/` into the 3.3.5a game folder, next to `Data/`. Prebuilt packages
+are attached to the releases on the project's Git server. Each package also has a `README.txt` with the same
+steps.
+
+### Mods
+
+| Mod | Files | Description |
+|---|---|---|
+| CoAVolFog | `CoAVolFog.dylib`, `fogdata.bin`, `waterdata.bin`, `CoAVolFog.ini` | Volumetric fog, god rays, local lights in fog, colour grading, and FFT water with ripples. Settings: `/coavolfog` or Option+F7 |
+| AwesomeWotlk | `AwesomeWotlk.dylib`, `Interface/AddOns/AwesomeCVar` | AwesomeWotlk API extensions with a settings panel (`/awesome`) |
+| LuxShoulderCam | `LuxShoulderCam.dylib`, `Interface/AddOns/LuxShoulderCam` | Over-the-shoulder camera (`/lsc`) |
+
+To turn a mod off, remove its `.dylib` from `Mods/`.
+
+### Testing and measuring
+
+- `Tools/autotest.sh <out dir> "world@N,..." [timeout]` logs in, takes screenshots and quits. It only stops the
+  process it started, and it restores the player's `WTF` folder afterwards.
+- `WRATHMODERN_FRAMESTATS=1` prints a line every 5 seconds with:
+  - frame time, plus CPU and GPU time;
+  - frames that reached the display, refreshes that showed no new frame (`missed refreshes`), and drops;
+  - every long frame, with the time it spent waiting for a drawable and compiling shaders.
+- `WRATHMODERN_NO_VSYNC=1` turns vsync off, to measure uncapped frame times.
+- `COAVOLFOG_GPU_PROFILE=1` logs the GPU time of each CoAVolFog pass to `Mods/CoAVolFog.log`.
+- `MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1` turns on Metal validation. It slows the client down heavily, so
+  turn it off when measuring performance.
+
 ## Layout
 
 | Path | Contents |
