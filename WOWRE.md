@@ -501,6 +501,22 @@ taşınabilir C++ olarak aynen alınır. Ayar dosyası `Mods/CoAVolFog.ini` (ayn
   ölçümü), `w-rip3` (doğrulama + sprite logu), `w-rip4` (ripple on/off kanıtı), `rays*` (god rays),
   `panel{,2}` (panel).
 
+**Oturum 2026-10-22 (Claude) — performans ve hatalar:**
+- Projeksiyon: `ModHost` artık D3D projeksiyonu veriyor (`CWorldScene::projMatrix` GL'dir) — sis/su/ripple konumları
+  düzeldi (e44a332).
+- Gölgeler: `CGxDeviceMetalNative::SceneClear` pencere boyutunu temizliyordu; 2048² gölge bantlarının alt ~%30'u hiç
+  temizlenmiyor (derinlik 0 → her yer gölgede), oyuncuyla kayan gölgeli bölge ve "takip eden lekeler" oluşuyordu.
+  Artık D3D9 gibi geçerli hedefin viewport'unu temizliyor (159ac4d). Kanıt: bant derinlik dökümü + mod5/mod0 farkı.
+- Mod 5 CPU: dış bantlar kademeli (2./4. kare, hücre değişince hemen) (a8d5c0f). Ana iş parçacığı %33 gölgedeydi.
+- CoAVolFog GPU: yerel ışıklar adım başına değil ışık başına eş-açılı örnekleme (Duskwood gece march 18.8 → 2.3 ms,
+  kompozit 9.6 → 2.1 ms); kompozitte en yakın-derinlik örneği; march ölçeği çıkış yüksekliğine göre (1440p'de 1/3);
+  su gölgelendirme hızlı matematik (8.7 → 1.6 ms), tek geçişli sahne kopyası, su yoksa hiçbir şey (e1c9e1a).
+- Sonuç (vsync açık, kullanıcının tam ayarları, 2560×1440, MSAA 2×, gölge 5): Duskwood gece ve Azure Watch gece sabit
+  16.67 ms; Stormwind ~60 (arka plan yükünde ara sıra tek kare kaçırma). Vsync'siz: Stormwind ~10 ms, Duskwood ~16 ms.
+- Derleme: `-O3 -mcpu=apple-m1`, Game Mode (`LSSupportsGameMode`), ana iş parçacığı USER_INTERACTIVE (912b9b2).
+- Ölçüm araçları: `COAVOLFOG_GPU_PROFILE=1` (geçiş başına GPU ms, log; ilk mod geçişi istemcinin kuyruğunu da sayar),
+  `WRATHMODERN_NO_VSYNC=1`, framestats satırlarında saat. CPU profili: `sample <pid> 6` (Xcode/Instruments yok).
+
 **Dilim 7 (su) tasarımı (2026-10-21):**
 - Orijinal: sıvı geçişini sarar (`0x790AA2` → `Liquid::CRenderer::Flush(camera, 1)`), her su çizimini
   (`CMaterialWater::Render`, `CMaterialWaterNoSpec::Render` vtable yuvaları) sınıflandırıp (göl/nehir/okyanus/iç
