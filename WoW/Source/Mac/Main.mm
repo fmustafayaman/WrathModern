@@ -1,4 +1,5 @@
 #include <csignal>
+#include <pthread/qos.h>
 #include <cstdlib>
 #include <unistd.h>
 #import <Foundation/Foundation.h>
@@ -15,6 +16,8 @@
 // - The working directory is the client directory, where Wow.exe's shortcut starts it on Windows; an
 //   application opened from the Finder starts in "/".
 // - SIGPIPE is ignored: a write to a closed socket reports an error, as on Windows.
+// - The main thread, which updates and renders the world, runs at the user-interactive quality of
+//   service, so the scheduler keeps it on the performance cores whatever started the process.
 //
 // The floating-point environment needs no setup: arm64 already masks all exceptions, rounds to
 // nearest and keeps denormals, the state the Windows client sets with _control87.
@@ -27,6 +30,7 @@ int main(int argc, char** argv) {
     StormRtlInitialize();
 
     signal(SIGPIPE, SIG_IGN);
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
 
     char directory[4096];
 

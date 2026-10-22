@@ -65,6 +65,15 @@ if (WOWDECOMP_PLATFORM_MAC)
         -Wno-register
     )
 
+    # Every arm64 Mac has an Apple M1 or later: code is scheduled and vectorised for those cores, and the
+    # optimised configurations use -O3
+    if (CMAKE_OSX_ARCHITECTURES MATCHES "arm64" OR (NOT CMAKE_OSX_ARCHITECTURES AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64"))
+        add_compile_options(-mcpu=apple-m1)
+    endif ()
+    foreach (lang C CXX OBJC OBJCXX)
+        string(REPLACE "-O2" "-O3" CMAKE_${lang}_FLAGS_RELWITHDEBINFO "${CMAKE_${lang}_FLAGS_RELWITHDEBINFO}")
+    endforeach ()
+
     include_directories(BEFORE SYSTEM ${CMAKE_SOURCE_DIR}/Platform/Mac/Include)
     add_compile_options("$<$<COMPILE_LANGUAGE:CXX,OBJCXX>:SHELL:-include ${CMAKE_SOURCE_DIR}/Platform/Mac/Prefix.h>")
     add_compile_options("$<$<COMPILE_LANGUAGE:OBJC,OBJCXX>:-fobjc-arc>")

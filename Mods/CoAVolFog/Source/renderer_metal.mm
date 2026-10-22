@@ -164,9 +164,12 @@ struct FogRenderer::Impl
             @"DEPTH_MS" : @(depthMs ? 1 : 0),
         };
         NSError* error = nil;
+        const double started = [[NSProcessInfo processInfo] systemUptime];
         id<MTLLibrary> library = [device newLibraryWithSource:@(kVfFogSource) options:options error:&error];
         if (!library)
             VF_LOG_ERROR("fog shaders %s failed to compile: %s", key.c_str(), error.localizedDescription.UTF8String);
+        else
+            VF_LOG_INFO("fog shaders %s compiled in %.0f ms", key.c_str(), ([[NSProcessInfo processInfo] systemUptime] - started) * 1000.0);
         libraries[key] = library;
         return library;
     }
