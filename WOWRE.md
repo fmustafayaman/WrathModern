@@ -734,7 +734,7 @@ Açık işler:
    Kanıt: aynı açıdan (FlipCameraYaw 207, Nagrand) stok/düzeltilmiş ekran görüntüsü. Ara bulgu: ufuk için
    `QueryBuffer` sütun testi dönüşte çok değişiyor (5 sn'de ~800); kaldırmak GPU'da ~bedava ama gerekmedi.
 
-## Gölge sınırı soruşturması (2026-10-22 akşam) — AÇIK
+## Gölge sınırı soruşturması (2026-10-22 akşam) — **ÇÖZÜLDÜ** (aşağıdaki "ÇÖZÜLDÜ" bölümüne bak)
 
 Kullanıcının işaret ettiği hata: Nagrand'da kaya yüzünde **dikey, sert bir gölge sınırı**; karakter yürüdükçe
 kendisiyle birlikte kayıyor/geri çekiliyor ("bariz bozuk"). Konum `-1149.58 8158.52 4.273` (harita 530),
