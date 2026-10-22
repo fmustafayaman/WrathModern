@@ -706,3 +706,32 @@ ve üretici 8 ışık (`GxMaxLights`) işlemeli — şu an 4 slot döngüsü sun
 Test: `build/autotest/phase3` (imza kontrolü AÇIK derleme) — giriş ekranı, giriş, dünya (Northshire) normal.
 Doğrulanamayanlar: 8 ışık shader'ları (patch-5.MPQ kurulu değil), sunucu yamasını reddetme yolu (AzerothCore
 12340 için yama göndermez), Windows tarafı (timer) derlenmedi.
+
+## Performans oturumu (2026-10-22 öğleden sonra)
+
+Kullanıcı: Outland'de ~50 fps, "her yerde kesintisiz 60" istiyor. Makine MacBook Air M4 (fansız): ardışık
+koşular ısınmayla %20'ye kadar yavaşlar; A/B'yi aynı süreç içinde dönüşümlü pencerelerle yap.
+
+- Ölçüm aracı: `WRATHMODERN_GPU_PROFILE=1` (357178b): bölüm başına GPU ms, mod geçişleri aynı zaman çizgisinde.
+  Ayrı zaman çizgileri çakışan geçişleri iki kez sayıyordu (7.45 ms "water scene copy" aslında 0.5 ms).
+- Çimen (groundEffectDensity 248, gölge 5): discard'lı alpha test HSR'yi bozuyordu, her üst üste binen yaprak
+  gölge PCF'si ödüyordu (7.2 ms). Derinlik ön geçişi + EQUAL tek gölgeleme (2d5b16d, 853a8f6): 2.4 ms;
+  aynı süreçte kare başına −3.4 ms; görüntü farkı ort. 1.1/255.
+- Kamera dönerken CPU: görüş dışı chunk'ların çimeni 10/20 karede silinip yeniden kuruluyordu (5a5f1a7).
+- Sonuç (Nagrand, vsync, dönen kamera): ilk ~70 sn 60 fps; ısınınca 56–57. Önceki 50.
+- Nagrand GPU dağılımı (dönen kamera): arazi ~3.0, sis composite ~2.4–3.0, çimen ~2.2, gölgeler ~1.5,
+  M2 ~1.1, sis march ~0.7, ufuk ~0.7 ms.
+
+Açık işler:
+1. Sis composite (tam çözünürlük, piksel başına ~10 okuma; 4 tap tam çözünürlüklü derinliği dağınık okuyor):
+   düşük çözünürlüklü derinlik kopyası ile görüntüyü değiştirmeden ucuzlat.
+2. Termal pay: hedef ısınmış GPU'da ~12 ms. Seçenekler kullanıcıya sorulacak (MetalFX vb. görüntüyü değiştirir).
+3. Su yansıması ekran kenarında bozuk: `TraceScreenReflection` ışını yalnızca dikeyde ekranla sınırlıyor,
+   sahne kopyası MIRROR adreslemeyle örnekleniyor → yandan çıkan ışın aynalanmış görüntüyü yansıtıyor.
+   Orijinal CoAVolFog'da da aynı (vw_reflection.hlsli). Düzeltme: yatay sınır + yatay kenar sönümü → gök.
+4. Uzak dağlar (WDL ufuk blokları) kamera dönerken kaybolup geliyor (kullanıcı videosu). Ölçüm: frustum
+   içindeki ~124 bloğun ~120'si `QueryBuffer(&bbox, 40)` sütun testiyle elenir; kamera dururken karar
+   kararlı, dönüşte 5 sn'de ~800 değişim. Port orijinalle aynı (0x78FDC0; culling da orijinaldeki gibi
+   BuildViewMatrices'ten önce, bir kare gecikmeli). Ufuk için sütun testini kaldırmak GPU'da ~bedava ve
+   sabit görüntüyü değiştirmiyor; ama videoyla kaybolmanın gittiği henüz kanıtlanmadı (otomatik pop
+   dedektörleri gürültülü çıktı). Aynı test chunk/WMO/doodad'da da kullanılıyor (mesalar).
