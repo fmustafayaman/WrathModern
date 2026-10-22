@@ -514,6 +514,10 @@ taşınabilir C++ olarak aynen alınır. Ayar dosyası `Mods/CoAVolFog.ini` (ayn
 - Sonuç (vsync açık, kullanıcının tam ayarları, 2560×1440, MSAA 2×, gölge 5): Duskwood gece ve Azure Watch gece sabit
   16.67 ms; Stormwind ~60 (arka plan yükünde ara sıra tek kare kaçırma). Vsync'siz: Stormwind ~10 ms, Duskwood ~16 ms.
 - Derleme: `-O3 -mcpu=apple-m1`, Game Mode (`LSSupportsGameMode`), ana iş parçacığı USER_INTERACTIVE (912b9b2).
+- Ek (aynı gün): renk düzeltmesi kompozitin içinde, sisin MSAA sahne kopyası shader ile (her MSAA yükle/sakla
+  turu ≈ 0.85 ms). 2 dk vsync, dönen kamera: Duskwood gece 7204/7200, Azure Watch gece 7211/7200, Azuremyst kıyısı
+  (su) 7209/7200, Stormwind 7204/7200 (tek pencerede yükleme takılması). God rays güneş kadrajdayken doğrulandı
+  (Westfall 19:45, güç 1.2–1.36, hesaplanan güneş pikseli görüntüyle örtüşüyor).
 - Ölçüm araçları: `COAVOLFOG_GPU_PROFILE=1` (geçiş başına GPU ms, log; ilk mod geçişi istemcinin kuyruğunu da sayar),
   `WRATHMODERN_NO_VSYNC=1`, framestats satırlarında saat. CPU profili: `sample <pid> 6` (Xcode/Instruments yok).
 
