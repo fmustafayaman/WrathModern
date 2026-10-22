@@ -579,6 +579,30 @@ void CShadowCache::GatherBands(CShadowCacheQueryData& data, const C3Vector& pos,
             band.m_pos.y = floor(band.m_pos.y * invCell) * cell;
             band.m_pos.z = floor(band.m_pos.z * invCell) * cell;
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+            // The original renders all three bands every frame. The outer bands (160 and 640 yards) hold
+            // mostly static casters, so they are rendered every second and fourth frame, staggered so a frame
+            // renders at most two bands, and at once whenever their cell moves; the near band stays per frame.
+            // Each band keeps the position it was last rendered at (m_lastPos), which its matrix uses.
+            bool cellMoved = band.m_pos.x != band.m_lastPos.x || band.m_pos.y != band.m_lastPos.y || band.m_pos.z != band.m_lastPos.z;
+            bool due = i == 0 || (i == 1 && (frame & 1) == 0) || (i == 2 && (frame & 3) == 1);
+            if (!cellMoved && !due) {
+                band.m_pos = band.m_lastPos;
+                data.m_pos[i] = band.m_pos;
+                data.m_bounds[i][0] = -data.m_radius[i];
+                data.m_bounds[i][1] = data.m_radius[i];
+                data.m_bounds[i][2] = -data.m_radius[i];
+                data.m_bounds[i][3] = data.m_radius[i];
+                CShadowCache::s_frustumCallback(data.m_frustums[i], data.m_matrices[i], band.m_dir, data, i);
+                data.m_frustums[i].Extents(data.m_extents[i]);
+                data.m_queryFlags[i] = 0;
+                frustum = data.m_frustums[i];
+                frustum.InvertPlanes();
+                useCullFrustum = 1;
+                continue;
+            }
+#endif
+
             data.m_pos[i] = band.m_pos;
 
             data.m_bounds[i][0] = -data.m_radius[i];
