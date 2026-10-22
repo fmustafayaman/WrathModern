@@ -905,3 +905,12 @@ Uygulanan ve ölçülen:
   oyunda seyrek ≤100 ms. GPU değil, senkron dosya/akış işi.
 - **Pipeline arşivi** denendi ve geri alındı: pipeline derlemesi zaten toplam **3–4 ms** (kaynak
   ön-derleme sayesinde); 10 MB arşiv yazımı hak etmiyor.
+
+### Kararlılık ölçümleri (2026-10-22 gece, son tur)
+- Aynı Nagrand kadrajı, 90 s kesintisiz: **gpu 14.74–14.79 ms, 0–1 kaçan tazeleme** — kilitli 60.
+- Aynı kadrajda ara sıra görülen 18–22 ms'lik koşular tekrar üretilemedi (90 s'lik koşu temiz);
+  fanless Air'de uzun test seanslarında sistem kısılması/arka plan işi ile tutarlı, istemci kaynaklı değil.
+- `hwPCF 0` (INTZ) yolu: **18.2 ms** (donanım karşılaştırmalı yola göre +3.4 ms), çökme yok. Varsayılan
+  `hwPCF 1` doğru seçim; INTZ yolu yalnızca karşılaştırma için.
+- Sis march'ı şehirde en kötü 2.2 ms (8 ışık); sahne 60'ta ve 1.9 ms pay var — ışık kümeleme şimdilik
+  gerekçesiz (ölçüldü, uygulanmadı).
