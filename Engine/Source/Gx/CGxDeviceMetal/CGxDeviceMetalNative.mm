@@ -2881,7 +2881,13 @@ void CGxDeviceMetalNative::IDrawBindTextures(const GxMetal::ShaderInfo* pixelInf
         }
 
         id<MTLTexture> bound = (texture && texture->Kind() == expected) ? texture->SampleTexture() : this->m_metal->DummyTexture(expected);
-        id<MTLSamplerState> sampler = this->m_pipelines->Sampler(this->m_hw.m_samplers[i]);
+
+        // A depth sampler in the shader is always a shadow comparison (sample_compare); the sampler
+        // must carry the comparison function even when the stage's current texture is the placeholder
+        // or the client bound its texture after the sampler state
+        GxMetal::SamplerKey samplerKey = this->m_hw.m_samplers[i];
+        samplerKey.m_compare = expected == GxMetal::SAMPLERKIND_DEPTH ? 1 : 0;
+        id<MTLSamplerState> sampler = this->m_pipelines->Sampler(samplerKey);
 
         if (this->m_samplerDirty[i] || this->m_bound.m_textures[i] != bound) {
             [encoder setFragmentTexture:bound atIndex:i];

@@ -845,3 +845,23 @@ Yeni ölçümler:
   anlamsız bir koordinatta örnekliyor. Sıradaki doğrulama: bu yedeğin ürettiği band2 koordinatını renk
   olarak basıp kaya üzerinde [0,1] içinde mi diye bakmak; ardından `PostUpdate`'in 12 vektörünü
   (3 matris × 4 satır: u, v, z, derinlik-w) shader'ın beklediği gibi yazmak.
+
+### ÇÖZÜLDÜ: kaya üzerindeki kayan gölge sınırı (2026-10-22 gece)
+**Kök neden.** Metal cihazı, örnekleyiciyi (sampler) `m_hw.m_samplers[i].m_compare` ile önbelleğe alıyordu;
+bu alan yalnızca bir doku bağlandığında (`ISetTexture`) "doku derinlik mi" diye güncelleniyordu. Shader bir
+`depth2d` + `sample_compare` kullandığında bu bayrak **bayat** kalabiliyor (tmu'ya yedek/placeholder doku
+bağlıyken ya da istemci dokuyu örnekleyici durumundan sonra bağladığında) → `compareFunction`'sız bir
+örnekleyici `sample_compare`'e veriliyor. Metal bunu tanımsız kabul ediyor; pratikte pek çok texel "gölgeli"
+(0) dönüyordu. Gölge haritaları çoğunlukla boş (derinlik 1.0) olduğu için `read()` ile yapılan kontrol
+"aydın" diyordu, ekranda ise koyu leke çıkıyordu — ölçümler arasındaki çelişkinin kaynağı buydu.
+
+**Düzeltme** (`CGxDeviceMetalNative::IDrawBindTextures`): shader'ın o tmu için *derinlik* örnekleyicisi
+istediği her durumda örnekleyici anahtarına `compareFunction = LessEqual` yazılıyor; bağlı dokudan bağımsız.
+
+**Kanıt**
+- Aynı kadraj, öncesi/sonrası: ortalama fark 14.5 seviye, piksellerin %51'i (kaya ve uzak tepeler).
+- **Çapraz doğrulama:** düzeltilmiş derlemede donanım PCF (`hwPCF 1`) ile yazılım PCF (`hwPCF 0`) aynı
+  görüntüyü veriyor (2.8 seviye = sis/sıcaklık artığı). İki bağımsız yol aynı sonucu veriyor.
+- Kullanıcının CrossOver/Windows referansıyla aynı görünüm: kaya düz, sert sınır yok, ağaç altı yumuşak.
+- Kullanıcının eski "extShadowQuality 4 değiştirmedi" gözlemi de bununla tutarlı: kalite modu bu bayat
+  örnekleyiciyi değiştirmiyordu.
