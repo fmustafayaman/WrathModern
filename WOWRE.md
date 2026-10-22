@@ -733,3 +733,55 @@ Açık işler:
    (yalnızca 4:3'te doğru) çeviriyordu; 1.59:1'de dünyadan ~%13 geniş çizilip kayıyordu. `_SG` ile aynı FOV.
    Kanıt: aynı açıdan (FlipCameraYaw 207, Nagrand) stok/düzeltilmiş ekran görüntüsü. Ara bulgu: ufuk için
    `QueryBuffer` sütun testi dönüşte çok değişiyor (5 sn'de ~800); kaldırmak GPU'da ~bedava ama gerekmedi.
+
+## Gölge sınırı soruşturması (2026-10-22 akşam) — AÇIK
+
+Kullanıcının işaret ettiği hata: Nagrand'da kaya yüzünde **dikey, sert bir gölge sınırı**; karakter yürüdükçe
+kendisiyle birlikte kayıyor/geri çekiliyor ("bariz bozuk"). Konum `-1149.58 8158.52 4.273` (harita 530),
+yön 4.705357 rad.
+
+### Yeniden üretim (kamera dahil)
+`Tools/autotest.sh` + Lua: `.revive`, `.gm on`, `.go xyz ...`, 10 sn sonra `SetView(1)` + `FlipCameraYaw(0)`.
+**Önemli:** bu çağrı olmadan kamera aşağı bakıyor ve hata kadrajda görünmüyor; önceki oturumdaki "gölge bandı"
+denemeleri bu yüzden yanlış şeyi ölçtü. Yürüyerek bandları tazelemek için `WRATHMODERN_AUTOTEST_WALK="15,2.0"`.
+
+### Ölçülenler (aynı kadraj, aynı süreç içi A/B)
+| Aday | Sonuç |
+|---|---|
+| CoAVolFog tamamen kapalı (`Enable=0`) | desen **aynı** (31% piksel değişiyor, sınır duruyor) → sis değil |
+| `StockFog=0` | aynı desen → stok sis değil |
+| `LocalLights=0` | kaya farkı **0.011/255** → yerel ışıklar değil |
+| `shadowScissor 0`, `shadowInstancing 0` | fark gürültü düzeyinde (0.2–0.3) → karo kırpma/instancing değil |
+| Bugünkü "renk yazımı kapalıyken yalnız alpha testi" (2d5b16d) | tam shader'a zorlandı: şerit enerjisi **aynı** (5.699 vs 5.837) → regresyon bu değil |
+| Eğim ölçekli derinlik bias'ı (yalnız doku-derinlik hedefleri, 2 ve 8 birim) | şerit enerjisi ~%2 düştü, desen aynı → klasik z-acne değil |
+| `extShadowQuality` 4 vs 5 (yürüyerek tazelenmiş halde) | desen aynı (12.8% piksel farkı, ton eşit) → tiled/full band farkı değil |
+| Gölge okuma buffer'ını ters çevirme (ping-pong swap) | sahne "daha temiz" görünüyor ama bu **daha az gölge** demek (buffer boş) → kanıt değil |
+| Eski paket (704628b, 12:10) | çalıştırılamadı: paket tam oyun klasörü bekliyor; `/tmp/oldapp`'a Data/Wow.exe sembolik linkleriyle de ekran görüntüsü alınamadı (kesildi) |
+
+### Gölge durumu (canlı log)
+mod `4` (SHADOW_HIGH, "Full environmental … lg-dist"), 2048², PCF açık. Band merkezleri oyuncuyu izliyor;
+eşikler **kare** mesafe olduğu için band0 ≈2 yd, band1 ≈4 yd, band2 ≈32 yd'de tazeleniyor → seninle kayan desen
+bu tazeleme ritmiyle uyumlu.
+
+### Gölge haritalarının içeriği (geçici shader probları, geri alındı)
+- `SetShadowMapTerrain` sırası: Texture5 = 20 yd dinamik, Texture6/7/8 = band0/1/2.
+- Haritaların **çoğu boş** (derinlik 1.0 = aydın); band0'da ince **dikey çubuklar** (ağaç gövdeleri) var.
+- `QueryTerrainBand` yalnızca **doodad (M2)** topluyor; arazi yüzeyi kaster değil → arazi kendi kendini
+  gölgelemiyor, yani "acne" teorisi bu kodda geçersiz.
+- Kaya üzerindeki gölge, yakındaki hiçbir kasterin şekline uymuyor; örnekleme z'si ile saklanan derinlik
+  neredeyse eşit çıkıyor (≈0.5/0.5) → gölge **yanlış yerde** üretiliyor gibi.
+
+### Kalan şüpheliler (sırayla)
+1. **Kaster dönüşümü**: `CShadowQuery::RenderCallback` kamera-göreli `translation` ve `eye = pos - sunDir*2000 -
+   camera` kullanıyor; kameranın kendi konumu ile dünya çiziminin kullandığı konum arasında fark varsa gölge
+   kayar. Karşılaştırma: `CWorldScene::BuildViewMatrices`/`GetCameraPosition` çağrılarının aynı karedeki değeri.
+2. **D3D9 referansı**: aynı sahnenin Windows (CrossOver) görüntüsü. Bu, "gölge nerede olmalı" sorusunun tek
+   güvenilir cevabı; elimizde yok.
+3. Native cihazın doku-hedef geçişlerinde (viewport/scissor/clear) karo yerleşimi: ölçümler şimdilik tutarlı
+   gösteriyor ama `shadowScissor=0` testi karoyu tamamen kapatmıyor (viewport kalıyor).
+
+### Araçlar (bu oturumda eklendi, sonra kaldırıldı)
+`ShaderTranslator.cpp` içinde geçici `WRATHMODERN_PROBE_SHADOW` (rgba/depth/map/factor/sanity modları),
+`CGxDeviceMetalNative.mm` içinde `WRATHMODERN_PROBE_SLOPE_BIAS` / `WRATHMODERN_PROBE_FULL_PS`,
+`ShadowCache.cpp`/`ShadowQuery.cpp` içinde durum ve matris logları. Hepsi geri alındı; `git diff` yalnızca
+Claude'un `PROBE_*` anahtarları ve `Autotest.cpp` yürüme özelliğini gösteriyor.
