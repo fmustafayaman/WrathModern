@@ -1605,7 +1605,7 @@ int32_t CM2Shared::LoadSkinProfile(uint32_t profile) {
     SFileImpl* file;
 
     if (!SFile::OpenEx(nullptr, fileName, (this->m_flags & 4) >> 2, &file)) {
-        DebugLog("Model2: File not found: %s\n", fileName);
+        fprintf(stderr, "Model2: file not found: %s\n", fileName);
         return 0;
     }
 
@@ -1642,8 +1642,26 @@ int32_t CM2Shared::LoadSkinProfile(uint32_t profile) {
 
 // INLINED
 uint32_t CM2Shared::GetSkinProfileIndex(uint32_t maxBones) {
-    for (uint32_t i = 0; i < this->m_data->m_numSkinProfiles; i++) {
-        if (s_skinProfileBoneCounts[4 - this->m_data->m_numSkinProfiles + i] <= maxBones) {
+    uint32_t profiles = this->m_data->m_numSkinProfiles;
+
+    if (!profiles) {
+        fprintf(stderr, "Model2: no skin profiles: %s\n", this->m_fileName);
+        return 0xFFFFFFFF;
+    }
+
+    // s_skinProfileBoneCounts holds four entries, for one to four profiles, largest first. The Windows
+    // client computes 4 - profiles + i in signed arithmetic, so a header above four indexes memory
+    // *before* the table: undefined, but it does not fault there and in practice the first profile is
+    // chosen. creature\ent2\ent2.m2 on the Warmane data has six, and the unsigned sum sent this port
+    // four gigabytes past the table (EXC_BAD_ACCESS in Initialize, Dalaran, 2026-10-22). Clamping to the
+    // table keeps such a model loading with the best profile the bone budget allows.
+    if (profiles > 4) {
+        fprintf(stderr, "Model2: %u skin profiles, expected 1-4: %s\n", profiles, this->m_fileName);
+        profiles = 4;
+    }
+
+    for (uint32_t i = 0; i < profiles; i++) {
+        if (s_skinProfileBoneCounts[4 - profiles + i] <= maxBones) {
             return i;
         }
     }
