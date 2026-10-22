@@ -785,3 +785,23 @@ bu tazeleme ritmiyle uyumlu.
 `CGxDeviceMetalNative.mm` içinde `WRATHMODERN_PROBE_SLOPE_BIAS` / `WRATHMODERN_PROBE_FULL_PS`,
 `ShadowCache.cpp`/`ShadowQuery.cpp` içinde durum ve matris logları. Hepsi geri alındı; `git diff` yalnızca
 Claude'un `PROBE_*` anahtarları ve `Autotest.cpp` yürüme özelliğini gösteriyor.
+
+### Ek bulgular (aynı akşam, ikinci tur)
+- **Kayadaki gölge band2'den (640 yd) geliyor.** Shader'da Texture8'i "aydın" zorlayınca kaya yüzlerinin
+  %12'si (ortalama 3.9 seviye) değişiyor; Texture5/6/7'nin etkisi ~0. Yani kaya, band0/band1 kutularının
+  dışında ve yalnız band2 + "kutu dışı" yedeği ile aydınlatılıyor.
+- **hwPCF (donanım PCF) yolu görünümü ciddi değiştiriyor:** aynı süreçte `SetCVar("hwPCF","0")` (R32F + yazılım
+  PCF) kaya ortalamasını 46.97 → 48.32 yapıyor, piksellerin %13'ü 8+ seviye değişiyor; koyu leke küçülüyor
+  ama tümüyle kaybolmuyor. İlk kez hata *başka bir değişkenle* anlamlı biçimde hareket etti.
+- Doku biçimi zinciri doğru: `GxTex_D24X8 → MTLPixelFormatDepth32Float`, `m_depth`, `Kind()=DEPTH`,
+  örnekleyicide `compareFunction=LessEqual`. Yani compare yolu yapısal olarak sağlam.
+- `World.cpp:1510`: AOI chunk dikdörtgeni değişince `s_needsRebuild = 1` → `Update()` **tüm band haritalarını
+  beyaza siliyor**, bandlar sonra kare başına tek karo doluyor. Yürürken gölgenin parça parça sıfırlanıp
+  yeniden dolması bu ritme uyar (paylaşılan istemci kodu; D3D9'da da var).
+
+### Karar noktası
+Kalan iki aday: (a) bizim donanım-PCF/compare yolu, (b) istemcinin bu ayarlardaki *kendi* görünümü.
+Ayırt etmek için **aynı noktanın Windows (CrossOver) görüntüsü** gerekiyor: `extShadowQuality 4`, `hwPCF 1`,
+Nagrand `-1149.58 8158.52 4.273`, yön 4.705357. Resim gelince: aynı kadrajda kaya yüzündeki koyu lekenin
+sınırı karşılaştırılacak; Windows'ta da varsa değişiklik değil, beklenti ayarı; yoksa hata bizim cihazda ve
+sıradaki adım compare örnekleyicisinin (bias/örnek konumu) D3D9 ile birebir eşleşmesi.
