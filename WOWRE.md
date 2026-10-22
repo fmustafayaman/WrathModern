@@ -929,6 +929,9 @@ Varsayılan (M4, 10 çekirdek → 8) ile **1516 ms**, >1 s kare sayısı 4 → 1
 
 ### Sis march ölçeği: yuvarlama yerine tavan (2026-10-22 gece)
 `lround(baseScale * height / 1080)` yüzünden 1912 satırda ölçek 4, 1664'te 3 oluyordu; yani **kısa pencere
-daha çok** march pikseli üretiyordu (364k → 490k). Kural `ceil` oldu: 1912'de ölçek yine 4 (march 0.72 ms,
-değişmedi — ölçüldü), daha kısa pencerede ölçek 4'ün altına inmiyor. 1664 koşusunun march süresi (1.17 ms)
-farklı kadraj/zaman olduğu için doğrudan kıyaslanamaz; değişen şey kuralın kendisi.
+daha çok** march pikseli üretiyordu (364k → 490k). Kural `ceil` oldu.
+**Kontrollü A/B (aynı kadraj, 2647×1664):** `ceil` (ölçek 4) march **0.72 ms**, `lround` (ölçek 3)
+**1.30 ms** — kısa pencerede maliyet yarıya indi. Kullanıcının çözünürlüğünde (3042×1912) ölçek yine 4:
+march **0.71 ms**, değişmedi.
+**Not:** mod ayrı bir hedef (`ninja CoAVolFog`) ve dylib'i oyun klasörüne kendisi kopyalıyor; `ninja
+WrathModern` modu **yeniden derlemez** — mod ölçümlerinden önce `CoAVolFog` hedefi de derlenmeli.

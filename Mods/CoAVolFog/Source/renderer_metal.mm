@@ -356,7 +356,14 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
     const uint32_t baseScale = cfg.quality == 1 ? 4u : 2u;
     // Ceiling, not rounding: with a round, a shorter window could land on a smaller scale and so march *more*
     // pixels (1912 lines: 1/4, 1664: 1/3), making a smaller window the more expensive one
-    const uint32_t scale = std::max(baseScale, static_cast<uint32_t>(std::ceil(baseScale * vp.Height / kDesignHeight)));
+    static const bool s_marchRounds = getenv("WRATHMODERN_MARCH_ROUND") != nullptr;
+    const double designScale = baseScale * static_cast<double>(vp.Height) / kDesignHeight;
+    const uint32_t scale = std::max(baseScale, static_cast<uint32_t>(s_marchRounds ? std::lround(designScale) : std::ceil(designScale)));
+    static bool s_loggedScale = false;
+    if (!s_loggedScale) {
+        s_loggedScale = true;
+        VF_LOG_INFO("fog march scale %u for a %ux%u viewport (%s)", scale, static_cast<unsigned>(vp.Width), static_cast<unsigned>(vp.Height), s_marchRounds ? "rounded" : "ceiling");
+    }
     const uint32_t lowW = (vp.Width + scale - 1) / scale;
     const uint32_t lowH = (vp.Height + scale - 1) / scale;
 
