@@ -3544,10 +3544,50 @@ void CWorldScene::RenderDetailDoodads() {
     int32_t shaders = CDetailDoodad::InitializeRenderState();
     C44Matrix world;
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // Ground effects are alpha-tested and blended (GxBlend_Alpha with detailDoodadAlphaRef) and write depth.
+    // A fragment shader that can discard keeps Apple's tile GPUs from hiding overdrawn fragments, so every
+    // overlapping blade paid the full shader, shadow-map lookups included: 7.2 ms of GPU in Nagrand at density
+    // 248 (5.3 ms of it the shadow lookups). Two passes instead: the blades' depth first, with colour writes
+    // off (the device then compiles the shader to its alpha test alone), then the full shader with an equal
+    // depth test, so each pixel is shaded once, by the nearest blade. Positions are invariant across the
+    // two pipelines (the vertex function is the same and compiled with preserveInvariance). Chunks go nearest
+    // first so the depth pass rejects farther blades early. The stock client draws once, in culling order,
+    // where a blade's soft edge blends over whatever was drawn before it; here it blends over the scene
+    // behind the blades.
+    static std::vector<CDetailDoodadInst*> s_sortedInsts;
+    s_sortedInsts.clear();
+
+    for (CDetailDoodadInst* inst = CWorldScene::sortTable.m_detailDoodadInstList.Head(); inst; inst = CWorldScene::sortTable.m_detailDoodadInstList.Next(inst)) {
+        s_sortedInsts.push_back(inst);
+    }
+
+    std::sort(s_sortedInsts.begin(), s_sortedInsts.end(), [](const CDetailDoodadInst* a, const CDetailDoodadInst* b) {
+        return a->m_chunk->m_distToCamera < b->m_chunk->m_distToCamera;
+    });
+
+    if (shaders) {
+        GxRsSet(GxRs_ColorWrite, 0);
+
+        for (CDetailDoodadInst* inst : s_sortedInsts) {
+            world = C44Matrix();
+            world.Translate(inst->m_chunk->m_topLeftCoords - CWorldScene::s_activeWorldView);
+            CDetailDoodad::SetupVertexShader(world, 0);
+            inst->DrawBatches();
+        }
+
+        GxRsSet(GxRs_ColorWrite, 15);
+        GxRsSet(GxRs_DepthWrite, 0);
+        GxRsSet(GxRs_DepthFunc, 1);
+    }
+
+    for (CDetailDoodadInst* inst : s_sortedInsts) {
+#else
     CDetailDoodadInst* next;
 
     for (CDetailDoodadInst* inst = CWorldScene::sortTable.m_detailDoodadInstList.Head(); inst; inst = next) {
         next = CWorldScene::sortTable.m_detailDoodadInstList.Next(inst);
+#endif
         CMapChunk* chunk = inst->m_chunk;
         inst->m_age = 0;
 
