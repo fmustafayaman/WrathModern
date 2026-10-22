@@ -75,6 +75,13 @@ void GxMetalSetStencilTag(uint32_t tag);
 // While force is set, every draw writes depth whatever its depth-write state (a draw's depth test still applies).
 // For mods that need the depth of a pass that draws without it (CoAVolFog's water surfaces).
 void GxMetalForceDepthWrite(bool force);
+// Names the GPU profile section of the passes that follow (WRATHMODERN_GPU_PROFILE=1); nothing otherwise.
+void GxMetalProfileSection(const char* name);
+// Times a pass a mod encodes on the frame's command buffer in the same profile, so the passes of the client and
+// the mods are charged on one timeline: descriptor is the MTLRenderPassDescriptor (kind 0), MTLComputePassDescriptor
+// (1) or MTLBlitPassDescriptor (2) the encoder will be created with; name must outlive the frame (a literal).
+// Returns 0 when the profile is off.
+int32_t GxMetalProfilePass(void* descriptor, int32_t kind, const char* name);
 CGxDevice* CreateGxDevice(EGxApi api, GxWindowProc windowProc, const CGxFormat& format);
 int32_t GxAdapterDesktopMode(CGxMonitorMode& mode);
 int32_t GxAdapterID(uint16_t& vendorID, uint16_t& deviceID, uint32_t& driverVersionHi, uint32_t& driverVersionLo);

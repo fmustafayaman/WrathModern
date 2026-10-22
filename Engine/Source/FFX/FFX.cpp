@@ -6,6 +6,7 @@
 #include "Engine/Source/ConsoleBase/ConsoleVar.h"
 #include "Engine/Source/ConsoleBase/IConsole.h"
 #include "Engine/Source/Gx/CGxBuf.h"
+#include "Engine/Source/Gx/Gx.h"
 #include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
 #include "Engine/Source/Gx/CGxVertexPCT.h"
 #include "Engine/Source/Gx/Gx.h"
@@ -370,6 +371,7 @@ void FFX::Finish() {
         return;
     }
 
+    GxMetalProfileSection("glow");
     C2iVector sourcePos = { 0, 0 };
     C2iVector destPos = { 0, 0 };
     GxTexCopy(TextureGetGxTex(FFX::s_full[0].m_texture, 1, nullptr), destPos, sourcePos, FFX::s_full[0].m_size, 0, 0);
@@ -377,6 +379,7 @@ void FFX::Finish() {
     FFX::s_effect->Execute();
 
     GxXformSetViewport(0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f);
+    GxMetalProfileSection("interface");
 }
 
 // VERIFY: 4aebbae1 auto

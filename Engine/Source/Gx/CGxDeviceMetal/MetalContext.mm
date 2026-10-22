@@ -5,6 +5,10 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <map>
+#include <mutex>
+#include <string>
+#include <vector>
 #include <mach/mach_time.h>
 #include <os/log.h>
 #include <unistd.h>
@@ -108,11 +112,225 @@ struct Context::FrameStats {
     std::atomic<uint32_t> m_dropped { 0 };
 };
 
+// GPU profile (WRATHMODERN_GPU_PROFILE=1): every render pass the context begins samples the GPU's timestamps at its
+// stage boundaries, under the section named last by SetProfileSection. Passes overlap on the GPU (one starts while
+// the one before drains), so a pass is charged from the later of its start and the previous pass's end. Every five
+// seconds the per-frame averages go to stderr; passes other code encodes itself (mods) are not counted here.
+struct Context::GpuProfile {
+    static constexpr NSUInteger kSamples = 512;
+    static constexpr int kSlots = 6;
+
+    struct Slot {
+        id<MTLCounterSampleBuffer> m_samples = nil;
+        std::vector<std::pair<const char*, NSUInteger>> m_passes;
+        NSUInteger m_used = 0;
+        bool m_busy = false;
+    };
+
+    Slot m_slots[kSlots];
+    Slot* m_current = nullptr;
+    std::mutex m_lock;
+    std::map<std::string, double> m_totals;
+    uint32_t m_frames = 0;
+    double m_windowStart = 0.0;
+    double m_nanosecondsPerTick = 1.0;
+
+    bool Init(id<MTLDevice> device) {
+        id<MTLCounterSet> timestamps = nil;
+        for (id<MTLCounterSet> set in device.counterSets) {
+            if ([set.name isEqualToString:MTLCommonCounterSetTimestamp]) {
+                timestamps = set;
+            }
+        }
+        if (!timestamps || ![device supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary]) {
+            Log("gpu profile: stage-boundary timestamps unavailable");
+            return false;
+        }
+
+        MTLCounterSampleBufferDescriptor* descriptor = [MTLCounterSampleBufferDescriptor new];
+        descriptor.counterSet = timestamps;
+        descriptor.storageMode = MTLStorageModeShared;
+        descriptor.sampleCount = kSamples;
+        for (Slot& slot : this->m_slots) {
+            NSError* error = nil;
+            slot.m_samples = [device newCounterSampleBufferWithDescriptor:descriptor error:&error];
+            if (!slot.m_samples) {
+                Log("gpu profile: %s", error.localizedDescription.UTF8String);
+                return false;
+            }
+        }
+
+        MTLTimestamp cpu0 = 0, gpu0 = 0, cpu1 = 0, gpu1 = 0;
+        [device sampleTimestamps:&cpu0 gpuTimestamp:&gpu0];
+        usleep(20000);
+        [device sampleTimestamps:&cpu1 gpuTimestamp:&gpu1];
+        this->m_nanosecondsPerTick = gpu1 > gpu0 ? static_cast<double>(cpu1 - cpu0) / static_cast<double>(gpu1 - gpu0) : 1.0;
+        return true;
+    }
+
+    // A slot for a new command buffer, read back when the buffer completes
+    void BeginBuffer(id<MTLCommandBuffer> commands) {
+        this->m_current = nullptr;
+        std::lock_guard<std::mutex> guard(this->m_lock);
+        for (Slot& slot : this->m_slots) {
+            if (!slot.m_busy) {
+                slot.m_busy = true;
+                slot.m_used = 0;
+                slot.m_passes.clear();
+                this->m_current = &slot;
+                break;
+            }
+        }
+        Slot* slot = this->m_current;
+        if (slot) {
+            [commands addCompletedHandler:^(id<MTLCommandBuffer>) { this->Read(slot); }];
+        }
+    }
+
+    void Attach(MTLRenderPassDescriptor* pass, const char* section) {
+        Slot* slot = this->m_current;
+        if (!slot || slot->m_used + 2 > kSamples) {
+            return;
+        }
+        NSUInteger first = slot->m_used;
+        slot->m_used += 2;
+        slot->m_passes.emplace_back(section, first);
+        MTLRenderPassSampleBufferAttachmentDescriptor* attachment = pass.sampleBufferAttachments[0];
+        attachment.sampleBuffer = slot->m_samples;
+        attachment.startOfVertexSampleIndex = first;
+        attachment.endOfVertexSampleIndex = MTLCounterDontSample;
+        attachment.startOfFragmentSampleIndex = MTLCounterDontSample;
+        attachment.endOfFragmentSampleIndex = first + 1;
+    }
+
+    // Two samples for a pass, or NSNotFound
+    NSUInteger Reserve(const char* section) {
+        Slot* slot = this->m_current;
+        if (!slot || slot->m_used + 2 > kSamples) {
+            return NSNotFound;
+        }
+        NSUInteger first = slot->m_used;
+        slot->m_used += 2;
+        slot->m_passes.emplace_back(section, first);
+        return first;
+    }
+
+    id<MTLCounterSampleBuffer> Samples() const { return this->m_current ? this->m_current->m_samples : nil; }
+
+    // The same for a blit pass
+    MTLBlitPassDescriptor* BlitPass(const char* section) {
+        Slot* slot = this->m_current;
+        if (!slot || slot->m_used + 2 > kSamples) {
+            return nil;
+        }
+        NSUInteger first = slot->m_used;
+        slot->m_used += 2;
+        slot->m_passes.emplace_back(section, first);
+        MTLBlitPassDescriptor* pass = [MTLBlitPassDescriptor blitPassDescriptor];
+        pass.sampleBufferAttachments[0].sampleBuffer = slot->m_samples;
+        pass.sampleBufferAttachments[0].startOfEncoderSampleIndex = first;
+        pass.sampleBufferAttachments[0].endOfEncoderSampleIndex = first + 1;
+        return pass;
+    }
+
+    void Read(Slot* slot) {
+        NSData* data = slot->m_used ? [slot->m_samples resolveCounterRange:NSMakeRange(0, slot->m_used)] : nil;
+        const MTLCounterResultTimestamp* stamps = static_cast<const MTLCounterResultTimestamp*>(data.bytes);
+        std::lock_guard<std::mutex> guard(this->m_lock);
+        uint64_t previousEnd = 0;
+        for (const auto& [section, first] : slot->m_passes) {
+            if (!stamps) {
+                break;
+            }
+            uint64_t start = stamps[first].timestamp;
+            uint64_t end = stamps[first + 1].timestamp;
+            if (start == MTLCounterErrorValue || end == MTLCounterErrorValue || end < start) {
+                continue;
+            }
+            uint64_t from = std::max(start, previousEnd);
+            previousEnd = std::max(previousEnd, end);
+            this->m_totals[section] += (end > from ? end - from : 0) * this->m_nanosecondsPerTick * 1e-6;
+        }
+        slot->m_busy = false;
+    }
+
+    // Called once per presented frame
+    void EndFrame() {
+        std::lock_guard<std::mutex> guard(this->m_lock);
+        this->m_frames++;
+        double now = NowSeconds();
+        if (this->m_windowStart == 0.0) {
+            this->m_windowStart = now;
+        }
+        if (now - this->m_windowStart < 5.0) {
+            return;
+        }
+        std::vector<std::pair<double, std::string>> sorted;
+        double sum = 0.0;
+        for (const auto& [name, ms] : this->m_totals) {
+            sorted.emplace_back(ms / this->m_frames, name);
+            sum += ms / this->m_frames;
+        }
+        std::sort(sorted.rbegin(), sorted.rend());
+        std::string line;
+        for (const auto& [ms, name] : sorted) {
+            char text[96];
+            snprintf(text, sizeof(text), ", %s %.2f", name.c_str(), ms);
+            line += text;
+        }
+        fprintf(stderr, "gpuprofile: %u frames, passes %.2f ms per frame%s\n", this->m_frames, sum, line.c_str());
+        this->m_totals.clear();
+        this->m_frames = 0;
+        this->m_windowStart = now;
+    }
+};
+
+bool Context::ProfilePass(void* descriptor, int32_t kind, const char* name) {
+    if (!this->m_profile || !descriptor) {
+        return false;
+    }
+    if (kind == 0) {
+        this->m_profile->Attach((__bridge MTLRenderPassDescriptor*)descriptor, name);
+        return true;
+    }
+    NSUInteger first = this->m_profile->Reserve(name);
+    if (first == NSNotFound) {
+        return true;
+    }
+    if (kind == 1) {
+        MTLComputePassSampleBufferAttachmentDescriptor* attachment = ((__bridge MTLComputePassDescriptor*)descriptor).sampleBufferAttachments[0];
+        attachment.sampleBuffer = this->m_profile->Samples();
+        attachment.startOfEncoderSampleIndex = first;
+        attachment.endOfEncoderSampleIndex = first + 1;
+    } else {
+        MTLBlitPassSampleBufferAttachmentDescriptor* attachment = ((__bridge MTLBlitPassDescriptor*)descriptor).sampleBufferAttachments[0];
+        attachment.sampleBuffer = this->m_profile->Samples();
+        attachment.startOfEncoderSampleIndex = first;
+        attachment.endOfEncoderSampleIndex = first + 1;
+    }
+    return true;
+}
+
+void Context::SetProfileSection(const char* name) {
+    if (!this->m_profile || name == this->m_section) {
+        return;
+    }
+    // The next draw begins a pass of its own under the new name
+    if (this->m_render) {
+        [this->m_render endEncoding];
+        this->m_render = nil;
+    }
+    this->m_section = name;
+}
+
 // Lifetime
 
 Context::Context() {
     if (getenv("WRATHMODERN_FRAMESTATS")) {
         this->m_stats = new FrameStats();
+    }
+    if (getenv("WRATHMODERN_GPU_PROFILE")) {
+        this->m_profile = new GpuProfile();
     }
 }
 
@@ -129,6 +347,9 @@ Context::~Context() {
 
 bool Context::Init(id<MTLDevice> device) {
     this->m_device = device;
+    if (this->m_profile && !this->m_profile->Init(device)) {
+        this->m_profile = nullptr;
+    }
     this->m_queue = [device newCommandQueueWithMaxCommandBufferCount:64];
     if (!this->m_queue) {
         return false;
@@ -236,6 +457,9 @@ id<MTLCommandBuffer> Context::Commands() {
         }
         this->m_commands = [this->m_queue commandBuffer];
         this->m_commands.label = @"Gx frame";
+        if (this->m_profile) {
+            this->m_profile->BeginBuffer(this->m_commands);
+        }
     }
 
     return this->m_commands;
@@ -505,7 +729,12 @@ bool Context::BeginPass() {
         pass.visibilityResultBuffer = this->m_visibility;
     }
 
-    this->m_render = [this->Commands() renderCommandEncoderWithDescriptor:pass];
+    id<MTLCommandBuffer> commands = this->Commands();
+    if (this->m_profile) {
+        this->m_profile->Attach(pass, this->m_section);
+    }
+
+    this->m_render = [commands renderCommandEncoderWithDescriptor:pass];
     if (!this->m_render) {
         return false;
     }
@@ -688,7 +917,15 @@ bool Context::Stretch(const Target& source, const Rect* sourceRect, const Target
     id<MTLTexture> destMetal = destTexture->m_samples > 1 ? destTexture->m_texture : destTexture->m_texture;
 
     if (sameSize && destTexture->m_samples == 1 && sourceTexture->m_format.m_pixelFormat == destTexture->m_format.m_pixelFormat) {
-        id<MTLBlitCommandEncoder> blit = this->InlineBlit();
+        id<MTLBlitCommandEncoder> blit = nil;
+        MTLBlitPassDescriptor* timed = this->m_profile ? this->m_profile->BlitPass("copy (blit)") : nil;
+        if (timed) {
+            this->EndEncoders();
+            blit = [this->Commands() blitCommandEncoderWithDescriptor:timed];
+            this->m_blit = blit;
+        } else {
+            blit = this->InlineBlit();
+        }
         [blit copyFromTexture:sourceMetal sourceSlice:source.m_face sourceLevel:source.m_level sourceOrigin:MTLOriginMake(from.left, from.top, 0) sourceSize:MTLSizeMake(width, height, 1) toTexture:destMetal destinationSlice:dest.m_face destinationLevel:dest.m_level destinationOrigin:MTLOriginMake(to.left, to.top, 0)];
     } else {
         // Scale (or convert) by drawing the source over the destination rectangle
@@ -717,7 +954,11 @@ bool Context::Stretch(const Target& source, const Rect* sourceRect, const Target
         float clipRect[4] = { to.left / static_cast<float>(destWidth) * 2.0f - 1.0f, 1.0f - to.top / static_cast<float>(destHeight) * 2.0f, to.right / static_cast<float>(destWidth) * 2.0f - 1.0f, 1.0f - to.bottom / static_cast<float>(destHeight) * 2.0f };
         float depth = 0.0f;
 
-        id<MTLRenderCommandEncoder> encoder = [this->Commands() renderCommandEncoderWithDescriptor:pass];
+        id<MTLCommandBuffer> commands = this->Commands();
+        if (this->m_profile) {
+            this->m_profile->Attach(pass, "copy (quad)");
+        }
+        id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
         [encoder setRenderPipelineState:pipeline];
         [encoder setVertexBytes:clipRect length:sizeof(clipRect) atIndex:0];
         [encoder setVertexBytes:&depth length:sizeof(depth) atIndex:1];
@@ -919,6 +1160,10 @@ void Context::SetGammaRamp(const uint16_t* red, const uint16_t* green, const uin
 }
 
 void Context::Present(Texture* backBuffer) {
+    if (this->m_profile) {
+        this->m_profile->EndFrame();
+        this->m_section = "other";
+    }
     this->ExecutePendingClears();
     this->EndEncoders();
 

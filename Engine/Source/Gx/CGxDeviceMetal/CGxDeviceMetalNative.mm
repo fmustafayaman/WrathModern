@@ -3354,6 +3354,19 @@ void GxMetalForceDepthWrite(bool force) {
     }
 }
 
+void GxMetalProfileSection(const char* name) {
+    CGxDeviceMetalNative* device = dynamic_cast<CGxDeviceMetalNative*>(g_theGxDevicePtr);
+
+    if (device && device->m_metal) {
+        device->m_metal->SetProfileSection(name);
+    }
+}
+
+int32_t GxMetalProfilePass(void* descriptor, int32_t kind, const char* name) {
+    CGxDeviceMetalNative* device = dynamic_cast<CGxDeviceMetalNative*>(g_theGxDevicePtr);
+    return device && device->m_metal && device->m_metal->ProfilePass(descriptor, kind, name) ? 1 : 0;
+}
+
 void* GxMetalNativeDevice() {
     CGxDeviceMetalNative* device = dynamic_cast<CGxDeviceMetalNative*>(g_theGxDevicePtr);
     return device && device->m_metal ? (__bridge void*)device->m_metal->m_device : nullptr;

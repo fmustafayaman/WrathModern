@@ -98,11 +98,18 @@ class Context {
     // Unbound samplers read opaque black of the kind the function expects
     id<MTLTexture> DummyTexture(SamplerKind kind) const;
 
+    // GPU profile (WRATHMODERN_GPU_PROFILE=1): passes begun after this call are timed under name until the next
+    // call, which ends the open pass so the sections do not share one. Splitting passes adds a load and store of
+    // the targets per section, so the sum is a little higher than the unprofiled frame.
+    void SetProfileSection(const char* name);
+    bool ProfilePass(void* descriptor, int32_t kind, const char* name);
+
     id<MTLDevice> m_device = nil;
     id<MTLCommandQueue> m_queue = nil;
 
     private:
     struct FrameStats;
+    struct GpuProfile;
 
     id<MTLRenderPipelineState> UtilityPipeline(uint64_t key, NSString* fragment, MTLPixelFormat color, MTLPixelFormat depth, uint32_t samples, bool writeColor);
     bool BeginPass();
@@ -118,6 +125,8 @@ class Context {
     UploadHeap m_uploads;
     dispatch_semaphore_t m_inFlight = nullptr;
     FrameStats* m_stats = nullptr;
+    GpuProfile* m_profile = nullptr;
+    const char* m_section = "other";
 
     // Command buffers of the current serial, and the encoder open in the render command buffer
     id<MTLCommandBuffer> m_commands = nil;

@@ -172,6 +172,7 @@ void CWorldScene::Render(const C3Vector& cameraPos, float time) {
     }
 
     GxSceneClear(3, clearColor);
+    GxMetalProfileSection("sky");
     CWorldScene::s_unk_B2EB68.Render();
 
     if (CWorldScene::camTargetEntity) {
@@ -191,11 +192,15 @@ void CWorldScene::Render(const C3Vector& cameraPos, float time) {
     }
 
     CGUnit_C::UpdateMissileTrajectoryTargeting();
+    GxMetalProfileSection("shadows");
     CShadowQuery::Update();
     CShaderEffect::UpdateProjMatrix();
     CWorldScene::ApplyFogState();
+    GxMetalProfileSection("terrain");
     CWorldScene::RenderChunks();
+    GxMetalProfileSection("wmo");
     CWorldScene::RenderMapObjDefGroups();
+    GxMetalProfileSection("horizon");
     CWorldScene::RenderHorizon();
 
     if (CWorldScene::s_unk_ADF570.m_maxViewDepth >= 0.0f) {
@@ -218,7 +223,9 @@ void CWorldScene::Render(const C3Vector& cameraPos, float time) {
         }
     }
 
+    GxMetalProfileSection("entities");
     CWorldScene::RenderEntitys();
+    GxMetalProfileSection("liquid prep");
     Liquid::UpdateProceduralTextures();
     CWorldScene::PrepareLiquidInstances();
 

@@ -1768,6 +1768,7 @@ void CGWorldFrame::OnWorldRender() {
 
     scene->SetFloat18(-CWorld::s_unk_CD7758);
     scene->m_passMask = CWorld::m_M2PassMask;
+    GxMetalProfileSection("m2 opaque");
     scene->Draw(M2PASS_0);
     WRATHMODERN_MOD_HOOK(WM_HOOK_AFTER_OPAQUE);
 
@@ -1775,11 +1776,14 @@ void CGWorldFrame::OnWorldRender() {
         DrawSpellCursorShadow(0x200122);
     }
 
+    GxMetalProfileSection("draw list 0");
     GxuSortDrawList(GxuCat_0, GxuSort_VtxStream, *World::GetCamPos());
     GxuFlushDrawList(GxuCat_0, *World::GetCamPos());
+    GxMetalProfileSection("ground effects");
     CWorldScene::RenderDetailDoodads();
     WRATHMODERN_MOD_HOOK(WM_HOOK_BEFORE_LIQUIDS);
 
+    GxMetalProfileSection("liquids, m2 alpha, weather");
     if (World::SceneCamLiquidStatus(nullptr)) {
         CWorldScene::RenderBarriers(this->m_elapsedSec);
         scene->Draw(M2PASS_1);
@@ -1798,6 +1802,7 @@ void CGWorldFrame::OnWorldRender() {
         DrawSpellCursorShadow(0x20000);
     }
 
+    GxMetalProfileSection("spells, particles");
     SpellVisualsTick();
     SpellVisualsRender();
     CGUnit_C::RenderMissileTrajectoryTargetingTexture();
@@ -1806,8 +1811,10 @@ void CGWorldFrame::OnWorldRender() {
     GxuSortDrawList(GxuCat_1, GxuSort_B2F, *World::GetCamPos());
     GxuFlushDrawList(GxuCat_1, *World::GetCamPos());
     WRATHMODERN_MOD_HOOK(WM_HOOK_BEFORE_GLARES);
+    GxMetalProfileSection("glares");
     DayNight::RenderGlares();
     PlayerNameUpdateLate();
+    GxMetalProfileSection("after world");
 
     if (CWorld::enables & 0x20000000) {
         GxMasterEnableSet(GxMasterEnable_PolygonFill, 1);
@@ -2131,11 +2138,13 @@ void CGWorldFrame::RenderWorld(void* param) {
     WRATHMODERN_MOD_HOOK(WM_HOOK_WORLD_BEGIN);
     worldFrame->OnWorldRender();
     WRATHMODERN_MOD_HOOK(WM_HOOK_WORLD_END);
+    GxMetalProfileSection("world text");
     WorldTextRenderBatch();
 
     g_theGxDevicePtr->XformSetProjection(projection);
     g_theGxDevicePtr->XformSetView(view);
     CShaderEffect::UpdateProjMatrix();
+    GxMetalProfileSection("interface");
 }
 
 // VERIFY: 3e6634ba auto

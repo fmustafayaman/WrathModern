@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include "log.h"
+#include "Engine/Source/Gx/Gx.h"
 
 namespace
 {
@@ -196,7 +197,11 @@ Profiler& Instance()
 id<MTLRenderCommandEncoder> ProfiledRenderEncoder(id<MTLCommandBuffer> commands, MTLRenderPassDescriptor* pass, const char* name)
 {
     Profiler& p = Instance();
-    if (p.enabled && p.Prepare(commands.device))
+    // With the client's profile on (WRATHMODERN_GPU_PROFILE), the pass is timed on the client's timeline instead
+    if (GxMetalProfilePass((__bridge void*)pass, 0, name))
+    {
+    }
+    else if (p.enabled && p.Prepare(commands.device))
     {
         Frame* frame = p.FrameOf(commands);
         NSUInteger first = p.Reserve(frame, name);
@@ -219,7 +224,10 @@ id<MTLComputeCommandEncoder> ProfiledComputeEncoder(id<MTLCommandBuffer> command
 {
     MTLComputePassDescriptor* pass = [MTLComputePassDescriptor computePassDescriptor];
     Profiler& p = Instance();
-    if (p.enabled && p.Prepare(commands.device))
+    if (GxMetalProfilePass((__bridge void*)pass, 1, name))
+    {
+    }
+    else if (p.enabled && p.Prepare(commands.device))
     {
         Frame* frame = p.FrameOf(commands);
         NSUInteger first = p.Reserve(frame, name);
@@ -239,7 +247,10 @@ id<MTLBlitCommandEncoder> ProfiledBlitEncoder(id<MTLCommandBuffer> commands, con
 {
     MTLBlitPassDescriptor* pass = [MTLBlitPassDescriptor blitPassDescriptor];
     Profiler& p = Instance();
-    if (p.enabled && p.Prepare(commands.device))
+    if (GxMetalProfilePass((__bridge void*)pass, 2, name))
+    {
+    }
+    else if (p.enabled && p.Prepare(commands.device))
     {
         Frame* frame = p.FrameOf(commands);
         NSUInteger first = p.Reserve(frame, name);
