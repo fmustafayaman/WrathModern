@@ -51,6 +51,9 @@ int32_t IsStillLoading();
 void LoadingScreenAsyncCallback(float progress, void* param);
 bool LoadingScreenDrawing();
 void LoadingScreenDisable();
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+void LoadingScreenSettle();
+#endif
 void LoadingScreenEnableShipLeg(int32_t entryId, uint32_t leg);
 void LoadingScreenEnable(int32_t mapID, bool loadingWorld);
 void LoadingScreenEnableShip(uint32_t transportEntry, int32_t transportMap, int32_t mapID);

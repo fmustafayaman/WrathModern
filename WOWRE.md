@@ -527,6 +527,20 @@ taşınabilir C++ olarak aynen alınır. Ayar dosyası `Mods/CoAVolFog.ini` (ayn
   başlıyor (`m_start` 11364, `m_count` 6, tampon 11364 indeks) → tampon dışı okuma. Cihaz artık tampona sığmayan
   indeksli çizimi atlıyor; tur 0 doğrulama hatası (`build/autotest/feat6`). Yığını bulmak için:
   `MTL_DEBUG_LAYER_ERROR_MODE=assert` + autotest'in ikilisini `lldb -b -o run -k bt` ile çalıştırmak.
+- Yükleme sonrası takılma: yükleme ekranı kalkınca ilk dünya karesi ~440 ms (`CMap::PreUpdateAreas` 256 ms + eklenti
+  Lua'sı) ve birkaç sarsıntı. `LoadingScreenSettle` (`WRATHMODERN_CLIENT_PATCHES`, `CGPlayer_C` giriş yolunda):
+  yükleme katmanı saydam işaretlenir (altında dünya güncellenir/çizilir, katman ekranı temizleyip örter), 30 kararlı
+  kare (<22 ms) ya da 4 sn sonra kalkar. Not: `elapsedSec` ilk boyamada tüm yükleme süresini taşır.
+- framestats artık ekrana ulaşanı ölçer (`addPresentedHandler`): pencere satırında `shown / missed refreshes /
+  dropped`, her geç gösterimde `shown late`. "long frame … drawable N ms" satırları çoğu zaman yalnızca geri
+  basınçtır (3 drawable dolu); görünür kayıp için `missed refreshes`e bak. `MTL_DEBUG_LAYER` açıkken ~42 fps olur,
+  performans ölçümünde kapat.
+- Sonuç (Stormwind, giriş + 2 dk dönen kamera, vsync, tam ayarlar): yükleme ekranı kalktıktan sonra 0 kaçırılmış
+  yenileme; ilk ~10 sn'de 1–3 tek kare: Questie'nin kendi C_Timer işi (`Questie-335/Compat/Compat.lua:145`, ~50 ms,
+  üçüncü taraf eklenti) ve ara sıra 18–19 ms'lik bir GPU tamponu. Vsync'siz aynı yer 7.8 ms/kare.
+- **Kalınan yer (2026-10-22):** oynanabilir; Release paketi git.vmyaman.com'da (WowRe dalı, release eki). Sıradaki:
+  ara sıra 18–19 ms GPU karesinin kaynağı (gölge bandı hücre değişimi şüphesi; `COAVOLFOG_GPU_PROFILE` ile
+  eşleştir), Questie başlangıç işi için yapılabilecek bir şey var mı (eklentiye dokunmadan).
 
 **Dilim 7 (su) tasarımı (2026-10-21):**
 - Orijinal: sıvı geçişini sarar (`0x790AA2` → `Liquid::CRenderer::Flush(camera, 1)`), her su çizimini

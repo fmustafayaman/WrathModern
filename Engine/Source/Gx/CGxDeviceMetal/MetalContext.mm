@@ -101,6 +101,11 @@ struct Context::FrameStats {
     uint32_t m_frameCompilesStart = 0;
     std::atomic<uint64_t> m_gpuNanoseconds { 0 };
     std::atomic<uint32_t> m_gpuBuffers { 0 };
+    // What reached the display: drawables shown, refreshes that showed no new frame, drawables never shown
+    std::atomic<double> m_lastPresented { 0.0 };
+    std::atomic<uint32_t> m_presented { 0 };
+    std::atomic<uint32_t> m_missedRefreshes { 0 };
+    std::atomic<uint32_t> m_dropped { 0 };
 };
 
 // Lifetime
@@ -954,6 +959,25 @@ void Context::Present(Texture* backBuffer) {
                 [encoder endEncoding];
             }
 
+            if (FrameStats* stats = this->m_stats) {
+                // A refresh is 1/60 s with vsync (the window's display runs at 60 Hz); a gap of more than one
+                // and a half refreshes between shown frames is a frame the player saw twice
+                [drawable addPresentedHandler:^(id<MTLDrawable> shown) {
+                    double time = shown.presentedTime;
+                    if (time <= 0.0) {
+                        stats->m_dropped++;
+                        return;
+                    }
+                    double last = stats->m_lastPresented.exchange(time);
+                    stats->m_presented++;
+                    double gap = time - last;
+                    if (last > 0.0 && gap > 1.5 / 60.0 && gap < 1.0) {
+                        stats->m_missedRefreshes += static_cast<uint32_t>(gap * 60.0 + 0.5) - 1;
+                        fprintf(stderr, "framestats shown late: %.1f ms since the last frame shown\n", gap * 1e3);
+                    }
+                }];
+            }
+
             [this->Commands() presentDrawable:drawable];
         }
     }
@@ -994,7 +1018,7 @@ void Context::UpdateFrameStats() {
         time_t clock = time(nullptr);
         char stamp[16] = {};
         strftime(stamp, sizeof(stamp), "%H:%M:%S", localtime(&clock));
-        fprintf(stderr, "framestats %s: %u frames, wall %.2f ms, cpu %.2f ms, blocked %.2f ms, gpu %.2f ms (%u buffers)\n", stamp, stats->m_frames, stats->m_wall / frames * 1e3, (stats->m_wall - stats->m_blocked) / frames * 1e3, stats->m_blocked / frames * 1e3, gpu * 1e-6 / frames, buffers);
+        fprintf(stderr, "framestats %s: %u frames, wall %.2f ms, cpu %.2f ms, blocked %.2f ms, gpu %.2f ms (%u buffers), shown %u, missed refreshes %u, dropped %u\n", stamp, stats->m_frames, stats->m_wall / frames * 1e3, (stats->m_wall - stats->m_blocked) / frames * 1e3, stats->m_blocked / frames * 1e3, gpu * 1e-6 / frames, buffers, stats->m_presented.exchange(0), stats->m_missedRefreshes.exchange(0), stats->m_dropped.exchange(0));
         stats->m_frames = 0;
         stats->m_wall = 0.0;
         stats->m_blocked = 0.0;

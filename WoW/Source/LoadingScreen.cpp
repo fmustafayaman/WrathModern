@@ -336,6 +336,54 @@ bool LoadingScreenDrawing() {
     return s_loadingScreenLayer != nullptr;
 }
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+// The first world frames after a load still build the map areas around the camera (a few hundred
+// milliseconds on one frame) and stutter for a moment after; the loading screen stays up over them
+// until the frames are steady, or for a few seconds at most
+static constexpr float kSettleSteadyFrameSeconds = 0.022f;
+static constexpr uint32_t kSettleSteadyFrames = 30;
+static constexpr float kSettleMaxSeconds = 4.0f;
+static bool s_settling;
+static float s_settleSeconds;
+static uint32_t s_settleSteadyFrames;
+
+void LoadingScreenSettle() {
+    if (!s_loadingScreenLayer) {
+        return;
+    }
+
+    // Marked transparent so the world frame below is updated and drawn; the loading screen still clears
+    // the screen and covers it
+    ScrnLayerSetFlags(s_loadingScreenLayer, ScrnLayerGetFlags(s_loadingScreenLayer) | 0x1);
+    s_settling = true;
+    s_settleSeconds = -1.0f;
+    s_settleSteadyFrames = 0;
+}
+
+// Counts the frame; true once the loading screen has been taken down
+static bool LoadingScreenSettleFrame(float elapsedSec) {
+    if (!s_settling) {
+        return false;
+    }
+
+    // The first paint's time is the load itself
+    if (s_settleSeconds < 0.0f) {
+        s_settleSeconds = 0.0f;
+        return false;
+    }
+
+    s_settleSeconds += elapsedSec;
+    s_settleSteadyFrames = elapsedSec < kSettleSteadyFrameSeconds ? s_settleSteadyFrames + 1 : 0;
+
+    if (s_settleSteadyFrames < kSettleSteadyFrames && s_settleSeconds < kSettleMaxSeconds) {
+        return false;
+    }
+
+    LoadingScreenDisable();
+    return true;
+}
+#endif
+
 // VERIFY: aa7cf797 auto
 // OFFSET: 0x00407EA0
 void LoadingScreenSetTransparent(bool transparent) {
@@ -545,6 +593,12 @@ int32_t IsStillLoading() {
 // VERIFY: ebee3807 manual
 // OFFSET: 0x0040A270
 static void LoadingScreenPaint(void* param, const RECTF* rect, const RECTF* visible, float elapsedSec) {
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    if (LoadingScreenSettleFrame(elapsedSec)) {
+        return;
+    }
+#endif
+
     if (!GxHasContext() || !GxIsWindowVisible() || (s_progress > 0.99f && !IsStillLoading())) {
         return;
     }
@@ -699,6 +753,10 @@ void LoadingScreenSpellUpdateProgress(float progress) {
 // VERIFY: 2d94348d manual
 // OFFSET: 0x0040AB70
 void LoadingScreenEnable(int32_t mapID, bool loadingWorld) {
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    s_settling = false;
+#endif
+
     CGGameUI::SetAspect();
 
     if (s_gameTip) {
@@ -816,6 +874,10 @@ static void ClearDynamicData() {
 // VERIFY: 2116833b manual
 // OFFSET: 0x00409550
 void LoadingScreenDisable() {
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    s_settling = false;
+#endif
+
     if (s_loadingScreenLayer) {
         HandleClose(reinterpret_cast<HOBJECT>(s_loadingScreenLayer));
     }

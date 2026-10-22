@@ -3114,7 +3114,11 @@ void CGPlayer_C::PostInitActivePlayer() {
     } else if (this->GetTransportGUID()) {
         LoadingScreenSetTransparent(true);
     } else {
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+        LoadingScreenSettle();
+#else
         LoadingScreenDisable();
+#endif
     }
 
     Spell_C_SetPlayerClass(this->m_unit->m_unitFieldBytes0[1]);
