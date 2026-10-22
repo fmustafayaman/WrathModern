@@ -203,15 +203,13 @@ Texture* Texture::CreateTarget(Context* context, const FormatInfo& format, uint3
 
     MTLTextureDescriptor* descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format.m_pixelFormat width:width height:height mipmapped:NO];
     descriptor.storageMode = MTLStorageModePrivate;
-    // Depth stays shader readable so code drawing with Metal itself (mods) can sample it
+    // Targets stay shader readable, multisampled ones too, so code drawing with Metal itself (mods) can read
+    // the frame without resolving its attachments
     descriptor.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
 
     if (samples > 1) {
         descriptor.textureType = MTLTextureType2DMultisample;
         descriptor.sampleCount = samples;
-        if (!format.m_depth) {
-            descriptor.usage = MTLTextureUsageRenderTarget;
-        }
     }
 
     id<MTLTexture> texture = [context->m_device newTextureWithDescriptor:descriptor];

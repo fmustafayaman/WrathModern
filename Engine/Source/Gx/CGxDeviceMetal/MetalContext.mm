@@ -199,7 +199,11 @@ void Context::SetLayer(CAMetalLayer* layer) {
 }
 
 void Context::SetVSync(bool vsync) {
-    this->m_vsync = vsync;
+    // Testing only (Tools/autotest.sh): WRATHMODERN_NO_VSYNC=1 lets frames run as fast as the GPU draws them,
+    // so the frame time measures the GPU's work
+    static const bool s_noVSync = getenv("WRATHMODERN_NO_VSYNC") != nullptr;
+    this->m_vsync = vsync && !s_noVSync;
+    vsync = this->m_vsync;
 
     if (this->m_layer) {
         this->m_layer.displaySyncEnabled = vsync;
@@ -967,7 +971,10 @@ void Context::UpdateFrameStats() {
         uint32_t buffers = stats->m_gpuBuffers.exchange(0);
         uint64_t gpu = stats->m_gpuNanoseconds.exchange(0);
         double frames = stats->m_frames;
-        fprintf(stderr, "framestats: %u frames, wall %.2f ms, cpu %.2f ms, blocked %.2f ms, gpu %.2f ms (%u buffers)\n", stats->m_frames, stats->m_wall / frames * 1e3, (stats->m_wall - stats->m_blocked) / frames * 1e3, stats->m_blocked / frames * 1e3, gpu * 1e-6 / frames, buffers);
+        time_t clock = time(nullptr);
+        char stamp[16] = {};
+        strftime(stamp, sizeof(stamp), "%H:%M:%S", localtime(&clock));
+        fprintf(stderr, "framestats %s: %u frames, wall %.2f ms, cpu %.2f ms, blocked %.2f ms, gpu %.2f ms (%u buffers)\n", stamp, stats->m_frames, stats->m_wall / frames * 1e3, (stats->m_wall - stats->m_blocked) / frames * 1e3, stats->m_blocked / frames * 1e3, gpu * 1e-6 / frames, buffers);
         stats->m_frames = 0;
         stats->m_wall = 0.0;
         stats->m_blocked = 0.0;
