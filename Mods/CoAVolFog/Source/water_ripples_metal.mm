@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include "gpu_profile.h"
 #include "log.h"
 
 namespace
@@ -130,8 +131,7 @@ void WaterRipples::ClearMaps(id<MTLCommandBuffer> commands)
         pass.colorAttachments[0].loadAction = MTLLoadActionClear;
         pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
         pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-        id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
-        encoder.label = @"CoAVolFog ripple clear";
+        id<MTLRenderCommandEncoder> encoder = ProfiledRenderEncoder(commands, pass, "CoAVolFog ripple clear");
         [encoder endEncoding];
     }
     m_mapsCleared = true;
@@ -204,8 +204,7 @@ void WaterRipples::Step(id<MTLCommandBuffer> commands, const float centre[2], co
     pass.colorAttachments[0].texture = m_maps[1 - m_current];
     pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-    id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
-    encoder.label = @"CoAVolFog ripple step";
+    id<MTLRenderCommandEncoder> encoder = ProfiledRenderEncoder(commands, pass, "CoAVolFog ripple step");
     [encoder setRenderPipelineState:m_step];
     [encoder setFragmentBytes:constants length:sizeof(constants) atIndex:0];
     [encoder setFragmentTexture:m_maps[m_current] atIndex:0];

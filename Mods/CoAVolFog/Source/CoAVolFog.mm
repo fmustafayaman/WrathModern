@@ -158,6 +158,7 @@ int LuaSet(lua_State* L)
     if (!key || !SetSetting(s.config, key, static_cast<float>(lua_tonumber(L, 2)), applied))
         return 0;
     LogSetLevel(s.config.logLevel);
+    VF_LOG_DEBUG("setting %s = %g", key, applied);
     lua_pushnumber(L, applied);
     return 1;
 }

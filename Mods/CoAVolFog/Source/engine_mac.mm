@@ -285,4 +285,16 @@ void BuildWaterInputs(WaterInputs& out)
     }
 }
 
+bool WaterQueued()
+{
+    Liquid::CRenderer* renderer = CWorldScene::s_liquidRenderer;
+    if (!renderer)
+        return false;
+    TSGrowableArray<Liquid::CInstance*>& instances = renderer->m_instances[1];
+    for (uint32_t i = 0; i < instances.Count(); ++i)
+        if (instances.m_data[i] && ClassifyWaterSettings(instances.m_data[i]->m_settings) != WaterClass::None)
+            return true;
+    return false;
+}
+
 }

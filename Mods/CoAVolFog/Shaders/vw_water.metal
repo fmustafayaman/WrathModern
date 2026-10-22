@@ -396,6 +396,40 @@ fragment float4 vw_depth_ms(Varyings in [[stage_in]], constant float4* C [[buffe
     return float4(common.LinearDepth(DepthAt(depth, pixel)));
 }
 
+// The world before the liquids in one pass: its colour (the samples averaged, as a multisample resolve) and its
+// linear depth (vw_linear_depth.hlsl, sample 0), read as textures instead of resolving the frame's attachments
+struct SceneCopy
+{
+    float4 colour [[color(0)]];
+    float4 depth [[color(1)]];
+};
+
+fragment SceneCopy vw_scene_copy(Varyings in [[stage_in]], constant float4* C [[buffer(0)]],
+                                 depth2d<float> depth [[texture(0)]], texture2d<float> colour [[texture(1)]])
+{
+    Common common = {C};
+    float2 pixel = common.ViewportOrigin() + in.position.xy;
+    SceneCopy out;
+    out.colour = colour.read(uint2(pixel));
+    out.depth = float4(common.LinearDepth(DepthAt(depth, pixel)));
+    return out;
+}
+
+fragment SceneCopy vw_scene_copy_ms(Varyings in [[stage_in]], constant float4* C [[buffer(0)]],
+                                    depth2d_ms<float> depth [[texture(0)]], texture2d_ms<float> colour [[texture(1)]])
+{
+    Common common = {C};
+    float2 pixel = common.ViewportOrigin() + in.position.xy;
+    uint samples = colour.get_num_samples();
+    float4 sum = 0;
+    for (uint s = 0; s < samples; ++s)
+        sum += colour.read(uint2(pixel), s);
+    SceneCopy out;
+    out.colour = sum / samples;
+    out.depth = float4(common.LinearDepth(DepthAt(depth, pixel)));
+    return out;
+}
+
 // ---- vw_constants.hlsli ----
 
 #define cLight C[9]

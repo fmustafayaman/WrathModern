@@ -16,6 +16,7 @@
 #include <string>
 #include "WMModAPI.h"
 #include "engine.h"
+#include "gpu_profile.h"
 #include "log.h"
 #include "noise_volume.h"
 #include "vf_fog_source.h"
@@ -38,6 +39,7 @@ constexpr float kRayDecay = 0.9f;
 constexpr int kRayTaps = 8;
 constexpr float kHistoryMaxMove = 30.0f;
 constexpr float kHistoryMinForwardDot = 0.70710678f;
+constexpr double kDesignHeight = 1080.0;
 
 struct Float4
 {
@@ -255,14 +257,12 @@ struct FogRenderer::Impl
             pass.colorAttachments[0].resolveTexture = sceneCopy;
             pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
             pass.colorAttachments[0].storeAction = MTLStoreActionStoreAndMultisampleResolve;
-            id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
-            encoder.label = @"CoAVolFog scene copy";
+            id<MTLRenderCommandEncoder> encoder = ProfiledRenderEncoder(commands, pass, "CoAVolFog scene copy");
             [encoder endEncoding];
         }
         else
         {
-            id<MTLBlitCommandEncoder> blit = [commands blitCommandEncoder];
-            blit.label = @"CoAVolFog scene copy";
+            id<MTLBlitCommandEncoder> blit = ProfiledBlitEncoder(commands, "CoAVolFog scene copy");
             [blit copyFromTexture:color toTexture:sceneCopy];
             [blit endEncoding];
         }
@@ -340,7 +340,11 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
     const bool depthMs = depth.textureType == MTLTextureType2DMultisample;
     const Viewport vp = in.viewport;
 
-    const uint32_t scale = cfg.quality == 1 ? 4u : 2u;
+    // Renderer::RenderPasses marches at 1/4 (quality 1) or 1/2 of the viewport, sizes chosen for a 1080-line
+    // display. The march keeps that density on taller outputs: the scale grows with the viewport's height so the
+    // low-resolution target stays near the original's at 1080 lines (1440 lines: 1/3, 2160: 1/4)
+    const uint32_t baseScale = cfg.quality == 1 ? 4u : 2u;
+    const uint32_t scale = std::max(baseScale, static_cast<uint32_t>(std::lround(baseScale * vp.Height / kDesignHeight)));
     const uint32_t lowW = (vp.Width + scale - 1) / scale;
     const uint32_t lowH = (vp.Height + scale - 1) / scale;
 
@@ -546,8 +550,7 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
         pass.colorAttachments[0].texture = target;
         pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
         pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-        id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
-        encoder.label = label;
+        id<MTLRenderCommandEncoder> encoder = ProfiledRenderEncoder(commands, pass, label.UTF8String);
         [encoder setRenderPipelineState:pipeline];
         bindFog(encoder, constants);
         [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
@@ -586,8 +589,7 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
             pass.colorAttachments[0].texture = impl.rays[0];
             pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
             pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-            id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
-            encoder.label = @"CoAVolFog god ray scene";
+            id<MTLRenderCommandEncoder> encoder = ProfiledRenderEncoder(commands, pass, "CoAVolFog god ray scene");
             [encoder setRenderPipelineState:downsamplePipeline];
             [encoder setFragmentTexture:impl.sceneCopy atIndex:0];
             [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
@@ -602,8 +604,7 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
             pass.colorAttachments[0].texture = impl.rays[1];
             pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
             pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-            id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
-            encoder.label = @"CoAVolFog god ray mask";
+            id<MTLRenderCommandEncoder> encoder = ProfiledRenderEncoder(commands, pass, "CoAVolFog god ray mask");
             [encoder setRenderPipelineState:rayMaskPipeline];
             bindFog(encoder, M);
             [encoder setFragmentTexture:impl.rays[0] atIndex:7];
@@ -624,8 +625,7 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
             pass.colorAttachments[0].texture = impl.rays[blurPass == 0 ? 0 : 1];
             pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
             pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-            id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
-            encoder.label = @"CoAVolFog god ray blur";
+            id<MTLRenderCommandEncoder> encoder = ProfiledRenderEncoder(commands, pass, "CoAVolFog god ray blur");
             [encoder setRenderPipelineState:rayBlurPipeline];
             [encoder setFragmentBytes:B length:sizeof(B) atIndex:0];
             [encoder setFragmentTexture:impl.rays[blurPass == 0 ? 1 : 0] atIndex:0];
@@ -648,8 +648,7 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
         pass.colorAttachments[0].texture = color;
         pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
         pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-        id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
-        encoder.label = @"CoAVolFog composite";
+        id<MTLRenderCommandEncoder> encoder = ProfiledRenderEncoder(commands, pass, "CoAVolFog composite");
         [encoder setRenderPipelineState:compositePipeline];
         bindFog(encoder, C);
         [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
@@ -675,8 +674,7 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
         pass.colorAttachments[0].texture = color;
         pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
         pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-        id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
-        encoder.label = @"CoAVolFog colour grading";
+        id<MTLRenderCommandEncoder> encoder = ProfiledRenderEncoder(commands, pass, "CoAVolFog colour grading");
         [encoder setRenderPipelineState:gradePipeline];
         [encoder setFragmentBytes:G length:sizeof(G) atIndex:0];
         [encoder setFragmentBytes:authored.gradingCurve length:sizeof(authored.gradingCurve) atIndex:1];

@@ -85,6 +85,10 @@ WaterClass ClassifyWaterSettings(const void* settings);
 // DNInfo::m_bands.m_skyColors, m_waterColors[0..1] for the ocean and [2..3] for rivers and lakes)
 void BuildWaterInputs(WaterInputs& out);
 
+// Whether the liquid pass about to be flushed (CWorldScene::s_liquidRenderer, pass 1) holds a draw of a water
+// class: without one the water's copies are skipped
+bool WaterQueued();
+
 // The current screen effect (0xD45780) is the death effect (0xB74368)
 bool GhostEffectRuns();
 

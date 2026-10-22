@@ -475,15 +475,17 @@ taşınabilir C++ olarak aynen alınır. Ayar dosyası `Mods/CoAVolFog.ini` (ayn
   `world-4`): ayak çevresinde belirgin halka ↔ düz su. `build/autotest/w-rip3`: Metal doğrulaması 0 hata,
   log "splash and wake sprites hidden ... shown again". Kullanıcının `CoAVolFog.ini`'si her koşuda md5 ile
   korundu.
-- **Yanlış alarm (tekrar kovalamayın):** deneme için eklenen `WaterDebugView=7` (`saturate(-w.position.z)`)
-  küçük negatif z'yi 1'e doyuruyor ve tüm suyu macenta gösteriyordu. `WaterDebugView=8` ile ölçüldü:
-  `waterZ` ~5 yd, `position.z` ~0; derinlik/konum doğru. Geçici 7/8 kodları **geri alındı**; commit'te
-  `WaterDebugView` yine orijinal 0..6.
+- **DÜZELTME (2026-10-22, Claude):** yukarıdaki "yanlış alarm" notu yanlıştı. `ModHost::CaptureWorldState`
+  `CWorldScene::projMatrix`'i (= cihazın `m_projection`, istemcinin **OpenGL** projeksiyonu, P10=1.00018,
+  P14=−0.4) "Direct3D" diye veriyordu; mod bir kez daha GL'ye çevirince doğrusal derinlik ~2× çıkıyordu
+  (sis mesafeleri, su yüzeyi konumu, ripple'lar kayık). Düzeltme kaynağında: `ModHost` artık D3D formunu veriyor
+  (`d3d = (gl + w) / 2`, near 0.2). Ölçüm: su yüzeyi z ≈ −0.08 yd (önce ≤ −1), ripple diski ayağın altında.
 - **Ayar paneli:** `Source/panel.lua`'ya "Water" grubu eklendi (Water, WaterQuality, WaterWaves, WaterWind,
   WaterFoam, WaterReflections, WaterSpecular, WaterClarity, WaterZoneColors, WaterRipples,
-  WaterClientSplashes, LiquidDepth, WaterDebugView). Panel `build/autotest/panel{,2}`'de açılıyor; ancak
-  otomatik testte kaydırma çubuğunun azami değeri 0 kaldığı için Water grubu ekran görüntüsüne gelmedi — panel
-  değişikliği veri-güdümlü, tüm anahtarlar `CoAVolFog_Get`'ten geçerli dönüyor; **görsel kaydırma testi açık**.
+  WaterClientSplashes, LiquidDepth, WaterDebugView). Kaydırma çubuğu 0'da kalıyordu: `content:SetHeight` sonrası
+  `scroll:UpdateScrollChildRect()` eklendi (ve `OnShow`'da tekrar). `build/autotest/panel4` Water grubunu
+  (Wind, Foam, Reflections, Sun glint, Clarity, Zone water colours, Ripples and wakes, Keep the client's
+  splashes, Water writes depth, Debug view) kaydırılmış halde gösteriyor.
 - **God rays:** `build/autotest/rays3`/`rays4` logları `god rays drawn (strength 0.55, sun at -70, 576)`
   gösteriyor; güneş kadrajın sol kenarındayken huzmeler devreye giriyor. Tam kadraj doğrulaması hâlâ açık.
   Test tuzağı: `WRATHMODERN_TIME_OF_DAY` yalnız `DNInfo` ışık bantlarını değiştiriyor; **gökyüzü kubbesi

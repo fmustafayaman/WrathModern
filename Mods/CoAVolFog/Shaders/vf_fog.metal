@@ -70,8 +70,6 @@ constant float kNoiseCurveContrast = 20;
 constant float kNoiseCurvePivot = 0.5;
 constant float kNoiseCurveShape = (kNoiseCurveContrast - 1) / (2 - kNoiseCurveContrast);
 
-constant float kFirstQuadratureFraction = 0.2113248654;
-constant float kQuadratureFractionSpacing = 0.5773502692;
 constant float kBeyondEveryLight = 1e30;
 
 constant float kHighlightKnee = 0.8;
@@ -84,6 +82,7 @@ constant float kSameSurfaceAbsoluteDepth = 0.5;
 constant float kSameSurfaceRelativeDepth = 0.02;
 constant float kTapPlaneRelativeDepth = 0.005;
 constant float kWholeBilinearWeight = 0.999;
+constant float kNearestTapRelativeDepth = 0.1;
 constant float kMaxDisplayedMarchCurvature = 2.0 / 255;
 
 struct FogLayer
@@ -108,6 +107,20 @@ struct FogLayer
     float densityVariation;
 };
 
+// The density parameters of a fog layer the point lights' samples read (FogLayer's; limit = start when empty)
+struct LightLayer
+{
+    float start;
+    float limit;
+    float strength;
+    float exponent;
+    float upperHeight;
+    float upperFalloff;
+    float lowerHeight;
+    float lowerFalloff;
+    float densityVariation;
+};
+
 struct MarchRay
 {
     float3 viewDirection;
@@ -120,14 +133,6 @@ struct StepVariation
 {
     float distance;
     float variation;
-};
-
-struct ChordCoverage
-{
-    float nextEndpoint;
-    bool covered;
-    float firstLight;
-    float lightEnd;
 };
 
 struct LocalLight
@@ -429,37 +434,6 @@ struct Fog
         return light;
     }
 
-    static float QuadratureFraction(int sample) { return kFirstQuadratureFraction + sample * kQuadratureFractionSpacing; }
-
-    ChordCoverage ChordCoverageFrom(ChordCoverage previous, float3 viewDirection, float distanceAlongRay,
-                                    float marchLength) const
-    {
-        ChordCoverage coverage;
-        coverage.nextEndpoint = kBeyondEveryLight;
-        coverage.covered = false;
-        coverage.firstLight = previous.lightEnd;
-        coverage.lightEnd = previous.firstLight;
-        for (int index = int(previous.firstLight); index < int(previous.lightEnd); ++index)
-        {
-            float2 chord = LoadLocalLight(index, viewDirection).chord;
-            float endpoint = chord.x > distanceAlongRay ? chord.x : chord.y;
-            coverage.nextEndpoint = endpoint > distanceAlongRay ? min(coverage.nextEndpoint, endpoint)
-                                                                : coverage.nextEndpoint;
-            coverage.covered = coverage.covered || (chord.x <= distanceAlongRay && chord.y > distanceAlongRay);
-            if (chord.y > distanceAlongRay && chord.x < marchLength)
-            {
-                coverage.firstLight = min(coverage.firstLight, float(index));
-                coverage.lightEnd = float(index + 1);
-            }
-        }
-        return coverage;
-    }
-
-    static bool StepMeetsLocalLights(ChordCoverage coverage, float stepEnd)
-    {
-        return coverage.covered || coverage.nextEndpoint < stepEnd;
-    }
-
     float LayerLightDensityScale(FogLayer layer, float skyMask, float upward) const
     {
         return layer.density * SkyDensityScale(layer, skyMask, upward) * ShadowDensityScale(layer);
@@ -473,42 +447,9 @@ struct Fog
                       LayerLightDensityScale(LoadConstantFogLayer(3), skyMask, upward));
     }
 
-    bool LayerLitInStep(FogLayer layer, float stepStart, float stepEnd) const
-    {
-        float layerStart = max(stepStart, layer.start);
-        return min(stepEnd, layer.limit) - layerStart > 0 && layer.density > 0 &&
-               (LocalLightReachLimit() <= 0 || layerStart < LocalLightReachLimit());
-    }
-
-    bool4 LayersLitInStep(float stepStart, float stepEnd) const
-    {
-        return bool4(LayerLitInStep(LoadConstantFogLayer(0), stepStart, stepEnd),
-                     LayerLitInStep(LoadConstantFogLayer(1), stepStart, stepEnd),
-                     LayerLitInStep(LoadConstantFogLayer(2), stepStart, stepEnd),
-                     LayerLitInStep(LoadConstantFogLayer(3), stepStart, stepEnd));
-    }
-
-    static bool LayerCoversInterval(FogLayer layer, float2 interval)
-    {
-        return layer.start <= interval.x && layer.limit >= interval.y;
-    }
-
-    bool4 LayersCoverInterval(float2 interval) const
-    {
-        return bool4(LayerCoversInterval(LoadConstantFogLayer(0), interval),
-                     LayerCoversInterval(LoadConstantFogLayer(1), interval),
-                     LayerCoversInterval(LoadConstantFogLayer(2), interval),
-                     LayerCoversInterval(LoadConstantFogLayer(3), interval));
-    }
-
     float LayerStart(int layer) const { return LoadConstantFogLayer(clamp(layer, 0, 3)).start; }
     float LayerLimit(int layer) const { return LoadConstantFogLayer(clamp(layer, 0, 3)).limit; }
     static float4 LayerSelector(int layer) { return float4(int4(layer) == int4(0, 1, 2, 3)); }
-
-    float2 LayerIntervalWithin(float2 interval, int layer) const
-    {
-        return float2(max(interval.x, LayerStart(layer)), min(interval.y, LayerLimit(layer)));
-    }
 
     float4 DensityProfiles(MarchRay ray, float distanceAlongRay) const
     {
@@ -537,98 +478,87 @@ struct Fog
         return falloff * boundaryFade * PhaseHG(LocalLightPhaseG(), cosAngle) * density;
     }
 
-    float IntervalScattering(LocalLight light, float3 attenuation, float2 interval, float4 layerMask,
-                             float4 densityScales, MarchRay ray) const
+    // The in-scattering of the point lights along the ray: vf_local_lights.hlsli's integral (the light's falloff,
+    // boundary fade and phase times the lit layers' density, seen through the fog in front), taken per light over
+    // its chord with equi-angular samples (Kulla and Fajardo) instead of two samples in every step. The samples
+    // follow the light's inverse-square peak, so a few per light resolve what the step quadrature needed the
+    // whole march for. stepWeight holds each step's transmittance factor (its start transmittance times
+    // opacity / optical depth, as the march weighs a step's radiance).
+    // LitDensity: SampleDensity of the layers lit at a distance (inside the layer, within the lights' reach),
+    // from the layers' density parameters read once per ray (LightLayer); noise holds the authored noise
+    // densities where the light's peak lies on the ray
+    float LitDensity(MarchRay ray, float distanceAlongRay, thread const LightLayer* layers, float4 densityScales,
+                     float4 noise) const
     {
-        float quadrature = 0;
-        for (int sample = 0; sample < 2; ++sample)
+        if (LocalLightReachLimit() > 0 && distanceAlongRay >= LocalLightReachLimit())
+            return 0;
+        float height = ray.cameraHeight + ray.heightPerYard * distanceAlongRay;
+        float variation = -1;
+        float density = 0;
+        for (int j = 0; j < kFogLayers; ++j)
         {
-            float distanceAlongRay = mix(interval.x, interval.y, QuadratureFraction(sample));
-            quadrature += LightSampleScattering(light, attenuation, ray.viewDirection, distanceAlongRay,
-                                                SampleDensity(ray, distanceAlongRay, layerMask, densityScales));
+            LightLayer layer = layers[j];
+            if (!(distanceAlongRay >= layer.start && distanceAlongRay < layer.limit && densityScales[j] != 0 && noise[j] != 0))
+                continue;
+            float profile = (1 + layer.strength * pow(saturate(max(distanceAlongRay - layer.start, 0.0) /
+                                                               DistanceCurveRange()) + 1e-6, layer.exponent)) *
+                            saturate(exp((layer.upperHeight - height) * layer.upperFalloff)) *
+                            saturate(exp((height - layer.lowerHeight) * layer.lowerFalloff));
+            if (layer.densityVariation > 0)
+            {
+                if (variation < 0)
+                    variation = DensityVariationAlongRay(ray, distanceAlongRay);
+                profile *= WeightedVariation(variation, layer.densityVariation);
+            }
+            density += profile * noise[j] * densityScales[j];
         }
-        return 0.5 * quadrature * (interval.y - interval.x);
+        return density;
     }
 
-    float2 PieceInterval(int piece, float2 interval) const
+    float3 LocalLightsAlongRay(MarchRay ray, float marchLength, float jitter, thread const float* stepWeight,
+                               float4 densityScales) const
     {
-        return piece == 0 ? interval : LayerIntervalWithin(interval, piece - 1);
-    }
-
-    float4 PieceLayers(int piece, float2 interval, float2 pieceInterval, float4 litLayers) const
-    {
-        return piece == 0 ? select(float4(0), litLayers, LayersCoverInterval(interval))
-                          : (any(pieceInterval != interval) ? litLayers * LayerSelector(piece - 1) : float4(0));
-    }
-
-    float LightOwnIntervalsScattering(LocalLight light, float3 attenuation, float2 interval, bool wholeStep,
-                                      bool layerBoundaryInStep, float4 litLayers, float4 densityScales, MarchRay ray) const
-    {
-        float scattering = 0;
-        int lastPiece = layerBoundaryInStep ? kFogLayers : 0;
-        for (int piece = wholeStep ? 1 : 0; piece <= lastPiece; ++piece)
+        const int samples = max(STEPS / 8, 3);
+        LightLayer layers[kFogLayers];
+        for (int j = 0; j < kFogLayers; ++j)
         {
-            float2 pieceInterval = PieceInterval(piece, interval);
-            float4 pieceLayers = PieceLayers(piece, interval, pieceInterval, litLayers);
-            if (pieceInterval.y > pieceInterval.x && any(pieceLayers != 0))
-                scattering += IntervalScattering(light, attenuation, pieceInterval, pieceLayers, densityScales, ray);
+            FogLayer layer = LoadConstantFogLayer(j);
+            layers[j] = {layer.start, layer.density > 0 ? layer.limit : layer.start, layer.strength, layer.exponent,
+                         layer.upperHeight, layer.upperFalloff, layer.lowerHeight, layer.lowerFalloff,
+                         layer.densityVariation};
         }
-        return scattering;
-    }
-
-    static bool ChordCoversStep(float2 chord, float2 step) { return chord.x <= step.x && chord.y >= step.y; }
-
-    float3 WholeStepLightScattering(ChordCoverage coverage, float4 stepLayers, float4 densityScales, MarchRay ray,
-                                    float2 step) const
-    {
-        float first = mix(step.x, step.y, QuadratureFraction(0));
-        float second = mix(step.x, step.y, QuadratureFraction(1));
-        float atFirst = SampleDensity(ray, first, stepLayers, densityScales);
-        float atSecond = SampleDensity(ray, second, stepLayers, densityScales);
         float3 scattering = 0;
-        for (int index = int(coverage.firstLight); index < int(coverage.lightEnd); ++index)
+        for (int index = 0; index < int(LocalLightCount()); ++index)
         {
             LocalLight light = LoadLocalLight(index, ray.viewDirection);
-            if (ChordCoversStep(light.chord, step))
+            float from = max(light.chord.x, 0.0);
+            float to = min(light.chord.y, marchLength);
+            if (to <= from)
+                continue;
+            float perpendicular = sqrt(max(dot(light.position, light.position) - light.projected * light.projected, 1e-6));
+            float firstAngle = atan2(from - light.projected, perpendicular);
+            float lastAngle = atan2(to - light.projected, perpendicular);
+            float3 attenuation = LocalLightAttenuation(index);
+            float4 noise = 1;
+            if (kSamplesAuthoredNoise)
+                noise = LayerNoiseDensities(CameraPositionWorld() +
+                                            ray.directionWorld * clamp(light.projected, from, to));
+            float sum = 0;
+            for (int k = 0; k < samples; ++k)
             {
-                float3 attenuation = LocalLightAttenuation(index);
-                scattering += LocalLightColour(index) *
-                              (LightSampleScattering(light, attenuation, ray.viewDirection, first, atFirst) +
-                               LightSampleScattering(light, attenuation, ray.viewDirection, second, atSecond));
+                float angle = mix(firstAngle, lastAngle, (k + jitter) / samples);
+                float offset = perpendicular * tan(angle);
+                float distanceAlongRay = light.projected + offset;
+                float density = LitDensity(ray, distanceAlongRay, layers, densityScales, noise);
+                if (density <= 0)
+                    continue;
+                int step = clamp(int(sqrt(saturate(distanceAlongRay / marchLength)) * STEPS), 0, STEPS - 1);
+                float jacobian = (perpendicular * perpendicular + offset * offset) / perpendicular;
+                sum += LightSampleScattering(light, attenuation, ray.viewDirection, distanceAlongRay, density) *
+                       stepWeight[step] * jacobian;
             }
+            scattering += LocalLightColour(index) * sum * (lastAngle - firstAngle) / samples;
         }
-        return 0.5 * (step.y - step.x) * scattering;
-    }
-
-    float3 LocalLightScattering(ChordCoverage coverage, float4 densityScales, MarchRay ray, float stepStart,
-                                float stepEnd, float4 layerNoiseDensities) const
-    {
-        float2 step = float2(stepStart, stepEnd);
-        float4 litLayers = select(float4(0), layerNoiseDensities, LayersLitInStep(stepStart, stepEnd));
-        bool4 layersCoverStep = LayersCoverInterval(step);
-        bool layerBoundaryInStep = any(select(litLayers, float4(0), layersCoverStep) != 0);
-        bool lightCoversStep = coverage.covered;
-        float3 scattering = 0;
-        if (coverage.nextEndpoint < stepEnd || layerBoundaryInStep)
-        {
-            lightCoversStep = false;
-            for (int index = int(coverage.firstLight); index < int(coverage.lightEnd); ++index)
-            {
-                LocalLight light = LoadLocalLight(index, ray.viewDirection);
-                float2 interval = float2(max(stepStart, light.chord.x), min(stepEnd, light.chord.y));
-                bool wholeStep = ChordCoversStep(light.chord, step);
-                lightCoversStep = lightCoversStep || wholeStep;
-                float amount = 0;
-                if (interval.y > interval.x && (!wholeStep || layerBoundaryInStep))
-                    amount = LightOwnIntervalsScattering(light, LocalLightAttenuation(index), interval, wholeStep,
-                                                         layerBoundaryInStep, litLayers, densityScales, ray);
-                if (amount != 0)
-                    scattering += LocalLightColour(index) * amount;
-            }
-        }
-        float4 stepLayers = select(float4(0), litLayers, layersCoverStep);
-        if (lightCoversStep && any(stepLayers != 0))
-            scattering += WholeStepLightScattering(coverage, stepLayers, densityScales, ray, step);
         return scattering;
     }
 
@@ -726,8 +656,8 @@ struct Fog
         float upward = max(directionWorld.z, 0.0);
         float riseLevelledAtHorizon = mix(directionWorld.z, upward, horizonBlend);
         MarchRay ray = {viewDirection, directionWorld, cameraWorld.z, riseLevelledAtHorizon};
-        ChordCoverage lightCoverage = {0, false, 0, LocalLightCount()};
         float4 lightDensityScales = LayerLightDensityScales(skyMask, upward);
+        float stepWeight[STEPS];
 
         float layersEnd = LayersMarchEnd();
         float3 inScatteredRadiance = 0;
@@ -738,28 +668,31 @@ struct Fog
             float startFraction = s * stepFraction;
             float endFraction = startFraction + stepFraction;
             float stepStart = marchLength * startFraction * startFraction;
-            if (kUnrollsLayers && stepStart >= layersEnd)
+            stepWeight[s] = transmittance;
+            if (stepStart >= layersEnd)
+            {
+                for (int rest = s + 1; rest < STEPS; ++rest)
+                    stepWeight[rest] = transmittance;
                 break;
+            }
             float stepEnd = marchLength * endFraction * endFraction;
             float3 stepRadiance = 0;
             float stepOpticalDepth = 0;
             float4 noiseDensities = LayerNoiseDensities(StepSamplePosition(ray, stepStart, stepEnd, jitter));
             AccumulateLayers(noiseDensities, cosToLight, skyMask, upward, stepStart, stepEnd, jitter, ray, stepRadiance,
                              stepOpticalDepth);
-            if (kMarchesLocalLights && lightCoverage.nextEndpoint <= stepStart)
-                lightCoverage = ChordCoverageFrom(lightCoverage, viewDirection, stepStart, marchLength);
-            if (kMarchesLocalLights && StepMeetsLocalLights(lightCoverage, stepEnd))
-                stepRadiance += LocalLightScattering(lightCoverage, lightDensityScales, ray, stepStart, stepEnd,
-                                                     noiseDensities);
             if (stepOpticalDepth > 0)
             {
                 float stepOpacity = stepOpticalDepth < 1e-3
                     ? stepOpticalDepth * (1 - 0.5 * stepOpticalDepth + stepOpticalDepth * stepOpticalDepth / 6)
                     : 1 - exp(-stepOpticalDepth);
-                inScatteredRadiance += transmittance * stepRadiance * (stepOpacity / stepOpticalDepth);
+                stepWeight[s] = transmittance * (stepOpacity / stepOpticalDepth);
+                inScatteredRadiance += stepWeight[s] * stepRadiance;
                 transmittance *= 1 - stepOpacity;
             }
         }
+        if (kMarchesLocalLights)
+            inScatteredRadiance += LocalLightsAlongRay(ray, marchLength, jitter, stepWeight, lightDensityScales);
         return float4(clamp(inScatteredRadiance, float3(0), float3(65504)), 1 - transmittance);
     }
 
@@ -1068,7 +1001,32 @@ struct Fog
                     return taps.currentMarch;
             }
         }
+        float4 nearest = NearestDepthTap(pixel, depth, viewZ);
+        if (nearest.a >= 0)
+            return nearest;
         return IntegrateFogAtDepth(pixel, depth, 0.5);
+    }
+
+    // The low-resolution fog of the tap nearest in depth to the pixel, when one lies within
+    // kNearestTapRelativeDepth of it in the same depth class (a = -1 otherwise). A pixel on a thin edge whose
+    // own surface the 2x2 footprint barely misses takes it instead of a full-resolution march.
+    float4 NearestDepthTap(float2 pixel, float depth, float viewZ) const
+    {
+        float2 baseTexel = floor(FullPixelToLowResTexel(pixel));
+        float best = kNearestTapRelativeDepth;
+        float4 fog = float4(0, 0, 0, -1);
+        for (int j = 0; j < 4; j++)
+        {
+            float2 tapTexel = clamp(baseTexel + TapOffset(j), float2(0), LowResSize() - 1);
+            float tapDepth = SampleDepth(LowResTexelToFullPixel(tapTexel));
+            float difference = abs(LinearDepth(tapDepth) - viewZ) / max(viewZ, 1e-3);
+            if (SameDepthClass(depth, tapDepth) && difference <= best)
+            {
+                best = difference;
+                fog = ReadLowRes(fogTexture, tapTexel);
+            }
+        }
+        return fog;
     }
 
     float4 DepthAwareUpsample(float2 pixel, float depth, float viewZ) const

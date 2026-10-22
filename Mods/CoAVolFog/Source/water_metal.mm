@@ -17,6 +17,7 @@
 #include "engine.h"
 #include "fog_data.h"
 #include "fog_model.h"
+#include "gpu_profile.h"
 #include "log.h"
 #include "vw_water_source.h"
 #include "water_classify.h"
@@ -297,21 +298,31 @@ struct WaterRenderer::Impl
         return false;
     }
 
-    id<MTLLibrary> Library(int ssrSteps)
+    // The shading passes, compiled with fast math like the fog
+    id<MTLLibrary> Library(int ssrSteps) { return Compile(ssrSteps, false); }
+
+    // The wave simulation, checked against a double-precision reference (Tests/water_fft_check.mm): no fast math
+    id<MTLLibrary> WaveLibrary() { return Compile(kSsrSteps[0], true); }
+
+    id<MTLLibrary> Compile(int ssrSteps, bool precise)
     {
-        auto found = libraries.find(ssrSteps);
+        const int key = precise ? -1 : ssrSteps;
+        auto found = libraries.find(key);
         if (found != libraries.end())
             return found->second;
         MTLCompileOptions* options = [[MTLCompileOptions alloc] init];
         options.preprocessorMacros = @{@"SSR_STEPS" : @(ssrSteps)};
-        // The wave simulation is checked against a double-precision reference: no fast math
-        options.mathMode = MTLMathModeSafe;
-        options.mathFloatingPointFunctions = MTLMathFloatingPointFunctionsPrecise;
+        if (precise)
+        {
+            options.mathMode = MTLMathModeSafe;
+            options.mathFloatingPointFunctions = MTLMathFloatingPointFunctionsPrecise;
+        }
         NSError* error = nil;
         id<MTLLibrary> library = [device newLibraryWithSource:@(kVwWaterSource) options:options error:&error];
         if (!library)
-            VF_LOG_ERROR("water shaders (SSR %d) failed to compile: %s", ssrSteps, error.localizedDescription.UTF8String);
-        libraries[ssrSteps] = library;
+            VF_LOG_ERROR("water shaders (SSR %d%s) failed to compile: %s", ssrSteps, precise ? ", precise" : "",
+                         error.localizedDescription.UTF8String);
+        libraries[key] = library;
         return library;
     }
 
@@ -505,25 +516,47 @@ struct WaterRenderer::Impl
         return wave && wave->present[slot];
     }
 
-    // CopySceneColour: the world before the liquids, resolved when multisampled
-    void CopySceneColour(id<MTLCommandBuffer> commands, id<MTLTexture> color)
+    // CopySceneColour and CopyLinearDepth of the scene in one pass (vw_scene_copy): the colour resolved, the depth
+    // linear, both read from the frame's targets as textures
+    bool CopyScene(id<MTLCommandBuffer> commands, id<MTLTexture> color, id<MTLTexture> depth)
     {
-        if (color.sampleCount > 1)
+        id<MTLLibrary> library = Library(0);
+        const bool multisampled = color.sampleCount > 1;
+        MTLRenderPipelineDescriptor* descriptor = [[MTLRenderPipelineDescriptor alloc] init];
+        id<MTLRenderPipelineState> pipeline = nil;
+        const std::string key = std::string(multisampled ? "scene_ms" : "scene") + std::to_string(sceneColour.pixelFormat);
+        auto found = pipelines.find(key);
+        if (found != pipelines.end())
+            pipeline = found->second;
+        else if (library)
         {
-            MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
-            pass.colorAttachments[0].texture = color;
-            pass.colorAttachments[0].resolveTexture = sceneColour;
-            pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
-            pass.colorAttachments[0].storeAction = MTLStoreActionStoreAndMultisampleResolve;
-            id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
-            encoder.label = @"CoAVolFog water scene copy";
-            [encoder endEncoding];
-            return;
+            descriptor.vertexFunction = [library newFunctionWithName:@"vw_fullscreen"];
+            descriptor.fragmentFunction = [library newFunctionWithName:multisampled ? @"vw_scene_copy_ms" : @"vw_scene_copy"];
+            descriptor.colorAttachments[0].pixelFormat = sceneColour.pixelFormat;
+            descriptor.colorAttachments[1].pixelFormat = MTLPixelFormatR32Float;
+            NSError* error = nil;
+            pipeline = [device newRenderPipelineStateWithDescriptor:descriptor error:&error];
+            if (!pipeline)
+                VF_LOG_ERROR("water pipeline %s failed: %s", key.c_str(), error.localizedDescription.UTF8String);
+            pipelines[key] = pipeline;
         }
-        id<MTLBlitCommandEncoder> blit = [commands blitCommandEncoder];
-        blit.label = @"CoAVolFog water scene copy";
-        [blit copyFromTexture:color toTexture:sceneColour];
-        [blit endEncoding];
+        if (!pipeline)
+            return false;
+        MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+        pass.colorAttachments[0].texture = sceneColour;
+        pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+        pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+        pass.colorAttachments[1].texture = sceneDepth;
+        pass.colorAttachments[1].loadAction = MTLLoadActionDontCare;
+        pass.colorAttachments[1].storeAction = MTLStoreActionStore;
+        id<MTLRenderCommandEncoder> encoder = ProfiledRenderEncoder(commands, pass, "CoAVolFog water scene copy");
+        [encoder setRenderPipelineState:pipeline];
+        [encoder setFragmentBytes:constants.common length:sizeof(constants.common) atIndex:0];
+        [encoder setFragmentTexture:depth atIndex:0];
+        [encoder setFragmentTexture:color atIndex:1];
+        [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+        [encoder endEncoding];
+        return true;
     }
 
     // CopyLinearDepth: the view depth of every pixel of the world viewport (sample 0 when multisampled)
@@ -541,33 +574,13 @@ struct WaterRenderer::Impl
         pass.colorAttachments[0].texture = copy;
         pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
         pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-        id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
-        encoder.label = label;
+        id<MTLRenderCommandEncoder> encoder = ProfiledRenderEncoder(commands, pass, label.UTF8String);
         [encoder setRenderPipelineState:pipeline];
         [encoder setFragmentBytes:constants.common length:sizeof(constants.common) atIndex:0];
         [encoder setFragmentTexture:depth atIndex:0];
         [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
         [encoder endEncoding];
         return true;
-    }
-
-    // ClearWaterStencil: no pixel of the world is tagged before the liquids
-    void ClearWaterStencil(id<MTLCommandBuffer> commands, id<MTLTexture> depth)
-    {
-        MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
-        pass.depthAttachment.texture = depth;
-        pass.depthAttachment.loadAction = MTLLoadActionLoad;
-        pass.depthAttachment.storeAction = MTLStoreActionStore;
-        pass.stencilAttachment.texture = depth;
-        pass.stencilAttachment.loadAction = MTLLoadActionClear;
-        pass.stencilAttachment.clearStencil = 0;
-        pass.stencilAttachment.storeAction = MTLStoreActionStore;
-        pass.renderTargetWidth = depth.width;
-        pass.renderTargetHeight = depth.height;
-        pass.defaultRasterSampleCount = depth.sampleCount;
-        id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
-        encoder.label = @"CoAVolFog water stencil clear";
-        [encoder endEncoding];
     }
 
     bool AnyClassDrawn() const
@@ -608,7 +621,7 @@ struct WaterRenderer::Impl
         if (!attempted)
             return false;
         if (!fft)
-            fft = std::make_unique<WaterFft>(device, library);
+            fft = std::make_unique<WaterFft>(device, WaveLibrary());
         const double step = lastSeconds < 0.0 ? 0.0 : std::clamp(seconds - lastSeconds, 0.0, kMaxFoamStepSeconds);
         const bool simulated = fft->Simulate(commands, waveSettings, data->Tiles(), waveTiles, seconds, static_cast<float>(step));
         // LogWaveState
@@ -908,6 +921,8 @@ void WaterRenderer::LiquidsBegin(const WMModHost* host, const Config& cfg, const
             return impl.Skip("water shaders unavailable");
         if (!data.Loaded())
             return impl.Skip("no water data");
+        if (!engine::WaterQueued())
+            return impl.Skip("no water queued");
 
         WMFrameTargets targets = {};
         if (!host->AcquireFrameTargets(&targets) || !targets.depth)
@@ -941,13 +956,13 @@ void WaterRenderer::LiquidsBegin(const WMModHost* host, const Config& cfg, const
 
         impl.data = &data;
         impl.EnsureMasks();
-        impl.CopySceneColour(commands, color);
-        if (!impl.CopyLinearDepth(commands, depth, impl.sceneDepth, @"CoAVolFog water scene depth"))
+        // ClearWaterStencil is not needed: the device clears the stencil plane with the depth each frame, and only
+        // the liquid draws tag it
+        if (!impl.CopyScene(commands, color, depth))
         {
             impl.failed = true;
             return impl.Skip("water shaders unavailable");
         }
-        impl.ClearWaterStencil(commands, depth);
 
         impl.in = in;
         engine::BuildWaterInputs(impl.water);
@@ -1063,8 +1078,7 @@ void WaterRenderer::LiquidsEnd(const WMModHost* host, const FogData& fog)
     pass.stencilAttachment.texture = depth;
     pass.stencilAttachment.loadAction = MTLLoadActionLoad;
     pass.stencilAttachment.storeAction = MTLStoreActionStore;
-    id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
-    encoder.label = @"CoAVolFog water";
+    id<MTLRenderCommandEncoder> encoder = ProfiledRenderEncoder(commands, pass, "CoAVolFog water");
     [encoder setRenderPipelineState:shade];
     [encoder setDepthStencilState:impl.classStencil];
     [encoder setFragmentTexture:impl.sceneColour atIndex:kSceneColourStage];

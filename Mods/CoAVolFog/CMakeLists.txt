@@ -41,6 +41,7 @@ wrathmodern_add_mod(CoAVolFog
     Source/engine_actors_mac.mm
     Source/water_ripples_metal.mm
     Source/client_ripple_sprites.mm
+    Source/gpu_profile.mm
     Source/water_fft_metal.mm
     Source/water_metal.mm
 )

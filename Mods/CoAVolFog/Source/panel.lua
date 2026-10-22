@@ -53,7 +53,7 @@ local SETTINGS = {
     {"WaterRipples", "Ripples and wakes"},
     {"WaterClientSplashes", "Keep the client's splashes"},
     {"LiquidDepth", "Water writes depth"},
-    {"WaterDebugView", "Debug view (1 normal, 2 foam, 3 transmittance, 4 reflection, 5 class, 6 ripples)"},
+    {"WaterDebugView", "Debug view (0-6, 6 = ripples)"},
 }
 
 local ROW = 38
@@ -165,6 +165,8 @@ for index, entry in ipairs(SETTINGS) do
     end
 end
 content:SetHeight(-y + 8)
+-- The scroll child grows after SetScrollChild; the template only updates its range when asked
+scroll:UpdateScrollChildRect()
 
 local function Button(text, anchor, x, onClick)
     local button = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
@@ -192,6 +194,7 @@ Button("Close", "BOTTOMRIGHT", -20, function() panel:Hide() end)
 panel:SetScript("OnShow", function()
     status:SetText("")
     Refresh()
+    scroll:UpdateScrollChildRect()
 end)
 
 local toggle = CreateFrame("Button", "CoAVolFogPanelToggle", UIParent)

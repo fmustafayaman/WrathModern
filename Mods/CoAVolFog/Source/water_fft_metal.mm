@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include "gpu_profile.h"
 #include "log.h"
 #include "water_spectrum.h"
 
@@ -151,8 +152,7 @@ bool WaterFft::EnsureTileMaps(id<MTLCommandBuffer> commands, TileMaps& maps)
         pass.colorAttachments[0].loadAction = MTLLoadActionClear;
         pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
         pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-        id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
-        encoder.label = @"CoAVolFog foam clear";
+        id<MTLRenderCommandEncoder> encoder = ProfiledRenderEncoder(commands, pass, "CoAVolFog foam clear");
         [encoder endEncoding];
     }
     maps.latestFoam = 0;
@@ -197,8 +197,7 @@ bool WaterFft::Simulate(id<MTLCommandBuffer> commands, const WaterFftSettings& s
     const float inverseReferenceArea = static_cast<float>(
         1.0 / (static_cast<double>(settings.referenceResolution) * settings.referenceResolution));
 
-    id<MTLComputeCommandEncoder> encoder = [commands computeCommandEncoder];
-    encoder.label = @"CoAVolFog water waves";
+    id<MTLComputeCommandEncoder> encoder = ProfiledComputeEncoder(commands, "CoAVolFog water waves");
     for (size_t i = 0; i < tiles.size(); ++i)
     {
         if (!(tileMask & (1u << i)))
