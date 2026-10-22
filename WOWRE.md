@@ -865,3 +865,43 @@ istediği her durumda örnekleyici anahtarına `compareFunction = LessEqual` yaz
 - Kullanıcının CrossOver/Windows referansıyla aynı görünüm: kaya düz, sert sınır yok, ağaç altı yumuşak.
 - Kullanıcının eski "extShadowQuality 4 değiştirmedi" gözlemi de bununla tutarlı: kalite modu bu bayat
   örnekleyiciyi değiştirmiyordu.
+
+### Dalaran çökmesi (2026-10-22 gece) — ÇÖZÜLDÜ
+**Semptom:** Dalaran'a girildikten ~3 s sonra `BUS_ERROR (signal 10)` / `EXC_BAD_ACCESS`, dört koşuda
+dört kez. Karakter Dalaran'da kilitleniyordu.
+
+**Backtrace (lldb):**
+`CM2Shared::GetSkinProfileIndex` ← `Initialize` ← `FinishLoading` ← `AsyncFileReadPollHandler` ←
+`IEvtQueueDispatch` (yükleyici iş parçacığı).
+
+**Neden:** `creature\ent2\ent2.m2` başlığında **6** skin profili var. `s_skinProfileBoneCounts[4]` dört
+girdilik ve Windows istemcisi `4 - profiles + i` toplamını **signed** yapıyor: 6 için -2 olup tablonun
+hemen öncesini okuyor (tanımsız ama çarpmıyor, pratikte ilk profili seçiyor). Bu portta aynı toplam
+`uint32_t` ile 0xFFFFFFFE olunca okuma tablodan 4 GB öteye gitti ve async yükleyici çöktü.
+
+**Düzeltme** (`Engine/Source/Model2/M2Shared.cpp`): profiller 4'e kırpılır, isim stderr'e yazılır;
+böylece model tablodaki en iyi profille yüklenir. `ent2`'nin skin dosyası mevcut — model kaybolmuyor.
+
+**Kanıt:** düzeltmeden sonra 6 Dalaran girişi, **0 çökme**; logda tek satır
+`Model2: 6 skin profiles, expected 1-4: creature\ent2\ent2.m2`, `file not found` yok.
+
+**Tuzak:** `DebugLog` release derlemesinde (`NDEBUG`) boş inline — teşhis satırları `fprintf(stderr, …)`
+ile yazılmalı, yoksa log dosyasında hiçbir iz kalmaz.
+
+### Performans turu (2026-10-22 gece)
+Uygulanan ve ölçülen:
+- **Gölge geçişinin renk hedefi** (`hwPCF 1` iken hiçbir şey örneklemiyor) artık yüklenmiyor,
+  temizlenmiyor, saklanmıyor: kare başına dört 2048² geçiş.
+- **Present**: boyut/format aynı ve gamma rampası kimlikken quad yerine blit.
+- Sonuç: Nagrand 14.9→**14.3 ms**, Stormwind 13.6→**12.9 ms** GPU; Dalaran 60 Hz, 0–5 kaçan
+  tazeleme/5 s.
+- **Bant kadansı A/B** (aynı kadraj): mevcut 2/4 seyreltme **2.58 ms**, tüm bantlar her kare **3.37 ms**
+  → mevcut kod 0.8 ms kazandırıyor, değişiklik gerekmedi.
+- **Çözünürlük testi** (2647×1664 vs 3042×1912, aynı kadraj): `wmo` yalnızca %14 düştü → WMO dolgu
+  değil geometri/state sınırlı; çözünürlük düşürmek kazanç değil.
+- **Sis march ölçeği** yuvarlama yüzünden süreksiz: yükseklik 1912 → ölçek 4 (761×478), 1664 → ölçek 3
+  (883×555). Yani daha küçük pencere march'ı **büyütüyor** (0.80→1.30 ms). İleride `ceil` tabanlı kural.
+- **Yük takılmaları**: alan yüklemesinde 0.3–7 s CPU duraklamaları (loading screen çiziliyor), normal
+  oyunda seyrek ≤100 ms. GPU değil, senkron dosya/akış işi.
+- **Pipeline arşivi** denendi ve geri alındı: pipeline derlemesi zaten toplam **3–4 ms** (kaynak
+  ön-derleme sayesinde); 10 MB arşiv yazımı hak etmiyor.
