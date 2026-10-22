@@ -1,3 +1,7 @@
+#include <mach/mach_time.h>
+#include <functional>
+#include <unistd.h>
+#include <mutex>
 #include "Engine/Source/Gx/CGxDeviceMetal/MetalPipeline.h"
 #include "Engine/Source/Gx/CGxDeviceMetal/MetalContext.h"
 
@@ -91,8 +95,76 @@ bool VertexLayout::Matches(const VertexElement* elements, uint32_t count) const 
 
 // Caches
 
+double g_compileSeconds = 0.0;
+uint32_t g_compiles = 0;
+
+namespace {
+double CompileClock() {
+    static mach_timebase_info_data_t s_timebase = {};
+    if (!s_timebase.denom) {
+        mach_timebase_info(&s_timebase);
+    }
+    return static_cast<double>(mach_absolute_time()) * s_timebase.numer / s_timebase.denom * 1e-9;
+}
+}
+
+namespace {
+// Where the sources of compiled shaders are kept, relative to the game directory (the working directory)
+const char* const kShaderCacheDirectory = "Cache/WrathModern/Shaders";
+
+MTLCompileOptions* FunctionCompileOptions() {
+    MTLCompileOptions* options = [MTLCompileOptions new];
+    options.preserveInvariance = YES;
+    options.mathMode = MTLMathModeFast;
+    return options;
+}
+
+std::string ShaderCachePath(const std::string& source, bool vertex) {
+    char name[64];
+    snprintf(name, sizeof(name), "/%016llx.%s", static_cast<unsigned long long>(std::hash<std::string>()(source)), vertex ? "vsh" : "fsh");
+    return std::string(kShaderCacheDirectory) + name;
+}
+}
+
+struct PipelineCache::Prewarm {
+    std::mutex m_lock;
+    std::unordered_map<std::string, id<MTLFunction>> m_functions;
+};
+
 void PipelineCache::Init(id<MTLDevice> device) {
     this->m_device = device;
+    this->m_prewarm = std::make_shared<Prewarm>();
+
+    // Compile every source an earlier run compiled, in parallel, while the client starts and logs in
+    std::shared_ptr<Prewarm> prewarm = this->m_prewarm;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSArray<NSString*>* names = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:@(kShaderCacheDirectory) error:nil];
+        if (!names.count) {
+            return;
+        }
+        double started = CompileClock();
+        dispatch_apply(names.count, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t i) {
+            @autoreleasepool {
+                NSString* name = names[i];
+                bool vertex = [name hasSuffix:@".vsh"];
+                if (!vertex && ![name hasSuffix:@".fsh"]) {
+                    return;
+                }
+                NSString* path = [@(kShaderCacheDirectory) stringByAppendingPathComponent:name];
+                NSString* text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+                if (!text) {
+                    return;
+                }
+                id<MTLLibrary> library = [device newLibraryWithSource:text options:FunctionCompileOptions() error:nil];
+                id<MTLFunction> function = [library newFunctionWithName:@(vertex ? kVertexFunctionName : kFragmentFunctionName)];
+                if (function) {
+                    std::lock_guard<std::mutex> guard(prewarm->m_lock);
+                    prewarm->m_functions[std::string(text.UTF8String)] = function;
+                }
+            }
+        });
+        Log("shader cache: %lu sources compiled in the background in %.0f ms", static_cast<unsigned long>(names.count), (CompileClock() - started) * 1e3);
+    });
 }
 
 bool PipelineCache::CompileFunction(const std::string& source, bool vertex, CompiledFunction& function) {
@@ -102,13 +174,37 @@ bool PipelineCache::CompileFunction(const std::string& source, bool vertex, Comp
         return function.m_function != nil;
     }
 
-    MTLCompileOptions* options = [MTLCompileOptions new];
-    options.preserveInvariance = YES;
-    options.mathMode = MTLMathModeFast;
+    function.m_function = nil;
+    if (this->m_prewarm) {
+        std::lock_guard<std::mutex> guard(this->m_prewarm->m_lock);
+        auto prewarmed = this->m_prewarm->m_functions.find(source);
+        if (prewarmed != this->m_prewarm->m_functions.end()) {
+            function.m_function = prewarmed->second;
+            this->m_prewarm->m_functions.erase(prewarmed);
+        }
+    }
 
     NSError* error = nil;
-    id<MTLLibrary> library = [this->m_device newLibraryWithSource:@(source.c_str()) options:options error:&error];
-    function.m_function = [library newFunctionWithName:@(vertex ? kVertexFunctionName : kFragmentFunctionName)];
+    if (!function.m_function) {
+        double started = CompileClock();
+        id<MTLLibrary> library = [this->m_device newLibraryWithSource:@(source.c_str()) options:FunctionCompileOptions() error:&error];
+        function.m_function = [library newFunctionWithName:@(vertex ? kVertexFunctionName : kFragmentFunctionName)];
+        g_compileSeconds += CompileClock() - started;
+        g_compiles++;
+
+        // Kept for the next run's background compilation
+        if (function.m_function) {
+            std::string path = ShaderCachePath(source, vertex);
+            if (access(path.c_str(), F_OK) != 0) {
+                [[NSFileManager defaultManager] createDirectoryAtPath:@(kShaderCacheDirectory) withIntermediateDirectories:YES attributes:nil error:nil];
+                FILE* file = fopen(path.c_str(), "wb");
+                if (file) {
+                    fwrite(source.data(), 1, source.size(), file);
+                    fclose(file);
+                }
+            }
+        }
+    }
     function.m_id = this->NextId();
 
     if (!function.m_function) {
@@ -253,7 +349,10 @@ id<MTLRenderPipelineState> PipelineCache::Pipeline(const PipelineKey& key, const
     }
 
     NSError* error = nil;
+    double started = CompileClock();
     id<MTLRenderPipelineState> pipeline = [this->m_device newRenderPipelineStateWithDescriptor:descriptor error:&error];
+    g_compileSeconds += CompileClock() - started;
+    g_compiles++;
     if (!pipeline) {
         Log("pipeline creation failed: %s", error.localizedDescription.UTF8String);
     }

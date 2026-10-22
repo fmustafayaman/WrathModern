@@ -1,4 +1,5 @@
 #include "Engine/Source/Gx/CGxDeviceMetal/MetalContext.h"
+#include "Engine/Source/Gx/CGxDeviceMetal/MetalPipeline.h"
 
 #include <algorithm>
 #include <cstdarg>
@@ -94,6 +95,10 @@ struct Context::FrameStats {
     uint32_t m_frames = 0;
     double m_wall = 0.0;
     double m_blocked = 0.0;
+    double m_frameCompileStart = 0.0;
+    double m_frameBlockedStart = 0.0;
+    double m_drawableWait = 0.0;
+    uint32_t m_frameCompilesStart = 0;
     std::atomic<uint64_t> m_gpuNanoseconds { 0 };
     std::atomic<uint32_t> m_gpuBuffers { 0 };
 };
@@ -192,7 +197,11 @@ void Context::SetLayer(CAMetalLayer* layer) {
     if (layer) {
         layer.device = this->m_device;
         layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
-        layer.framebufferOnly = NO;
+        // The drawable is only written, by the present blit, and every pixel is opaque: macOS can then show
+        // it without compositing (direct to display in full screen), which keeps the window server's load
+        // from delaying the next drawable
+        layer.framebufferOnly = YES;
+        layer.opaque = YES;
         layer.maximumDrawableCount = 3;
         layer.displaySyncEnabled = this->m_vsync;
     }
@@ -915,6 +924,7 @@ void Context::Present(Texture* backBuffer) {
         id<CAMetalDrawable> drawable = [this->m_layer nextDrawable];
         if (this->m_stats) {
             this->m_stats->m_blocked += NowSeconds() - drawableStart;
+            this->m_stats->m_drawableWait = NowSeconds() - drawableStart;
         }
 
         if (drawable) {
@@ -962,10 +972,20 @@ void Context::UpdateFrameStats() {
     if (stats->m_lastPresent > 0.0) {
         stats->m_wall += now - stats->m_lastPresent;
         stats->m_frames++;
+        // A long frame, with the shader compilation done during it
+        double frame = now - stats->m_lastPresent;
+        if (frame > 0.025) {
+            fprintf(stderr, "framestats long frame %.1f ms, drawable %.1f ms, waiting %.1f ms, compiling %.1f ms (%u)\n", frame * 1e3, stats->m_drawableWait * 1e3,
+                    (stats->m_blocked - stats->m_frameBlockedStart) * 1e3, (g_compileSeconds - stats->m_frameCompileStart) * 1e3,
+                    g_compiles - stats->m_frameCompilesStart);
+        }
     } else {
         stats->m_windowStart = now;
     }
     stats->m_lastPresent = now;
+    stats->m_frameCompileStart = g_compileSeconds;
+    stats->m_frameBlockedStart = stats->m_blocked;
+    stats->m_frameCompilesStart = g_compiles;
 
     if (now - stats->m_windowStart >= 5.0 && stats->m_frames) {
         uint32_t buffers = stats->m_gpuBuffers.exchange(0);
@@ -978,6 +998,7 @@ void Context::UpdateFrameStats() {
         stats->m_frames = 0;
         stats->m_wall = 0.0;
         stats->m_blocked = 0.0;
+        stats->m_frameBlockedStart = 0.0;
         stats->m_windowStart = now;
     }
 }

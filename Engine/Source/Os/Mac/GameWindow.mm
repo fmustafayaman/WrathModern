@@ -111,7 +111,8 @@ static void UpdateDrawableSize(NSView* view) {
 - (CALayer*)makeBackingLayer {
     CAMetalLayer* layer = [CAMetalLayer layer];
     layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
-    layer.framebufferOnly = NO;
+    layer.framebufferOnly = YES;
+    layer.opaque = YES;
     layer.contentsGravity = kCAGravityResize;
     layer.needsDisplayOnBoundsChange = NO;
     layer.presentsWithTransaction = NO;

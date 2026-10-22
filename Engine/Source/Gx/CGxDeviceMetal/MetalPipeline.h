@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <memory>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -20,6 +21,11 @@
 #include "Engine/Source/Gx/Types.h"
 
 namespace GxMetal {
+
+// Seconds spent compiling shader functions and pipelines on the calling thread, for the frame statistics
+extern double g_compileSeconds;
+extern uint32_t g_compiles;
+
 
 struct CompiledFunction {
     id<MTLFunction> m_function = nil;
@@ -136,6 +142,10 @@ class PipelineCache {
     id<MTLDevice> m_device = nil;
     uint64_t m_nextId = 0;
     std::unordered_map<std::string, CompiledFunction> m_functions;
+    // Shader sources compiled in earlier runs, compiled again on background threads at start so their first
+    // draw does not wait for the compiler (each takes tens of milliseconds); shared with those threads
+    struct Prewarm;
+    std::shared_ptr<Prewarm> m_prewarm;
     std::unordered_map<FixedVertexKey, CompiledFunction, BytewiseHash<FixedVertexKey>> m_fixedVertex;
     std::unordered_map<FixedPixelKey, CompiledFunction, BytewiseHash<FixedPixelKey>> m_fixedPixel;
     std::unordered_map<PipelineKey, id<MTLRenderPipelineState>, BytewiseHash<PipelineKey>> m_pipelines;
