@@ -805,3 +805,12 @@ Ayırt etmek için **aynı noktanın Windows (CrossOver) görüntüsü** gerekiy
 Nagrand `-1149.58 8158.52 4.273`, yön 4.705357. Resim gelince: aynı kadrajda kaya yüzündeki koyu lekenin
 sınırı karşılaştırılacak; Windows'ta da varsa değişiklik değil, beklenti ayarı; yoksa hata bizim cihazda ve
 sıradaki adım compare örnekleyicisinin (bias/örnek konumu) D3D9 ile birebir eşleşmesi.
+
+### Önemli: shim referansı da aynı yolu kullanıyor
+Eski D3D9-üstü-Metal shim'inde (oynadığın sürüm) gölge yolu bizimkiyle **birebir aynı**:
+`D3DFMT_D24X8 → MTLPixelFormatDepth32Float` (`Resources.mm:152`) ve örnekleyicide
+`compareFunction = MTLCompareFunctionLessEqual` (`Device.mm:1198`). Yani donanım-PCF/compare tarafı
+*regresyon değil*; shim'de de aynı görünürdü. Dolayısıyla iki olasılık kalıyor:
+1. istemcinin bu ayarlardaki **kendi (orijinal) görünümü** — yani hata değil, beklenti;
+2. **paylaşılan kodun** (ShadowCache/ShadowQuery/terrain shader yedeği) rekonstrüksiyon hatası.
+Bunu ayıran tek referans gerçek **Windows/D3D9 donanım PCF** görüntüsü.
