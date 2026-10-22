@@ -169,6 +169,9 @@ class Texture : public RefCounted {
     uint32_t m_samples = 1;
     bool m_renderTarget = false;
     bool m_autoMips = false;
+    // A colour attachment nothing samples (the shadow pass's dummy target): its contents are never
+    // read, so the pass can skip loading, clearing and storing it (GxMetalMarkWriteOnly)
+    bool m_writeOnly = false;
     id<MTLTexture> m_texture = nil;
     id<MTLTexture> m_view = nil;
     // Single-sample resolve of a multisampled target (colour, or depth for readable depth)

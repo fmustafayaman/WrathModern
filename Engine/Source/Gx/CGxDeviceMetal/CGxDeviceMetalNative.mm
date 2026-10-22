@@ -3368,6 +3368,18 @@ void GxMetalProfileSection(const char* name) {
     }
 }
 
+void GxMetalMarkWriteOnly(CGxTex* texId) {
+    if (!texId) {
+        return;
+    }
+
+    // The texture may not have been created yet; the client calls this right after making it the render
+    // target, which creates it, and the flag applies from the next pass
+    if (GxMetal::Texture* texture = CGxDeviceMetalNative::ITexData(texId)) {
+        texture->m_writeOnly = true;
+    }
+}
+
 int32_t GxMetalProfilePass(void* descriptor, int32_t kind, const char* name) {
     CGxDeviceMetalNative* device = dynamic_cast<CGxDeviceMetalNative*>(g_theGxDevicePtr);
     return device && device->m_metal && device->m_metal->ProfilePass(descriptor, kind, name) ? 1 : 0;

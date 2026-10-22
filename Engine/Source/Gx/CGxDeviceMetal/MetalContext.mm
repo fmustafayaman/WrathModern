@@ -681,13 +681,21 @@ bool Context::BeginPass() {
     pass.colorAttachments[0].texture = color->m_texture;
     pass.colorAttachments[0].level = this->m_color.m_level;
     pass.colorAttachments[0].slice = this->m_color.m_face;
-    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
 
-    if (this->m_pendingClearColor) {
-        pass.colorAttachments[0].loadAction = MTLLoadActionClear;
-        pass.colorAttachments[0].clearColor = MTLClearColorMake(this->m_clearColor[0], this->m_clearColor[1], this->m_clearColor[2], this->m_clearColor[3]);
+    if (color->m_writeOnly) {
+        // Nothing samples this attachment, so nothing it holds before or after the pass is read (the
+        // shadow pass's Argb8888 depth stand-in, unused with hardware compare filtering)
+        pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+        pass.colorAttachments[0].storeAction = MTLStoreActionDontCare;
     } else {
-        pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
+        pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+
+        if (this->m_pendingClearColor) {
+            pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+            pass.colorAttachments[0].clearColor = MTLClearColorMake(this->m_clearColor[0], this->m_clearColor[1], this->m_clearColor[2], this->m_clearColor[3]);
+        } else {
+            pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
+        }
     }
 
     if (Texture* depth = this->m_depth.m_texture) {
@@ -852,6 +860,8 @@ void Context::Clear(const Rect& area, bool clearColor, bool clearDepth, const fl
     }
 
     clearDepth = clearDepth && this->m_depth.m_texture;
+    // The shadow pass clears its dummy colour target to white before every band; nobody reads it
+    clearColor = clearColor && !this->m_color.m_texture->m_writeOnly;
     if (!clearColor && !clearDepth) {
         return;
     }
@@ -1179,7 +1189,18 @@ void Context::Present(Texture* backBuffer) {
 
         if (drawable) {
             id<MTLTexture> target = drawable.texture;
-            id<MTLRenderPipelineState> pipeline = this->UtilityPipeline(kUtilityPresent | static_cast<uint64_t>(target.pixelFormat), @"utility_blit", target.pixelFormat, MTLPixelFormatInvalid, 1, true);
+            bool sameSize = target.width == source.width && target.height == source.height;
+            bool direct = sameSize && this->m_gammaIdentity && source.pixelFormat == target.pixelFormat;
+
+            // Same size and format with an identity ramp: a copy is a straight transfer, no rasterisation
+            if (direct) {
+                id<MTLBlitCommandEncoder> blit = [this->Commands() blitCommandEncoder];
+                [blit copyFromTexture:source sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(target.width, target.height, 1)
+                            toTexture:target destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
+                [blit endEncoding];
+            }
+
+            id<MTLRenderPipelineState> pipeline = direct ? nil : this->UtilityPipeline(kUtilityPresent | static_cast<uint64_t>(target.pixelFormat), @"utility_blit", target.pixelFormat, MTLPixelFormatInvalid, 1, true);
 
             if (pipeline) {
                 MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -1188,7 +1209,6 @@ void Context::Present(Texture* backBuffer) {
                 pass.colorAttachments[0].storeAction = MTLStoreActionStore;
 
                 id<MTLRenderCommandEncoder> encoder = [this->Commands() renderCommandEncoderWithDescriptor:pass];
-                bool sameSize = target.width == source.width && target.height == source.height;
                 BlitParameters parameters = { { 0.0f, 0.0f, 1.0f, 1.0f }, this->m_gammaIdentity ? 0u : 1u, {} };
                 float clipRect[4] = { -1.0f, 1.0f, 1.0f, -1.0f };
                 float depth = 0.0f;

@@ -389,6 +389,13 @@ int32_t CShadowQuery::RenderCallback(CShadowCacheQueryData& data, int32_t band, 
     CShaderEffect::UpdateProjMatrix();
     GxRsSet(GxRs_ScissorTest, 0);
     g_theGxDevicePtr->DeviceSetRenderTarget(GxBuffers_Color, target, 0);
+
+    if (CShaderEffect::s_usePcfFiltering) {
+        // With hardware compare filtering the shadows are sampled from the D24X8 depth textures; this colour
+        // target only satisfies the pass, so the device can skip loading, clearing and storing it
+        GxMetalMarkWriteOnly(target);
+    }
+
     GxSceneClear(3, CImVector(0xFF, 0xFF, 0xFF, 0xFF));
 
     if (g_shadowScissor->m_intValue) {
@@ -546,6 +553,11 @@ void CShadowQuery::Clear(CGxTex* target, CGxTex* depthTarget, float* rect) {
     float viewportMaxZ = device->m_viewport.m_z.m_h;
     GxRenderTargetSet(GxBuffers_Depth, depthTarget, 0);
     GxRenderTargetSet(GxBuffers_Color, target, 0);
+
+    if (CShaderEffect::s_usePcfFiltering) {
+        GxMetalMarkWriteOnly(target);
+    }
+
     GxXformSetViewport(rect[0], rect[1], rect[2], rect[3], 0.0f, 1.0f);
     GxSceneClear(3, CImVector(0xFF, 0xFF, 0xFF, 0xFF));
     GxXformSetViewport(viewportMinX, viewportMaxX, viewportMinY, viewportMaxY, viewportMinZ, viewportMaxZ);

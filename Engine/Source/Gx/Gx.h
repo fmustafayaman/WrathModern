@@ -77,6 +77,10 @@ void GxMetalSetStencilTag(uint32_t tag);
 void GxMetalForceDepthWrite(bool force);
 // Names the GPU profile section of the passes that follow (WRATHMODERN_GPU_PROFILE=1); nothing otherwise.
 void GxMetalProfileSection(const char* name);
+// Marks a texture the client uses only as a colour attachment that nothing samples: passes rendering into it
+// skip loading, clearing and storing it. The shadow pass's Argb8888 depth stand-in is one with hardware compare
+// filtering (s_usePcfFiltering), where the shadows are sampled from the D24X8 depth textures instead.
+void GxMetalMarkWriteOnly(CGxTex* texId);
 // Times a pass a mod encodes on the frame's command buffer in the same profile, so the passes of the client and
 // the mods are charged on one timeline: descriptor is the MTLRenderPassDescriptor (kind 0), MTLComputePassDescriptor
 // (1) or MTLBlitPassDescriptor (2) the encoder will be created with; name must outlive the frame (a literal).
