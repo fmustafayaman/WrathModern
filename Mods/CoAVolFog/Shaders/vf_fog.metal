@@ -1177,11 +1177,43 @@ fragment float4 vf_march(Varyings in [[stage_in]], FOG_ARGUMENTS)
 }
 
 // vf_composite.hlsl: pixel = VPOS + 0.5, Metal's position
-fragment float4 vf_composite(Varyings in [[stage_in]], FOG_ARGUMENTS)
+// CopyWorldViewport of a multisampled frame: the samples averaged (a multisample resolve), read as a texture
+// so the frame's attachments are not loaded and stored again
+fragment float4 vf_resolve_copy(Varyings in [[stage_in]], texture2d_ms<float> colour [[texture(0)]])
+{
+    uint samples = colour.get_num_samples();
+    float4 sum = 0;
+    for (uint s = 0; s < samples; ++s)
+        sum += colour.read(uint2(in.position.xy), s);
+    return sum / samples;
+}
+
+// grading_renderer's Grade: the Classic light's curve over a colour (32 entries per channel, linearly
+// interpolated), blended in by strength
+static float3 GradeColour(float3 colour, constant float* curve, float strength)
+{
+    const float kCurveEntries = 32;
+    float3 graded;
+    for (int c = 0; c < 3; ++c)
+    {
+        float position = saturate(colour[c]) * (kCurveEntries - 1);
+        float lower = floor(position);
+        float upper = min(lower + 1, kCurveEntries - 1);
+        graded[c] = mix(curve[int(lower)], curve[int(upper)], position - lower);
+    }
+    return mix(colour, graded, strength);
+}
+
+// With the composite writing the whole frame over the scene copy, the grading follows in the same pass
+// (C[95].x its strength) instead of a copy of the fogged frame and a pass of its own
+fragment float4 vf_composite(Varyings in [[stage_in]], FOG_ARGUMENTS, constant float* gradingCurve [[buffer(2)]])
 {
     MAKE_FOG;
     float2 pixel = in.position.xy;
-    return fog.CompositeAtDepth(pixel, fog.SampleDepth(pixel));
+    float4 colour = fog.CompositeAtDepth(pixel, fog.SampleDepth(pixel));
+    if (C[95].x > 0)
+        colour.rgb = GradeColour(saturate(colour.rgb), gradingCurve, C[95].x);
+    return colour;
 }
 
 // vf_temporal.hlsl
@@ -1249,17 +1281,8 @@ fragment float4 vf_ray_blur(Varyings in [[stage_in]], constant float4* C [[buffe
 fragment float4 vf_grade(Varyings in [[stage_in]], constant float4* C [[buffer(0)]], constant float* curve [[buffer(1)]],
                          texture2d<float> scene [[texture(0)]])
 {
-    const float kCurveEntries = 32;
     float2 size = float2(scene.get_width(), scene.get_height());
     float2 viewportUv = (in.position.xy - C[0].xy) * C[0].zw;
     float3 colour = scene.read(uint2(clamp(floor(viewportUv * size), float2(0), size - 1))).rgb;
-    float3 graded;
-    for (int c = 0; c < 3; ++c)
-    {
-        float position = saturate(colour[c]) * (kCurveEntries - 1);
-        float lower = floor(position);
-        float upper = min(lower + 1, kCurveEntries - 1);
-        graded[c] = mix(curve[int(lower)], curve[int(upper)], position - lower);
-    }
-    return float4(mix(colour, graded, C[1].x), 1);
+    return float4(GradeColour(colour, curve, C[1].x), 1);
 }

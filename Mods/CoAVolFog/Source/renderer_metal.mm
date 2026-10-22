@@ -147,6 +147,8 @@ struct FogRenderer::Impl
     id<MTLTexture> densityNoise = nil;
     id<MTLTexture> authoredNoise = nil;
     id<MTLTexture> dummy2d = nil;
+    // vf_resolve_copy for the frame's format, set each frame before the copies
+    id<MTLRenderPipelineState> resolvePipeline = nil;
     bool failed = false;
 
     id<MTLLibrary> Library(int steps, bool lights, bool noise, bool depthMs)
@@ -254,13 +256,18 @@ struct FogRenderer::Impl
 
         if (color.sampleCount > 1)
         {
-            // An empty pass that keeps the samples and resolves them into the copy
+            // The samples averaged by a pass that reads the frame as a texture (vf_resolve_copy)
+            id<MTLRenderPipelineState> pipeline = resolvePipeline;
+            if (!pipeline)
+                return false;
             MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
-            pass.colorAttachments[0].texture = color;
-            pass.colorAttachments[0].resolveTexture = sceneCopy;
-            pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
-            pass.colorAttachments[0].storeAction = MTLStoreActionStoreAndMultisampleResolve;
+            pass.colorAttachments[0].texture = sceneCopy;
+            pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+            pass.colorAttachments[0].storeAction = MTLStoreActionStore;
             id<MTLRenderCommandEncoder> encoder = ProfiledRenderEncoder(commands, pass, "CoAVolFog scene copy");
+            [encoder setRenderPipelineState:pipeline];
+            [encoder setFragmentTexture:color atIndex:0];
+            [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
             [encoder endEncoding];
         }
         else
@@ -470,6 +477,19 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
     const double windPeriod = static_cast<double>(kDensityNoiseSize) / std::max(cfg.noiseScale, 0.001f);
     C[78] = {cfg.noiseAmount, cfg.noiseScale, static_cast<float>(std::fmod(now * cfg.noiseWindSpeed, windPeriod)), 0.0f};
 
+    const int steps = cfg.quality == 1 ? 16 : cfg.quality == 2 ? 24 : 32;
+    id<MTLLibrary> library = impl.Library(steps, marchesLocalLights, samplesNoise, depthMs);
+    if (!library)
+    {
+        impl.failed = true;
+        return false;
+    }
+
+    // The copies of a multisampled frame resolve in a pass of their own (vf_resolve_copy)
+    impl.resolvePipeline = color.sampleCount > 1
+        ? impl.Pipeline(library, @"vf_resolve_copy", color.pixelFormat, 1, false, "resolve" + std::to_string(color.pixelFormat))
+        : nil;
+
     // The blend: over a copy of the scene in linear light, or in gamma when god rays need the copy
     const bool wantsCopy = fog.linear || rays;
     const bool copied = wantsCopy && impl.CopyScene(commands, color);
@@ -484,14 +504,6 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
     {
         m_loggedBlend = blendMode;
         VF_LOG_INFO("fog blend: %s", FogBlendName(blend));
-    }
-
-    const int steps = cfg.quality == 1 ? 16 : cfg.quality == 2 ? 24 : 32;
-    id<MTLLibrary> library = impl.Library(steps, marchesLocalLights, samplesNoise, depthMs);
-    if (!library)
-    {
-        impl.failed = true;
-        return false;
     }
 
     std::string variant = std::to_string(steps) + (marchesLocalLights ? "L" : "") + (samplesNoise ? "N" : "") + (depthMs ? "M" : "");
@@ -646,30 +658,36 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
     C[97] = {fog.rayColor[0], fog.rayColor[1], fog.rayColor[2], 0.0f};
     C[98] = {sunPx[0], sunPx[1], cfg.sunMarker && sunInFront ? 1.0f : 0.0f,
              cfg.glowCompensation && sceneBlend ? in.clientGlowAmount : 0.0f};
+    // PrepareGrading and Grade (forever_look.cpp, grading_renderer.cpp): the Classic light's curve over the
+    // fogged world, by ColorGrading times the Classic lights' share of the blend; never under the ghost effect
+    // or in liquid (this pass does not run in liquid). Over a scene copy the composite writes every pixel, so
+    // it grades in the same pass; after a fixed-function blend a copy of the fogged frame is graded.
+    const float gradingStrength = hasAuthored ? cfg.colorGrading * ForeverLookWeight(authored.coverage) : 0.0f;
+    const bool wantsGrading = gradingStrength > 0.0f && authored.hasGradingCurve && !engine::GhostEffectRuns();
+    const bool gradesInComposite = wantsGrading && sceneBlend;
+    C[95] = {gradesInComposite ? gradingStrength : 0.0f, 0.0f, 0.0f, 0.0f};
     {
         MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
         pass.colorAttachments[0].texture = color;
-        pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
+        // Over the scene copy every pixel is written: the frame's samples need not be loaded
+        pass.colorAttachments[0].loadAction = sceneBlend ? MTLLoadActionDontCare : MTLLoadActionLoad;
         pass.colorAttachments[0].storeAction = MTLStoreActionStore;
         id<MTLRenderCommandEncoder> encoder = ProfiledRenderEncoder(commands, pass, "CoAVolFog composite");
         [encoder setRenderPipelineState:compositePipeline];
         bindFog(encoder, C);
+        static const float kNoCurve[32] = {};
+        [encoder setFragmentBytes:gradesInComposite ? authored.gradingCurve : kNoCurve length:sizeof(kNoCurve) atIndex:2];
         [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
         [encoder endEncoding];
     }
 
-    // PrepareGrading and Grade (forever_look.cpp, grading_renderer.cpp): the Classic light's curve over the
-    // fogged world, by ColorGrading times the Classic lights' share of the blend; never under the ghost effect
-    // or in liquid (this pass does not run in liquid)
-    const float gradingStrength = hasAuthored ? cfg.colorGrading * ForeverLookWeight(authored.coverage) : 0.0f;
-    const bool grading = gradingStrength > 0.0f && authored.hasGradingCurve && !engine::GhostEffectRuns() &&
-                         impl.CopyGraded(commands, color);
+    const bool grading = gradesInComposite || (wantsGrading && impl.CopyGraded(commands, color));
     if (grading != m_loggedGrading)
     {
         m_loggedGrading = grading;
         VF_LOG_INFO("colour grading %s (strength %.2f)", grading ? "drawn" : "idle", gradingStrength);
     }
-    if (grading)
+    if (grading && !gradesInComposite)
     {
         Float4 G[2] = {{static_cast<float>(vp.X), static_cast<float>(vp.Y), 1.0f / vp.Width, 1.0f / vp.Height},
                        {gradingStrength, 0.0f, 0.0f, 0.0f}};
