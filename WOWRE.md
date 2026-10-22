@@ -914,3 +914,21 @@ Uygulanan ve ölçülen:
   `hwPCF 1` doğru seçim; INTZ yolu yalnızca karşılaştırma için.
 - Sis march'ı şehirde en kötü 2.2 ms (8 ışık); sahne 60'ta ve 1.9 ms pay var — ışık kümeleme şimdilik
   gerekçesiz (ölçüldü, uygulanmadı).
+
+### Alan yüklemesi: tek disk okuyucusu (2026-10-22 gece) — ÇÖZÜLDÜ
+**Ölçüm:** `sample` ile Dalaran girişinde ana iş parçacığı 4.9 s'nin **4.7 s'sini**
+`AsyncFileReadWaitAll()` içinde uyuyarak geçiriyordu (`CMap::PrepareUpdate` → bekleme).
+**Neden:** yerel kurulumda `AsyncFileReadInitialize` yalnızca **bir** okuyucu iş parçacığı açıyor
+(`queues = 1`); haritanın tüm tile'ları tek sırada okunup açılıyor.
+**Düzeltme:** disk kuyruğuna çekirdek sayısına göre okuyucu (`cores - 2`, 1–8; `WRATHMODERN_READERS`
+ve `WRATHMODERN_ONE_READER` ile A/B). Kuyruk ve SFile kilitleri nesne/arşiv başına olduğundan paylaşım
+güvenli.
+**Kanıt (en uzun kare, aynı Dalaran geçişi):** 1 okuyucu **6853 ms** → 2: 3716 → 4: 1961 → **8: 1408**.
+Varsayılan (M4, 10 çekirdek → 8) ile **1516 ms**, >1 s kare sayısı 4 → 1, çökme yok.
+**Yan etki yok:** Nagrand'da 60 Hz, kaçan tazeleme 0, gpu 14.8 ms.
+
+### Sis march ölçeği: yuvarlama yerine tavan (2026-10-22 gece)
+`lround(baseScale * height / 1080)` yüzünden 1912 satırda ölçek 4, 1664'te 3 oluyordu; yani **kısa pencere
+daha çok** march pikseli üretiyordu (364k → 490k). Kural `ceil` oldu: 1912'de ölçek yine 4 (march 0.72 ms,
+değişmedi — ölçüldü), daha kısa pencerede ölçek 4'ün altına inmiyor. 1664 koşusunun march süresi (1.17 ms)
+farklı kadraj/zaman olduğu için doğrudan kıyaslanamaz; değişen şey kuralın kendisi.

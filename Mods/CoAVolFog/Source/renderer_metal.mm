@@ -354,7 +354,9 @@ bool FogRenderer::Render(const WMModHost* host, const Config& cfg, const FogData
     // display. The march keeps that density on taller outputs: the scale grows with the viewport's height so the
     // low-resolution target stays near the original's at 1080 lines (1440 lines: 1/3, 2160: 1/4)
     const uint32_t baseScale = cfg.quality == 1 ? 4u : 2u;
-    const uint32_t scale = std::max(baseScale, static_cast<uint32_t>(std::lround(baseScale * vp.Height / kDesignHeight)));
+    // Ceiling, not rounding: with a round, a shorter window could land on a smaller scale and so march *more*
+    // pixels (1912 lines: 1/4, 1664: 1/3), making a smaller window the more expensive one
+    const uint32_t scale = std::max(baseScale, static_cast<uint32_t>(std::ceil(baseScale * vp.Height / kDesignHeight)));
     const uint32_t lowW = (vp.Width + scale - 1) / scale;
     const uint32_t lowH = (vp.Height + scale - 1) / scale;
 
