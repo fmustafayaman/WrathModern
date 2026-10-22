@@ -20,6 +20,9 @@ class CTexture;
 
 class CDetailDoodad {
     public:
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    static float KeepRadius();
+#endif
     struct SShaderConstants;
 
     static CGxTex* s_alphaRampTexture;

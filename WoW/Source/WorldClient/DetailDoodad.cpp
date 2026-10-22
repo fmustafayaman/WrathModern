@@ -435,6 +435,14 @@ void CDetailDoodadInstBatch::FillVertices() {
     buf->m_hasData = 1;
 }
 
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+// Chunks are given ground effects while their nearest point is within detailDoodadDist; one whose centre is
+// within this radius (the distance, 8 yd of hysteresis and half a chunk's diagonal) keeps them while out of view
+float CDetailDoodad::KeepRadius() {
+    return CWorld::detailDoodadDist + 8.0f + 23.570227f;
+}
+#endif
+
 // VERIFY: a2c3ec0e manual
 // OFFSET: 0x007B1380
 void CDetailDoodad::DestroyModels() {
@@ -580,18 +588,29 @@ void CDetailDoodad::UpdatePools() {
     s_vertexBufferSize = sizeof(CGxVertexPNCT) * vertexItems;
     s_indexBufferSize = sizeof(uint16_t) * indexItems;
 
-    CDetailDoodad::s_gxVertexPool = g_theGxDevicePtr->PoolCreate(GxPoolTarget_Vertex, GxPoolUsage_Dynamic, 128 * sizeof(CGxVertexPNCT) * vertexItems, GxPoolHintBit_Unk3, "CDetailDoodad_vtx");
-    CDetailDoodad::s_gxIndexPool = g_theGxDevicePtr->PoolCreate(GxPoolTarget_Index, GxPoolUsage_Dynamic, 128 * sizeof(uint16_t) * indexItems, GxPoolHintBit_Unk0, "CDetailDoodad_idx");
+#if defined(WRATHMODERN_CLIENT_PATCHES)
+    // One buffer pair per batch of every chunk CMap::ProcessDetailDoodadUpdateList keeps around the camera
+    // (up to four batches a chunk), so those chunks keep their buffers too. Never fewer than the stock 128;
+    // past 256 the least recently drawn chunks give theirs back.
+    float reach = CDetailDoodad::KeepRadius();
+    uint32_t pairs = static_cast<uint32_t>(ceilf(3.1415927f * reach * reach / (33.333332f * 33.333332f) * 4.0f));
+    pairs = pairs < 128 ? 128 : (pairs > 256 ? 256 : pairs);
+#else
+    uint32_t pairs = 128;
+#endif
 
-    CDetailDoodad::s_freeGxBufs.Reserve(256, 0);
+    CDetailDoodad::s_gxVertexPool = g_theGxDevicePtr->PoolCreate(GxPoolTarget_Vertex, GxPoolUsage_Dynamic, pairs * sizeof(CGxVertexPNCT) * vertexItems, GxPoolHintBit_Unk3, "CDetailDoodad_vtx");
+    CDetailDoodad::s_gxIndexPool = g_theGxDevicePtr->PoolCreate(GxPoolTarget_Index, GxPoolUsage_Dynamic, pairs * sizeof(uint16_t) * indexItems, GxPoolHintBit_Unk0, "CDetailDoodad_idx");
 
-    for (uint32_t i = 0; i < 256; i += 2) {
+    CDetailDoodad::s_freeGxBufs.Reserve(2 * pairs, 0);
+
+    for (uint32_t i = 0; i < 2 * pairs; i += 2) {
         *CDetailDoodad::s_freeGxBufs.New() = g_theGxDevicePtr->BufCreate(CDetailDoodad::s_gxVertexPool, sizeof(CGxVertexPNCT), CDetailDoodad::s_vtxBufItems, sizeof(CGxVertexPNCT) * CDetailDoodad::s_vtxBufItems * (i >> 1));
         *CDetailDoodad::s_freeGxBufs.New() = g_theGxDevicePtr->BufCreate(CDetailDoodad::s_gxIndexPool, sizeof(uint16_t), CDetailDoodad::s_idxBufItems, sizeof(uint16_t) * CDetailDoodad::s_idxBufItems * (i >> 1));
         unk_D1C4E8 += 2;
     }
 
-    unk_D1C4DC = 256;
+    unk_D1C4DC = 2 * pairs;
     CDetailDoodad::s_bPoolsDirty = 0;
 }
 
