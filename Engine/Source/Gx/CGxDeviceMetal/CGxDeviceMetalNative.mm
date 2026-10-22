@@ -2669,6 +2669,7 @@ bool CGxDeviceMetalNative::IDrawPrepare(const CGxBatch* batch) {
         }
 
         variant.m_pointSprite = this->m_hw.m_pointSprite ? 1 : 0;
+        variant.m_alphaOnly = this->m_hw.m_colorWrite == MTLColorWriteMaskNone ? 1 : 0;
         fragment = this->m_pipelines->PixelShaderFunction(this->m_hw.m_pixelShader, variant);
     } else {
         GxMetal::FixedPixelKey key;

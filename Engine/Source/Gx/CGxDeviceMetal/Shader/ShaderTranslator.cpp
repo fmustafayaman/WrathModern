@@ -154,7 +154,7 @@ bool VertexInputSignature::operator==(const VertexInputSignature& other) const {
 }
 
 bool PixelShaderVariant::operator==(const PixelShaderVariant& other) const {
-    return this->m_samplerKinds == other.m_samplerKinds && this->m_projected == other.m_projected && this->m_pointSprite == other.m_pointSprite;
+    return this->m_samplerKinds == other.m_samplerKinds && this->m_projected == other.m_projected && this->m_pointSprite == other.m_pointSprite && this->m_alphaOnly == other.m_alphaOnly;
 }
 
 namespace {
@@ -1690,6 +1690,10 @@ bool Translator::EmitPixel(const PixelShaderVariant& variant, std::string& sourc
     }
 
     source += "    if (!d3d_alpha_test(state, out.color.a)) discard_fragment();\n";
+
+    if (this->m_variant.m_alphaOnly) {
+        source += "    out.color = float4(0.0f, 0.0f, 0.0f, out.color.a);\n";
+    }
 
     if (this->m_writesDepth) {
         source += "    out.depth = saturate(oDepth);\n";

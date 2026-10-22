@@ -63,6 +63,9 @@ struct PixelShaderVariant {
     uint16_t m_projected = 0;
     // Point sprites replace every texture coordinate with the point coordinate
     uint8_t m_pointSprite = 0;
+    // Colour writes are off: only the alpha test's result matters, so the colour is not computed (the compiler
+    // drops the work that only fed it, such as shadow lookups) and the pass costs what the alpha test costs
+    uint8_t m_alphaOnly = 0;
 
     SamplerKind Kind(uint32_t sampler) const { return static_cast<SamplerKind>((m_samplerKinds >> (sampler * 2)) & 0x3); }
     bool operator==(const PixelShaderVariant& other) const;
