@@ -729,9 +729,7 @@ Açık işler:
 3. Su yansıması ekran kenarında bozuk: `TraceScreenReflection` ışını yalnızca dikeyde ekranla sınırlıyor,
    sahne kopyası MIRROR adreslemeyle örnekleniyor → yandan çıkan ışın aynalanmış görüntüyü yansıtıyor.
    Orijinal CoAVolFog'da da aynı (vw_reflection.hlsli). Düzeltme: yatay sınır + yatay kenar sönümü → gök.
-4. Uzak dağlar (WDL ufuk blokları) kamera dönerken kaybolup geliyor (kullanıcı videosu). Ölçüm: frustum
-   içindeki ~124 bloğun ~120'si `QueryBuffer(&bbox, 40)` sütun testiyle elenir; kamera dururken karar
-   kararlı, dönüşte 5 sn'de ~800 değişim. Port orijinalle aynı (0x78FDC0; culling da orijinaldeki gibi
-   BuildViewMatrices'ten önce, bir kare gecikmeli). Ufuk için sütun testini kaldırmak GPU'da ~bedava ve
-   sabit görüntüyü değiştirmiyor; ama videoyla kaybolmanın gittiği henüz kanıtlanmadı (otomatik pop
-   dedektörleri gürültülü çıktı). Aynı test chunk/WMO/doodad'da da kullanılıyor (mesalar).
+4. Uzak dağlar kamera dönerken kaybolup geliyordu → ÇÖZÜLDÜ (d3c606e): ufuk projeksiyonu FOV'u sabit 0.6 ile
+   (yalnızca 4:3'te doğru) çeviriyordu; 1.59:1'de dünyadan ~%13 geniş çizilip kayıyordu. `_SG` ile aynı FOV.
+   Kanıt: aynı açıdan (FlipCameraYaw 207, Nagrand) stok/düzeltilmiş ekran görüntüsü. Ara bulgu: ufuk için
+   `QueryBuffer` sütun testi dönüşte çok değişiyor (5 sn'de ~800); kaldırmak GPU'da ~bedava ama gerekmedi.
