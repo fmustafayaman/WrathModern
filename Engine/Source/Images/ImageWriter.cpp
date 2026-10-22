@@ -1387,7 +1387,21 @@ static int32_t WriteJpegFile(IWJpegParams* params) {
         return 0;
     }
 
+#if defined(_WIN32)
     FILE* file = fopen(params->m_fileName, "wb");
+#else
+    // The client names files with backslashes, which the Windows C runtime accepts and POSIX does not
+    char nativeName[1024];
+    snprintf(nativeName, sizeof(nativeName), "%s", params->m_fileName);
+
+    for (char* c = nativeName; *c; c++) {
+        if (*c == '\\') {
+            *c = '/';
+        }
+    }
+
+    FILE* file = fopen(nativeName, "wb");
+#endif
 
     if (!file) {
         return 0;
