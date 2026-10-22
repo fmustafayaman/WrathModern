@@ -445,23 +445,71 @@ void OsMacInitApplication() {
     }
 }
 
+// The part of the display below the camera housing (the safe area); the menu bar strip beside the
+// housing stays black
+static NSRect FullscreenFrame(NSScreen* screen) {
+    NSRect area = screen.frame;
+
+    if (@available(macOS 12.0, *)) {
+        NSEdgeInsets insets = screen.safeAreaInsets;
+        area.origin.x += insets.left;
+        area.origin.y += insets.bottom;
+        area.size.width -= insets.left + insets.right;
+        area.size.height -= insets.top + insets.bottom;
+    }
+
+    return area;
+}
+
+// A black window over the whole display behind the fullscreen window. It cannot become key, so a
+// click on it leaves the game window active.
+static NSWindow* s_backdrop;
+
+static void ShowBackdrop(NSScreen* screen) {
+    if (!s_backdrop) {
+        s_backdrop = [[NSWindow alloc] initWithContentRect:screen.frame styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+        s_backdrop.releasedWhenClosed = NO;
+        s_backdrop.backgroundColor = [NSColor blackColor];
+        s_backdrop.hasShadow = NO;
+        s_backdrop.level = NSNormalWindowLevel;
+        s_backdrop.collectionBehavior = NSWindowCollectionBehaviorFullScreenNone;
+    }
+
+    [s_backdrop setFrame:screen.frame display:NO];
+}
+
+static void HideBackdrop() {
+    [s_backdrop orderOut:nil];
+}
+
+// Behind the game window, once that is on screen
+static void OrderBackdrop(NSWindow* window) {
+    if (s_backdrop && window.styleMask == NSWindowStyleMaskBorderless) {
+        [s_backdrop orderWindow:NSWindowBelow relativeTo:window.windowNumber];
+    }
+}
+
 static void ApplyWindowMode(WMGameWindow* window, const OsMacWindowParams& params) {
     NSScreen* screen = window.screen ? window.screen : [NSScreen mainScreen];
 
     if (params.m_fullscreen) {
         // Fullscreen takes the whole display without a mode change; the graphics device renders at the
-        // requested resolution and the compositor scales it to the display.
-        // A borderless window over the whole display at the normal level: the Dock and menu bar
-        // hide only while the client is the active application, so switching applications
-        // (Cmd+Tab) brings other windows in front as usual
+        // requested resolution, widened or heightened to the window's aspect ratio, and the compositor
+        // scales it to the window.
+        // A borderless window at the normal level: the Dock and menu bar hide only while the client is
+        // the active application, so switching applications (Cmd+Tab) brings other windows in front as
+        // usual. The window covers the display below the camera housing; a black backdrop covers the
+        // strip beside the housing
         window.styleMask = NSWindowStyleMaskBorderless;
         window.level = NSNormalWindowLevel;
         window.hasShadow = NO;
-        [window setFrame:screen.frame display:YES];
+        [window setFrame:FullscreenFrame(screen) display:YES];
+        ShowBackdrop(screen);
         NSApp.presentationOptions = NSApplicationPresentationHideDock | NSApplicationPresentationHideMenuBar;
         return;
     }
 
+    HideBackdrop();
     NSApp.presentationOptions = NSApplicationPresentationDefault;
     window.styleMask = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
     window.level = NSNormalWindowLevel;
@@ -512,6 +560,7 @@ void* OsMacCreateGameWindow(const OsMacWindowParams& params, const char* title) 
 
         [s_window makeKeyAndOrderFront:nil];
         [s_window makeFirstResponder:s_window.contentView];
+        OrderBackdrop(s_window);
 
         UpdateDrawableSize(s_window.contentView);
         OsMacInputResized();
@@ -530,6 +579,7 @@ void OsMacDestroyGameWindow(void* window) {
         // notification must not reach an input layer that is shutting down
         s_window.delegate = nil;
         NSApp.presentationOptions = NSApplicationPresentationDefault;
+        HideBackdrop();
         [s_window orderOut:nil];
         s_window = nil;
         s_windowDelegate = nil;

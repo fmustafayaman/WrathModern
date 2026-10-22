@@ -143,10 +143,27 @@ int32_t CGxDeviceMetalNative::ICreateWindow(CGxFormat& format) {
 
     this->m_ownhwnd = 1;
 
-    // Fullscreen renders at the format's resolution and the compositor scales it; a window renders at
-    // its own size in pixels (as the shim device does)
+    // Fullscreen renders at the format's resolution, extended to the window's aspect ratio so the image
+    // is neither stretched nor letterboxed (the client takes its aspect ratio from this size), and the
+    // compositor scales it; a window renders at its own size in pixels (as the shim device does)
     if (!format.m_window && format.m_size.x > 0 && format.m_size.y > 0) {
-        OsMacSetDrawableSize(this->m_hwnd, format.m_size.x, format.m_size.y);
+        OsMacSetDrawableSize(this->m_hwnd, 0, 0);
+        int32_t windowWidth = 0;
+        int32_t windowHeight = 0;
+        DrawableSize(this->m_hwnd, &windowWidth, &windowHeight);
+
+        int32_t width = format.m_size.x;
+        int32_t height = format.m_size.y;
+
+        if (windowWidth > 0 && windowHeight > 0) {
+            if (static_cast<int64_t>(windowWidth) * height > static_cast<int64_t>(windowHeight) * width) {
+                width = static_cast<int32_t>((static_cast<int64_t>(height) * windowWidth + windowHeight / 2) / windowHeight);
+            } else {
+                height = static_cast<int32_t>((static_cast<int64_t>(width) * windowHeight + windowWidth / 2) / windowWidth);
+            }
+        }
+
+        OsMacSetDrawableSize(this->m_hwnd, width, height);
     } else {
         OsMacSetDrawableSize(this->m_hwnd, 0, 0);
     }
@@ -328,7 +345,7 @@ int32_t CGxDeviceMetalNative::DeviceCreate(void* window, const CGxFormat& format
     this->DeviceSetGamma(this->m_gammaRamp);
     this->m_metal->SetVSync(format.m_vsync != 0);
     this->ICursorCreate(format);
-    GxMetal::Log("metal: window %dx%d, %u samples", format.m_size.x, format.m_size.y, this->m_samples);
+    GxMetal::Log("metal: window %dx%d, drawing %dx%d, %u samples", format.m_size.x, format.m_size.y, this->m_backBuffer ? this->m_backBuffer->m_width : 0, this->m_backBuffer ? this->m_backBuffer->m_height : 0, this->m_samples);
     return 1;
 }
 
@@ -395,7 +412,7 @@ int32_t CGxDeviceMetalNative::DeviceSetFormat(const CGxFormat& format) {
     OsGuiSetGxWindow(this->m_hwnd);
     this->m_windowFocus = 1;
     this->m_viewportDirty = 1;
-    GxMetal::Log("metal: window %dx%d, %u samples", createFormat.m_size.x, createFormat.m_size.y, this->m_samples);
+    GxMetal::Log("metal: window %dx%d, drawing %dx%d, %u samples", createFormat.m_size.x, createFormat.m_size.y, this->m_backBuffer ? this->m_backBuffer->m_width : 0, this->m_backBuffer ? this->m_backBuffer->m_height : 0, this->m_samples);
     return 1;
 }
 
