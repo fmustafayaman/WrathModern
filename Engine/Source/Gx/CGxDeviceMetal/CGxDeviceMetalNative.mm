@@ -574,14 +574,39 @@ void CGxDeviceMetalNative::SceneClear(uint32_t mask, CImVector color) {
         return;
     }
 
-    int32_t width = 0;
-    int32_t height = 0;
-    DrawableSize(this->m_hwnd, &width, &height);
+    // As CGxDeviceD3d::SceneClear: Direct3D 9 clears the viewport of the current target, as IXformSetViewport
+    // places it (a texture target keeps its y unflipped). The shadow cache clears its bands this way, one tile
+    // of an atlas at a time; clearing the window's size instead left the rows of a texture taller than the
+    // window uncleared (depth 0, shadowed everywhere)
+    const GxMetal::Target& target = this->m_metal->ColorTarget();
+    if (!target.m_texture) {
+        return;
+    }
+
+    const CRect& window = this->DeviceCurWindow();
+    if (window.maxX <= 0.0f || window.maxY <= 0.0f) {
+        return;
+    }
+
+    bool textureTarget = this->m_textureTarget[GxBuffers_Color].m_texture || this->m_textureTarget[GxBuffers_Depth].m_texture;
+    float x = static_cast<float>(static_cast<int32_t>(this->m_viewport.m_x.m_l * window.maxX + 0.5f));
+    float flippedY = static_cast<float>(static_cast<int32_t>((1.0f - this->m_viewport.m_y.m_h) * window.maxY + 0.5f));
+    float w = static_cast<float>(static_cast<int32_t>(this->m_viewport.m_x.m_h * window.maxX - x + 0.5f));
+    float h = static_cast<float>(static_cast<int32_t>((1.0f - this->m_viewport.m_y.m_l) * window.maxY - flippedY + 0.5f));
+    float y = textureTarget ? static_cast<float>(static_cast<int32_t>(window.maxY * this->m_viewport.m_y.m_l)) : flippedY;
+
+    // The window's rectangle may be in points; the target is in pixels
+    float scaleX = target.Width() / window.maxX;
+    float scaleY = target.Height() / window.maxY;
 
     // CImVector is the client's 8-bit b, g, r, a; Metal wants 0-1 r, g, b, a
-
     float rgba[4] = { color.r / 255.0f, color.g / 255.0f, color.b / 255.0f, color.a / 255.0f };
-    GxMetal::Rect area = { 0, 0, width, height };
+    GxMetal::Rect area = {
+        static_cast<int32_t>(x * scaleX + 0.5f),
+        static_cast<int32_t>(y * scaleY + 0.5f),
+        static_cast<int32_t>((x + w) * scaleX + 0.5f),
+        static_cast<int32_t>((y + h) * scaleY + 0.5f),
+    };
     this->m_metal->Clear(area, (mask & 0x1) != 0, (mask & 0x2) != 0, rgba, 1.0f);
 }
 
