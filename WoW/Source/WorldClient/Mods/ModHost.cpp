@@ -110,7 +110,13 @@ void CaptureWorldState() {
     const DayNight::DNInfo& info = DayNight::g_dnInfo;
 
     std::memcpy(state.view, &CWorldScene::viewMatrix, sizeof(state.view));
+    // CWorldScene::projMatrix is the device's m_projection, the client's OpenGL projection (depth -1..1); the
+    // devices derive their native one from it. Mods get the Direct3D form the interface promises (depth 0..1),
+    // which differs only in the depth column: d3d = (gl + w) / 2.
     std::memcpy(state.projection, &CWorldScene::projMatrix, sizeof(state.projection));
+    for (int row = 0; row < 4; ++row) {
+        state.projection[row * 4 + 2] = 0.5f * (state.projection[row * 4 + 2] + state.projection[row * 4 + 3]);
+    }
 
     const C3Vector& camera = CWorldScene::s_activeWorldView;
     const C3Vector& target = CWorldScene::camTarget;
