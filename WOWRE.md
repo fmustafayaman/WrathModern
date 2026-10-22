@@ -814,3 +814,15 @@ Eski D3D9-üstü-Metal shim'inde (oynadığın sürüm) gölge yolu bizimkiyle *
 1. istemcinin bu ayarlardaki **kendi (orijinal) görünümü** — yani hata değil, beklenti;
 2. **paylaşılan kodun** (ShadowCache/ShadowQuery/terrain shader yedeği) rekonstrüksiyon hatası.
 Bunu ayıran tek referans gerçek **Windows/D3D9 donanım PCF** görüntüsü.
+
+### Shim ile birebir kod karşılaştırması (çalıştırmadan)
+Shim'i çalıştırmaya gerek kalmadan iki fark noktası kod düzeyinde karşılaştırıldı:
+- **Gölge örnekleme metni aynı:** `D3D9/ShaderTranslator.cpp:879` ile WowRe
+  `Shader/ShaderTranslator.cpp` aynı satırı üretiyor:
+  `float4(texN.sample_compare(smpN, coord.xy, coord.z, level(0)))`. Projeksiyon bölmesi (`/w`) ikisinde de
+  yalnız `TEXLD_PROJECT` için. Yani shim'de gölge *görünümü* aynı olurdu.
+- **Viewport kuralı orijinalle aynı:** orijinal D3D9 cihazı (`CGxDeviceD3d::IXformSetViewport`, OFFSET
+  0x006A5A30) doku hedefinde `Y = H * minY` (flipsiz), pencerede `Y = (1-maxY)*H`. Native cihazın özel
+  durumu **birebir** bunu uyguluyor. Karonun yerleşimi doğru.
+Sonuç: shim çalıştırmak bu soruyu ayırt etmez; kalan olasılık paylaşılan gölge matematiğinin
+(ShadowCache/ShadowQuery/terrain shader `else` yedeği) rekonstrüksiyonu veya istemcinin kendi görünümü.
