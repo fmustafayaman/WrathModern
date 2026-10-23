@@ -1908,9 +1908,10 @@ void CMap::ProcessDetailDoodadUpdateList() {
     // The stock client frees a chunk's ground-effect buffers 10 frames after it was last drawn and its
     // placement 20 frames after; turning the camera then rebuilds every chunk that comes back into view on
     // the CPU (CreateDetailDoodads, FillVertices, FillIndices): about a third of the main thread at density
-    // 248 while the camera turns. Chunks whose centre is within CDetailDoodad::KeepRadius keep both (the pool
-    // is sized for that circle). Their buffers go back to the pool, least recently drawn first (the list is in
-    // drawing order), only while the pool runs low; farther chunks are released as before.
+    // 248 while the camera turns. Chunks whose centre is within CDetailDoodad::KeepRadius keep both while the
+    // pool has room (UpdatePools sizes it for that circle, up to 1024 buffer pairs). Their buffers
+    // go back to the pool, least recently drawn first (the list is in drawing order), only while the pool runs
+    // low; farther chunks are released as before.
     static const uint32_t kReservePairs = 8;
     const C3Vector& eye = CWorldScene::s_activeWorldView;
     float keep = CDetailDoodad::KeepRadius();

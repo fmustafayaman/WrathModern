@@ -591,10 +591,10 @@ void CDetailDoodad::UpdatePools() {
 #if defined(WRATHMODERN_CLIENT_PATCHES)
     // One buffer pair per batch of every chunk CMap::ProcessDetailDoodadUpdateList keeps around the camera
     // (up to four batches a chunk), so those chunks keep their buffers too. Never fewer than the stock 128;
-    // past 256 the least recently drawn chunks give theirs back.
+    // past 1024 the least recently drawn chunks give theirs back.
     float reach = CDetailDoodad::KeepRadius();
     uint32_t pairs = static_cast<uint32_t>(ceilf(3.1415927f * reach * reach / (33.333332f * 33.333332f) * 4.0f));
-    pairs = pairs < 128 ? 128 : (pairs > 256 ? 256 : pairs);
+    pairs = pairs < 128 ? 128 : (pairs > 1024 ? 1024 : pairs);
 #else
     uint32_t pairs = 128;
 #endif
