@@ -14,6 +14,7 @@ if (WOWDECOMP_PLATFORM_MAC)
     target_link_libraries(Gx
         PRIVATE
             "-framework Metal"
+            "-framework MetalFX"
             "-framework QuartzCore"
             "-framework AppKit"
             "-framework CoreGraphics"

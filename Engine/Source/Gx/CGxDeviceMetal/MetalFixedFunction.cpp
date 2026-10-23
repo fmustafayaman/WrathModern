@@ -88,7 +88,8 @@ bool GenerateFixedVertexShader(const FixedVertexKey& key, std::string& source, s
         source += inputs;
     }
 
-    source += Format("vertex D3DVaryings %s(%sconstant D3DVertexState& state [[buffer(%d)]], constant GxFixedVertexState& ff [[buffer(%d)]]) {\n", kVertexFunctionName, hasInputs ? "GxVertexInput in [[stage_in]], " : "", VS_BUFFER_STATE, VS_BUFFER_FIXED_FUNCTION);
+    const char* varyings = key.m_noClip ? "D3DVaryingsNoClip" : "D3DVaryings";
+    source += Format("vertex %s %s(%sconstant D3DVertexState& state [[buffer(%d)]], constant GxFixedVertexState& ff [[buffer(%d)]]) {\n", varyings, kVertexFunctionName, hasInputs ? "GxVertexInput in [[stage_in]], " : "", VS_BUFFER_STATE, VS_BUFFER_FIXED_FUNCTION);
 
     auto input = [&](uint32_t attribute, const char* fallback) -> std::string {
         if (!key.m_attributes[attribute]) {
@@ -113,7 +114,7 @@ bool GenerateFixedVertexShader(const FixedVertexKey& key, std::string& source, s
     }
 
     source += "    float4 oPos = ff.projection * vtx;\n";
-    source += "    D3DVaryings out;\n";
+    source += Format("    %s out;\n", varyings);
 
     // Texture coordinates: generation, then the texture transform
     for (uint32_t i = 0; i < 8; i++) {
@@ -236,9 +237,12 @@ bool GenerateFixedVertexShader(const FixedVertexKey& key, std::string& source, s
     }
     source += "    out.pointSize = clamp(pointSize, state.pointSize.y, state.pointSize.z);\n";
 
-    // User clip planes are in world space for fixed-function vertex processing
-    for (uint32_t i = 0; i < 6; i++) {
-        source += Format("    out.clipDistance[%u] = (state.flags.x & %uu) ? dot(worldPos, state.clipPlanes[%u]) : 1.0f;\n", i, 1u << i, i);
+    // User clip planes are in world space for fixed-function vertex processing. With every plane
+    // disabled the output is omitted, as in the translated vertex path.
+    if (!key.m_noClip) {
+        for (uint32_t i = 0; i < 6; i++) {
+            source += Format("    out.clipDistance[%u] = (state.flags.x & %uu) ? dot(worldPos, state.clipPlanes[%u]) : 1.0f;\n", i, 1u << i, i);
+        }
     }
 
     source += "    out.position = oPos;\n";
@@ -366,7 +370,9 @@ bool GenerateFixedPixelShader(const FixedPixelKey& key, std::string& source, std
     source += body;
     source += "    GxFragmentOutput out;\n";
     source += "    out.color = d3d_fog(state, current, in.fog);\n";
-    source += "    if (!d3d_alpha_test(state, out.color.a)) discard_fragment();\n";
+    if (!key.m_noAlphaTest) {
+        source += "    if (!d3d_alpha_test(state, out.color.a)) discard_fragment();\n";
+    }
     source += "    return out;\n}\n";
 
     return true;

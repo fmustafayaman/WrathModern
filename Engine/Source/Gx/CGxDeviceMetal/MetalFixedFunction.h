@@ -71,7 +71,8 @@ struct FixedVertexKey {
     uint8_t m_transformCount[8];          // components the texture transform produces, 0 without one
     uint8_t m_fog;                        // linear vertex fog
     uint8_t m_pointScale;
-    uint8_t m_padding[2];
+    uint8_t m_noClip;                     // omit the clip-distance output (no user planes)
+    uint8_t m_padding[1];
 
     FixedVertexKey() { memset(this, 0, sizeof(*this)); }
     bool operator==(const FixedVertexKey& other) const { return memcmp(this, &other, sizeof(*this)) == 0; }
@@ -90,7 +91,8 @@ struct FixedPixelKey {
     FixedPixelStage m_stages[8];
     uint8_t m_specularEnable;
     uint8_t m_pointSprite;
-    uint8_t m_padding[2];
+    uint8_t m_noAlphaTest;                // omit the wrapper discard, as in PixelShaderVariant
+    uint8_t m_padding[1];
 
     FixedPixelKey() { memset(this, 0, sizeof(*this)); }
     bool operator==(const FixedPixelKey& other) const { return memcmp(this, &other, sizeof(*this)) == 0; }

@@ -1,5 +1,6 @@
 #include "Engine/Source/Os/Mac/MacOs.h"
 #include "Engine/Source/Os/Mac/MacInput.h"
+#include "Engine/Source/Gx/CGxDeviceMetal/MetalFXSettings.h"
 #include <cstdint>
 #include <vector>
 #import <AppKit/AppKit.h>
@@ -12,16 +13,28 @@
 // client's OS_INPUT events the way the Win32 window procedure does.
 
 static bool s_quitRequested;
+static bool s_metalFXShortcutDown;
+
+static bool MetalFXShortcut(NSEvent* event) {
+    if (event.type == NSEventTypeKeyDown && event.keyCode == 100 &&
+        (event.modifierFlags & (NSEventModifierFlagControl | NSEventModifierFlagOption)) &&
+        !(event.modifierFlags & NSEventModifierFlagCommand)) {
+        if (!event.isARepeat) GxMetalFXToggleMenu();
+        s_metalFXShortcutDown = true;
+        return true;
+    }
+    return false;
+}
 static CGSize s_fixedDrawableSize;
 static NSCursor* s_gameCursor;
 static bool s_gameCursorVisible = true;
 
-// The pointer for the game view: the client's cursor, or an empty one while it is hidden. An empty
-// cursor rather than [NSCursor hide] keeps hide/unhide balanced for relative mouse mode.
+// Keep the system cursor visible, using an empty pointer while hidden or detached for camera control.
+// Changing its image instead of calling NSCursor hide/unhide avoids fullscreen presentation switches.
 static NSCursor* CurrentCursor() {
     static NSCursor* s_emptyCursor;
 
-    if (!s_gameCursorVisible) {
+    if (!s_gameCursorVisible || OsMacInputCursorDetached()) {
         if (!s_emptyCursor) {
             NSImage* image = [[NSImage alloc] initWithSize:NSMakeSize(1, 1)];
             s_emptyCursor = [[NSCursor alloc] initWithImage:image hotSpot:NSZeroPoint];
@@ -165,6 +178,7 @@ static void UpdateDrawableSize(NSView* view) {
 // Keyboard
 
 - (void)keyDown:(NSEvent*)event {
+    if (MetalFXShortcut(event)) return;
     OsMacInputKeyDown(event);
 
     // Text goes through the input context so dead keys and input methods compose as they should.
@@ -174,6 +188,10 @@ static void UpdateDrawableSize(NSView* view) {
 }
 
 - (void)keyUp:(NSEvent*)event {
+    if (event.keyCode == 100 && s_metalFXShortcutDown) {
+        s_metalFXShortcutDown = false;
+        return;
+    }
     OsMacInputKeyUp(event);
 }
 
@@ -182,6 +200,7 @@ static void UpdateDrawableSize(NSView* view) {
 }
 
 - (BOOL)performKeyEquivalent:(NSEvent*)event {
+    if (MetalFXShortcut(event)) return YES;
     // Command acts as Control in the client. Let the menu take its own shortcuts (Cmd+Q, Cmd+H, Cmd+M);
     // every other Command combination is a key press for the client.
     if ([[NSApp mainMenu] performKeyEquivalent:event]) {

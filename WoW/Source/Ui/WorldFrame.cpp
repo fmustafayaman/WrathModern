@@ -1693,6 +1693,9 @@ void CGWorldFrame::OnWorldRender() {
 
     WRATHMODERN_MOD_FRAME(this->m_elapsedSec);
 
+#if defined(__APPLE__)
+    GxMetalWorldScope worldUpscale;
+#endif
     g_theGxDevicePtr->RsPush();
     GxRsSet(GxRs_Multisample, 1);
     CGWorldFrame::UpdateScreenEffectParams();

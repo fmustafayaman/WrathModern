@@ -661,7 +661,9 @@ void CM2Shared::SubstituteSimpleShaders() {
             uint32_t ops[2] = { 0, 0 };
             batch->m_shader = 0;
 
-            for (uint32_t j = 0; j < batch->m_textureCount; j++) {
+            // The shader ID encodes only two combiners, even for modern 3/4-texture batches.
+            const uint32_t opCount = batch->m_textureCount < 2 ? batch->m_textureCount : 2;
+            for (uint32_t j = 0; j < opCount; j++) {
                 uint32_t op = this->m_data->m_textureCombinerCombos[combiner + j];
 
                 if (j == 0 && !material->m_blendMode) {
@@ -675,7 +677,7 @@ void CM2Shared::SubstituteSimpleShaders() {
                     ops[j] = op | 8;
                 }
 
-                if (coord == 1 && j + 1 == batch->m_textureCount) {
+                if (coord == 1 && j + 1 == opCount) {
                     batch->m_shader |= 0x4000;
                 }
             }

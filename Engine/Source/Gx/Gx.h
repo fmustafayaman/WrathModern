@@ -77,6 +77,19 @@ void GxMetalSetStencilTag(uint32_t tag);
 void GxMetalForceDepthWrite(bool force);
 // Names the GPU profile section of the passes that follow (WRATHMODERN_GPU_PROFILE=1); nothing otherwise.
 void GxMetalProfileSection(const char* name);
+#if defined(__APPLE__)
+// World-only optional MetalFX; scope restores native targets before world text and UI.
+bool GxMetalBeginWorldUpscale();
+void GxMetalEndWorldUpscale();
+class GxMetalWorldScope {
+    bool m_active;
+public:
+    GxMetalWorldScope() : m_active(GxMetalBeginWorldUpscale()) {}
+    ~GxMetalWorldScope() { if (m_active) GxMetalEndWorldUpscale(); }
+    GxMetalWorldScope(const GxMetalWorldScope&) = delete;
+    GxMetalWorldScope& operator=(const GxMetalWorldScope&) = delete;
+};
+#endif
 // Marks a texture the client uses only as a colour attachment that nothing samples: passes rendering into it
 // skip loading, clearing and storing it. The shadow pass's Argb8888 depth stand-in is one with hardware compare
 // filtering (s_usePcfFiltering), where the shadows are sampled from the D24X8 depth textures instead.

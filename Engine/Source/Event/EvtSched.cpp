@@ -14,6 +14,24 @@
 #include "Engine/Source/Os/TimeManager.h"
 #include "Engine/Source/Storm/H/storm.h"
 
+#if defined(__APPLE__)
+extern "C" void* objc_autoreleasePoolPush(void);
+extern "C" void objc_autoreleasePoolPop(void* pool);
+
+namespace {
+    // EvtSched is C++; use the runtime so every scheduler iteration also drains Metal/AppKit objects.
+    class ScopedAutoreleasePool {
+        void* m_pool = objc_autoreleasePoolPush();
+
+    public:
+        ~ScopedAutoreleasePool() { objc_autoreleasePoolPop(m_pool); }
+        ScopedAutoreleasePool() = default;
+        ScopedAutoreleasePool(const ScopedAutoreleasePool&) = delete;
+        ScopedAutoreleasePool& operator=(const ScopedAutoreleasePool&) = delete;
+    };
+}
+#endif
+
 namespace Event {
     // STATIC: 0x00AC0DC0
     volatile long s_threadListContention = -1;
@@ -556,6 +574,10 @@ void PutContext(uint32_t nextWakeTime, uint32_t newSmoothWeight, EvtContext* con
 // VERIFY: 6f17c9b6 manual
 // OFFSET: 0x0047EFF0
 int32_t SchedulerThreadProcProcess(uint32_t hThread, int32_t* watchdogStarted) {
+#if defined(__APPLE__)
+    ScopedAutoreleasePool pool;
+#endif
+
     if (SGetCurrentThreadPriority() != Event::s_originalThreadPriority) {
         SSetCurrentThreadPriority(Event::s_originalThreadPriority);
     }

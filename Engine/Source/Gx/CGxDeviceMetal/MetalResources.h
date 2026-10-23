@@ -148,7 +148,7 @@ class Texture : public RefCounted {
     // A sampled texture (2D or cube), optionally a render target and with generated mipmaps
     static Texture* Create(Context* context, MTLTextureType type, uint32_t width, uint32_t height, uint32_t levels, const FormatInfo& format, bool renderTarget, bool autoMips);
     // A window target: render target (and shader readable), possibly multisampled
-    static Texture* CreateTarget(Context* context, const FormatInfo& format, uint32_t width, uint32_t height, uint32_t samples);
+    static Texture* CreateTarget(Context* context, const FormatInfo& format, uint32_t width, uint32_t height, uint32_t samples, MTLTextureUsage extraUsage = MTLTextureUsageUnknown);
 
     // The texture to sample: a swizzled view where the format needs one
     id<MTLTexture> SampleTexture() const { return this->m_view ? this->m_view : this->m_texture; }

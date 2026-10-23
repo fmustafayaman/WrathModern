@@ -11,6 +11,8 @@
 //   WRATHMODERN_SHOTS=a,b,...      screenshots: "glue@S" S seconds after the glue starts,
 //                                  "world@S" S seconds after the world finished loading
 //   WRATHMODERN_EXIT_AFTER_SHOTS=1 exit once the last screenshot is written
+//   WRATHMODERN_AUTOTEST_NO_ADDONS=1 disable Lua addons before entering the world (native mods stay on).
+//                                  Use Tools/autotest.sh: it backs up and restores the WTF addon settings.
 //
 // Screenshots are written as Screenshots/autotest-<label>.tga in the game directory, from the
 // client's own screenshot path (CGxDevice::DeviceReadScreenShot), so no desktop capture is needed.

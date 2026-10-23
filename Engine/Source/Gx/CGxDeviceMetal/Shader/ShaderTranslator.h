@@ -42,6 +42,9 @@ enum AttributeClass : uint8_t {
 
 struct VertexInputSignature {
     uint8_t m_class[ATTRIB_COUNT] = {};
+    // No user clip planes are enabled: omit the rasterizer clip-distance output. Hardware near/far
+    // clipping is independent of this flag.
+    uint8_t m_noClip = 0;
 
     bool operator==(const VertexInputSignature& other) const;
 };
@@ -66,6 +69,9 @@ struct PixelShaderVariant {
     // Colour writes are off: only the alpha test's result matters, so the colour is not computed (the compiler
     // drops the work that only fed it, such as shadow lookups) and the pass costs what the alpha test costs
     uint8_t m_alphaOnly = 0;
+    // The device disabled fixed-function alpha testing. Omit only its wrapper discard;
+    // explicit TEXKILL instructions in the shader still discard as usual.
+    uint8_t m_noAlphaTest = 0;
 
     SamplerKind Kind(uint32_t sampler) const { return static_cast<SamplerKind>((m_samplerKinds >> (sampler * 2)) & 0x3); }
     bool operator==(const PixelShaderVariant& other) const;

@@ -20,6 +20,7 @@
 #include "WoW/Source/Glue/CharacterSelection.h"
 #include "WoW/Source/LoadingScreen.h"
 #include "WoW/Source/ObjectMgrClient/ObjectMgrClient.h"
+#include "WoW/Source/UIUtil/InputControl.h"
 #include "WoW/Source/WowServices/Login.h"
 #include "WoW/Source/WowServices/RealmConnection.h"
 #include "WoW/Source/WowSvcs/WowSvcsClient/ClientServices.h"
@@ -344,6 +345,12 @@ int32_t Tick(const void* data, void* param) {
             // (CGGameUI::OnIdle: 30 minutes since CSimpleTop::s_eventTime) logs out at once
             CSimpleTop::s_eventTime = now;
             Log("entering the world as %s", connection->m_characterList.m_data[index].m_name);
+            if (const char* noAddons = getenv("WRATHMODERN_AUTOTEST_NO_ADDONS")) {
+                if (!strcmp(noAddons, "1")) {
+                    Log("disabling Lua addons for this test (native mods remain enabled)");
+                    FrameScript_Execute("DisableAllAddOns()", "autotest", nullptr);
+                }
+            }
             CGlueMgr::EnterWorld();
             s_enteredAt = now;
             s_phase = PHASE_WAIT_WORLD;
@@ -373,6 +380,31 @@ int32_t Tick(const void* data, void* param) {
 
         default:
             break;
+    }
+
+    // WRATHMODERN_AUTOTEST_WALK="start,duration" (seconds in the world) holds the forward movement key in that
+    // window through the client's own control bits: MoveForwardStart is protected, so the Lua snippet cannot walk
+    static int32_t s_walk = -1;
+    static float s_walkStart = 0.0f;
+    static float s_walkDuration = 0.0f;
+
+    if (s_walk < 0) {
+        const char* walk = getenv("WRATHMODERN_AUTOTEST_WALK");
+        s_walk = walk && sscanf(walk, "%f,%f", &s_walkStart, &s_walkDuration) == 2 ? 0 : 3;
+    }
+
+    if (s_walk < 3 && s_phase == PHASE_WORLD && s_worldLoadedAt && CGInputControl::s_inputControl) {
+        float inWorld = (now - s_worldLoadedAt) / 1000.0f;
+
+        if (s_walk == 0 && inWorld >= s_walkStart) {
+            Log("walking forward");
+            CGInputControl::s_inputControl->ToggleControlBit(0x10, 1, CSimpleTop::s_eventTime, 0);
+            s_walk = 1;
+        } else if (s_walk == 1 && inWorld >= s_walkStart + s_walkDuration) {
+            Log("stopping");
+            CGInputControl::s_inputControl->ToggleControlBit(0x10, 0, CSimpleTop::s_eventTime, 0);
+            s_walk = 3;
+        }
     }
 
     if (s_exitAfterShots && !s_shots.empty() && !shotsRemain && (s_phase == PHASE_WORLD || s_phase == PHASE_DONE || !s_login)) {

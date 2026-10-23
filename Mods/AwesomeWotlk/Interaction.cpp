@@ -7,15 +7,16 @@
 // client's objects; the per-frame tick comes from WMModInfo::OnFrame (the client calls it from
 // CGWorldFrame::OnWorldRender).
 //
-// Not ported: the original's game object subtype filter (door, button, questgiver, chest, ...) and
-// CanUse/CanUseNow test. Every game object in range is a candidate here, so a decorative object can
-// stand in front of a chest; the client ignores the right click on it.
+// Game objects use the original's subtype allowlist and CanUse/CanUseNow checks. Decorative
+// objects (for example Dalaran lampposts) must not become interaction targets or gain a proximity
+// highlight merely because they are in front of the player.
 
 #include <cmath>
 #include <cstring>
 #include "Mods/AwesomeWotlk/AwesomeWotlk.h"
 #include "Engine/Source/FrameScript/FrameScript.h"
 #include "WoW/Source/Object/ObjectClient/Player_C.h"
+#include "WoW/Source/Object/ObjectClient/GameObject_C.h"
 #include "WoW/Source/Object/ObjectClient/UnitCombatLog_C.h"
 #include "WoW/Source/Object/ObjectClient/Unit_C.h"
 #include "WoW/Source/ObjectMgrClient/ObjectMgrClient.h"
@@ -68,6 +69,31 @@ bool IsInteractableUnit(CGUnit_C* unit, CGUnit_C* player) {
     return lootable || skinnable || (assistable && npcFlags != 0);
 }
 
+bool IsInteractableGameObject(CGGameObject_C* object) {
+    if (!object || !object->m_gameObject || !object->m_typeData) {
+        return false;
+    }
+
+    // awesome_wotlk Misc.cpp: kValidGameobjectTypes (3.3.5 GAMEOBJECT_BYTES_1 subtype).
+    switch (object->m_gameObject->m_typeID) {
+        case 0:  // Door
+        case 1:  // Button
+        case 2:  // Questgiver
+        case 3:  // Chest
+        case 4:  // Binder
+        case 7:  // Chair
+        case 8:  // SpellFocus
+        case 10: // Goober
+        case 17: // FishingNode
+        case 19: // Mailbox
+        case 23: // MeetingStone
+        case 34: // GuildBank
+            return object->CanUse() && object->CanUseNow();
+        default:
+            return false;
+    }
+}
+
 struct Scan {
     CGUnit_C* m_player;
     C3Vector m_from;
@@ -99,7 +125,11 @@ int32_t ScanObject(WOWGUID guid, void* param) {
         return 1;
     }
 
-    if (unit && !IsInteractableUnit(unit, scan->m_player)) {
+    if (unit) {
+        if (!IsInteractableUnit(unit, scan->m_player)) {
+            return 1;
+        }
+    } else if (!IsInteractableGameObject(static_cast<CGGameObject_C*>(object))) {
         return 1;
     }
 

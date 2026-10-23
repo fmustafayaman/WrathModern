@@ -22,6 +22,7 @@
 #include "Engine/Source/Frame/CSimpleTop.h"
 #include "Engine/Source/Frame/SimpleFrameScript.h"
 #include "Engine/Source/FrameScript/FrameScript.h"
+#include "WoW/Source/Ui/MetalFXMenu.h"
 #include "Engine/Source/FrameScript/FrameScript_Object.h"
 #include "Engine/Source/FrameXML/FrameXML.h"
 #include "Engine/Source/FrameXML/LoadXML.h"
@@ -1802,6 +1803,9 @@ void CGGameUI::InitializeFrameXML() {
     BugReportRegister();
     LoadAddOns(&status);
     WRATHMODERN_MOD_SCRIPTS_LOADED(WM_SCRIPT_GAME);
+#if defined(__APPLE__)
+    MetalFXMenuInitialize();
+#endif
     FrameXML_RegisterLoadProgressCallback(nullptr, nullptr, 0);
     CGGameUI::Initialize();
     LoadSavedVariables(&status);
@@ -2002,6 +2006,10 @@ int32_t CGGameUI::Idle(const void* data, void* param) {
     if (lua_gettop(FrameScript_GetContext())) {
         SErrDisplayAppFatalMessage("", "", 0);
     }
+
+#if defined(__APPLE__)
+    MetalFXMenuUpdate();
+#endif
 
     CGPlayer_C* player = static_cast<CGPlayer_C*>(ClntObjMgrObjectPtr(ClntObjMgrGetActivePlayer(), TYPEMASK_PLAYER, __FILE__, __LINE__));
 

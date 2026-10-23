@@ -196,7 +196,7 @@ Texture* Texture::Create(Context* context, MTLTextureType type, uint32_t width, 
     return created;
 }
 
-Texture* Texture::CreateTarget(Context* context, const FormatInfo& format, uint32_t width, uint32_t height, uint32_t samples) {
+Texture* Texture::CreateTarget(Context* context, const FormatInfo& format, uint32_t width, uint32_t height, uint32_t samples, MTLTextureUsage extraUsage) {
     if (!format.m_renderable || !width || !height) {
         return nullptr;
     }
@@ -205,7 +205,7 @@ Texture* Texture::CreateTarget(Context* context, const FormatInfo& format, uint3
     descriptor.storageMode = MTLStorageModePrivate;
     // Targets stay shader readable, multisampled ones too, so code drawing with Metal itself (mods) can read
     // the frame without resolving its attachments
-    descriptor.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+    descriptor.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead | extraUsage;
 
     if (samples > 1) {
         descriptor.textureType = MTLTextureType2DMultisample;
@@ -228,7 +228,7 @@ Texture* Texture::CreateTarget(Context* context, const FormatInfo& format, uint3
     if (samples > 1 && !format.m_depth) {
         MTLTextureDescriptor* resolve = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format.m_pixelFormat width:width height:height mipmapped:NO];
         resolve.storageMode = MTLStorageModePrivate;
-        resolve.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+        resolve.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead | extraUsage;
         created->m_resolve = [context->m_device newTextureWithDescriptor:resolve];
         if (!created->m_resolve) {
             created->Release();

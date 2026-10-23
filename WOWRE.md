@@ -7,6 +7,138 @@ ve iş yarıda kalırsa nereden nasıl devam edilir. Her anlamlı adımdan sonra
 
 > Projenin tamamen bitmiş, oynanabilir formda olması; hiçbir sorun yaşamadan başından sonuna kadar.
 
+**2026-10-23 performans/görsel hedefi:** native Metal istemciyle çok yüksek görüntü kalitesi,
+WoW Forever'dan daha iyi görünüm ve mümkün olan en kötü sahnelerde dahi 60 FPS hedefi.
+Bu bir doğrulanmış sonuç/garanti değil, kabul hedefidir. Efektleri kapatmak veya çizim mesafesini
+sessizce azaltmak optimizasyon sayılmaz. Isınmış cihazda CPU ve GPU ayrı ayrı 16.67 ms altında,
+tercihen 12–14 ms payla çalışmalı; yürüyüş/dönen kamera ve kötü kareler de ölçülmeli.
+İlk güncel Dalaran profili: `build/autotest/perf-dalaran-baseline/`; CPU sample:
+`/tmp/perf-dalaran-cpu.txt`. Yükleme sonrası 5 saniyelik pencerelerde CPU 11.02–29.28 ms,
+GPU 14.67–25.57 ms; pencere başına ortalama kare süresi 17.45–29.31 ms (~34–57 FPS).
+Bu kısa/dönen kameralı koşu ısıl sebebi tek başına kanıtlamaz ve p99/1% low ölçümü değildir.
+GPU'nun büyük kalemleri: gölgeler 3.5–6.5 ms, WMO 3.0–5.3 ms, sis march+composite
+2.7–5.2 ms. CPU örneğinde gölge sorgusu/çizimi ana iş parçacığının 217/980 örneğinde;
+Metal komut hazırlığı ve frustum elemesi de görünür. Öncelik: gölge sorgu/çizimi ve WMO,
+ardından sis/bellek bant genişliği. Her değişiklik aynı sahnede A/B + görsel karşılaştırmayla
+kabul edilmeli. Bu ilk baseline sırasında henüz performans kodu değiştirilmemişti.
+
+**2026-10-23 — Metal durum önbelleği, ilk doğrulama:** `CGxDeviceMetalNative` artık aynı
+render encoder içindeki gereksiz pipeline/depth/raster/viewport/scissor/vertex-buffer
+bağlamalarını atlıyor. Yeni pass'te geçersizleşir; buffer rename için gerçek Metal buffer'ı ve
+ofseti karşılaştırır. Mipmap blit'inden sonra encoder edinilir. Metal validation'ın her iki
+cache modunda yakaladığı framebuffer-only drawable'a blit de `MetalContext::Present()` içindeki
+quad fallback ile düzeltildi. Cache açık/kapalı validation giriş + dünya testleri geçti.
+
+Geçerli aynı-süreç A/B: `build/autotest/metal-state-ab-valid/`, her 600 buffer'da aç/kapat,
+Lua addonları **0**, test Lua hatası **0**, native grafik modları açık. Yükleme hariç üçer
+blokta çizim hazırlığı ortalama **1.356 → 1.245 ms/buffer** (~0.11 ms, hazırlık aşamasında %8.1);
+izlenen redundant bağlamaların **%91.9**'u atlandı. **Bu oranlar FPS artışı değildir.**
+İş miktarı animasyon/NPC yüzünden az miktarda değişir; statik bakış sonuçları dönen ilk
+baseline ile doğrudan karşılaştırılmaz. Aynı bakıştaki `world-3/world-4` görüntülerinde
+ortalama mutlak RGB farkı 0.237/255 (medyan 0); geometri/ışık kaybı gözlenmedi ama animasyonlar
+nedeniyle bit-eşitlik iddiası yok. WTF'nin **126 dosyası** test öncesi/sonrası SHA-256 ile
+birebir doğrulandı. `metal-state-ab` ve `metal-state-ab-clean`, test betiğinin gizli kamera
+CVar'ına erişimi yüzünden tekrarlayan Lua hataları içeriyordu; FPS/termal sonuçlarından elendi.
+Geçerli betik `SetView(2)` kullanır. Sürekli minimum 60 FPS henüz kanıtlanmış değil.
+
+**PDF kaynak kontrolü:** [ayrıntılı inceleme](Docs/WowRe-Proposed-Fixes-Review-2026-10-23.md).
+Skin-profile düzeltmesi zaten `3e3eb0fb` commit'inde mevcut; tekrar uygulanmadı.
+**Kullanıcının talebi üzerine kalan dört PDF düzeltmesi de uygulandı:** shader combiner döngüsü
+ve son-stage UV testi iki etkin stage ile sınırlandı (batch textureCount korunuyor); NPC portrait
+cache'i hash/key atayan `.New()` kullanıyor; macOS scheduler iterasyonuna runtime tabanlı RAII
+autorelease pool eklendi; relative mouse/focus/destroy ortak yolundaki `NSCursor hide/unhide`
+kaldırılarak `CurrentCursor()` detached durumda şeffaf cursor döndürecek şekilde güncellendi.
+`ninja -C build/mac WrathModern AwesomeWotlk` başarılı, uygulama oyun klasörüne dağıtıldı.
+`Tools/MacDev/test-proposed-fixes.py` ASan/UBSan ile 480 shader vakası, 40 skin seçimi + sıfır profil,
+4000 gerçek Storm cache erişimi, cursor truth table ve 10000 autorelease temizliğini doğruladı.
+`build/autotest/pdf-fixes-validation/`: Metal validation açık Dalaran'da NPC portresi 786 kez
+güncellendi, kamera kontrolü 0.5 saniyede bir aç/kapatıldı, test Lua hatası 0; giriş/dünya başarılı.
+Normal addon ayarlarıyla `pdf-fixes-addons-validation/` de geçti. Pending-release high-water
+8641 / 9714; aynı makinede eski pool ölçümü olmadığı için önce/sonra azalma oranı iddiası yok.
+WTF'nin 126 dosyası SHA-256 ile geri yüklenmiş doğrulandı. Fullscreen Direct/Composited ve VRR
+kazancı henüz ölçülmedi; bunlar test sonucu olarak sunulmuyor.
+
+**2026-10-23 — MetalFX Spatial ilk deneme sürümü:** `metalFX` arşivlenen CVar'ı
+(0 kapalı, 1 kalite/%75, 2 dengeli/⅔, 3 performans/%50). **Control+F8 veya Option+F8**
+ile oyun içinde çizilen İngilizce ayar paneli açılır/kapanır; Esc de kapatır. Varsayılan kapalı. `GxMetalWorldScope` yalnızca dünya render'ında
+renk/derinlik hedeflerini değiştirir; FFX ve native modlar bu hedeflerde çalışır. Spatial yükseltme
+sonrası native hedefler geri yüklenir, dünya yazıları ve UI native çözünürlükte çizilir. Gamma ramp
+sunum sonunda korunur. GPU desteği/ayırma başarısızlığında native render'a döner.
+`MetalFX` framework'ü bağlandı, örnek sayısı korunuyor; scaler'ın istediği texture usage bitleri
+hedeflere ekleniyor. Temporal upscale/motion vectors/frame generation yok.
+Derleme + dağıtım başarılı; `build/autotest/metalfx-quality-validation/` kalite modunda
+**2280×1434 → 3042×1912** spatial encode'u doğruladı; Metal validation açık giriş/dünya testinde
+çökme/assertion yok, ekran görüntüsü incelendi. Oyun içi panel
+`build/autotest/metalfx-menu-english/` ile doğrulandı; tüm metinler İngilizce, iki kısayol da
+kabul ediliyor. Sabit modlar ilk kullanıcı denemesine açık;
+**dinamik 60 FPS kontrolü henüz uygulanmadı**, native/MetalFX performans A/B'si de henüz yapılmadı.
+Dinamik mod için GPU/CPU ayrımı, histerezis ve ölçek değişiminde FFX/mod hedeflerinin yeniden
+ayrılmasından kaynaklanabilecek takılmaların önlenmesi gerekiyor; bitmiş olarak sunulmamalı.
+Yeni native baseline: `build/autotest/perf-native-post-pdf/`, CPU sample:
+`/tmp/perf-native-post-pdf-cpu.txt`; dönen Dalaran'da yükleme sonrası çoğu pencere CPU 7.56–9.82 ms,
+GPU 10.20–14.24 ms; bir pencerede CPU 27.30 ms (neden ayrıca araştırılmalı). En büyük GPU kalemleri
+hâlâ WMO/gölgeler (~2–2.4 ms ayrı ayrı), fog composite (~1.2–1.4 ms), march (~1–1.2 ms).
+
+**2026-10-23 — Azure Watch ormanı, native 60 FPS hedefi (AÇIK / ENGELLİ):** Kullanıcının
+konumu map 530, `(-4183.4995, -12414.743, 43.44328)`, yön 1.389416. `WRATHMODERN_AUTOTEST_NO_ADDONS=1`,
+sabit kamera, addon yok, MetalFX **kapalı**. Ölçümler `build/autotest/perf-azure-native-noprofile/`:
+220–228 kare/5 sn penceresi, kare **21.9–22.9 ms**, GPU **27.2–27.9 ms**, CPU **8.9–10.1 ms**.
+GPU profili (`perf-azure-native/`): ağaç/M2 opaque ~8 ms, sis composite ~4.7, terrain ~4.6,
+horizon ~3.3, gölgeler ~3.3, ground effects ~2.8, sis march ~1.6. **İkinci inceleme uyarısı:**
+bu geçiş süreleri profil açık koşudan; profil render encoder sınırlarını değiştiriyor.
+Sis çizilmeyen hatalı shader koşularındaki ~14.6 ms sonuç, izole bir sis A/B'si değil;
+bundan “sis kesin 7.7 ms” sonucu çıkarılamaz (aşağıdaki ikinci inceleme).
+
+Kaliteyi koruyarak denenen ve **reddedilen** optimizasyonlar (hepsi geri alındı):
+- M2 opaque için iki aşamalı alfa-test derinlik ön geçişi: 22.4 → 24.5 ms (vertex-bound, kazanç yok).
+- Terrain chunk'larını önden arkaya sıralama: 22.4 → 22.6 ms.
+- Sis composite'ine düşük çözünürlüklü derinlik dokusu: 22.3 ms (ölçülebilir kazanç yok).
+- Framebuffer fetch ile sahne kopyasını kaldırma: 22.3 ms (ölçülebilir kazanç yok).
+- Düz yüzeylerde bilinear sis yükseltmesi: 22.4 ms (shader derleme hatası düzeltildikten sonra).
+- Pahalı renk matematiğini geçici olarak sadeleştirme: 20.8 → 20.4 ms; tam sürümde kazanç yok.
+
+**2026-10-23 — İkinci inceleme:** Önceki “kalite düşürmek / MetalFX tek yol” sonucu geri çekildi;
+başarısız birkaç deney imkânsızlık kanıtı değil. Ayrı koşularda yalnızca sis değil M2/terrain
+süreleri de yaklaşık iki kat farklı; profil açık geçiş maliyeti profil kapalı kareye doğrudan
+aktarılmamalı. [İnceleme ve test komutları](Docs/Native-Opaque-Shader-Review-2026-10-23.md).
+
+Atlanmış hata düzeltildi: native backend `m_hw.m_alphaTest` kapalı bilgisini kullanmıyor, her
+pixel shader'da alfa-test discard'ı tutuyordu. Artık kapalı testte shader'ın wrapper discard'ı
+üretilmiyor; gerçek alfa testleri ve açık `TEXKILL` korunuyor. Dinamik referansta kapalı test
+`ALWAYS` kullanır (orijinal D3D/OpenGL semantiği). `WRATHMODERN_METAL_OPAQUE_SHADERS=0/1/alternate`
+ile kalite ayarı değiştirmeden aynı-binary A/B yapılabilir. `Tools/MacDev/test-opaque-shaders.mm`
+Metal API+GPU validation ile **1200 bit-eşit karşılaştırma ve 300 açık-alfa eşik vakası PASS**.
+Oyun kapandıktan sonra uygulama derlendi/dağıtıldı. `perf-azure-opaque-ab/` aynı süreçte native
+3042×1912 / MetalFX=0 / ayarlar korunarak 131 sn ölçüldü. Isınmış bölümün geçişsiz pencerelerinde
+(simetrik on/off/on): kare **24.25 → 23.35 ms (~%3.72)**, CPU **10.54 → 10.24 ms**,
+GPU command-buffer **29.40 → 28.39 ms**. Bunlar 5 sn ortalamaları; p99/minimum FPS kanıtı değil.
+Üst dünya görüntü bölgesinde ortalama RGB farkı 0.166/255 (animasyon/zaman farkı mevcut).
+`opaque-shaders-validation/` oyun içi Metal API+GPU validation geçti, PDF regresyonları yeniden
+PASS; mevcut WTF'nin **411 dosyası** iki koşuda da SHA-256 ile birebir geri yüklendi.
+**Native minimum 60 FPS henüz sağlanmadı; grafik ayarı/MetalFX değiştirilmedi. Değişiklikler commit/push edildi.**
+
+**2026-10-23 — Geniş native render incelemesi:**
+[adaylar, kod kanıtları ve riskler](Docs/Native-Render-Audit-2026-10-23.md).
+`build/autotest/native-render-audit/` geçici sayaçlarla mevcut pass sınırları bozulmadan
+incelendi (FPS A/B'si değil). Dört kararlı örnekte 2621–2934 draw hazırlığının tümünde user-clip
+maskesi 0; buna rağmen vertex shader altı clip-distance çıktısı üretiyor. Üç 1024×512 glow pass'i
+kullanılmayan depth'i Load/Store ediyor. VS/PS sabit upload'ı 4.62–5.94 MB/kare, kullanılmayan
+int/bool dosyaları 0.46–0.54 MB/kare. Sürekli depth ayırma şüphesi elendi: yalnızca başlangıçta
+6 ayırma var. İlk aday **uygulandı**: `VertexInputSignature`/`FixedVertexKey.m_noClip`; kapalı
+user-clip maskesinde altı `[[clip_distance]]` çıktısı ve yazımı hiç üretilmiyor, aktif maske
+yolu değişmiyor. `WRATHMODERN_METAL_CLIP_SHADERS=0/1/alternate` aynı-binary A/B sağlıyor.
+`Tools/MacDev/test-clip-shaders.mm`: çevirici + fixed-function Metal derlemesi, aktif/ pasif
+kaynak kontrolü ve kapalı maskede birebir çıktı PASS. `clip-shaders-validation/`: oyun içi Metal
+API+GPU validation geçti. `perf-azure-clip-ab/`: ısınmış, geçişsiz 5 sn pencerelerinde kare
+**22.65 → 21.60 ms (≈%4.62)**, CPU 9.60 → 9.50 ms, GPU command-buffer 27.86 → 26.79 ms;
+ekran görüntüsünde **44 FPS**, yani 60 FPS değil. p99/minimum FPS kanıtı değil; diğer sahnelerde
+oran değişebilir. FFX'in kullanılmayan depth hedefi ayrıca denendi: `perf-azure-ffx-depth-ab/`
+ısınmış A/B'de 21.03 → 20.99 ms (≈%0.22, gürültü), validation temiz; kazanç olmadığı için geri
+alındı ve FFX.cpp HEAD ile aynı. Tam kaliteli sis fallback yol ayrımı ve sis→glow hedef paylaşımı
+henüz uygulanmadı/ölçülmedi. Sayaçlar kaldırıldı, motor dosyaları inceleme
+öncesiyle birebir doğrulandı; normal uygulama başarıyla derlenip dağıtıldı. WTF 411 dosya SHA-256
+ve CoAVolFog.ini değişmezliği doğrulandı. Bu turun değişiklikleri commit/push edildi.
+
 Sıralı fazlar:
 
 1. **Native Metal backend** — `CGxDeviceMetal`, D3D9 taklit katmanı (`D3D9Metal::`) olmadan doğrudan
@@ -287,6 +419,20 @@ commit'lendi, devam edecek) → spesifikasyon ajanı yalnızca gerekirse. Küç�
 5. [ ] Lexara + AwesomeWotlk MSDF fontları (ortak), çerçeve yakalama, TTS (AVSpeechSynthesizer).
 
 ### AwesomeWotlk B — kalan iş
+
+**2026-10-23 — Dalaran sokak lambasının konuma bağlı sahte hover parlaması düzeltildi.**
+`Mods/AwesomeWotlk/Interaction.cpp` bütün gameobject'leri etkileşim adayı sayıyordu; lamba
+`ShowHighlightType(2)` ile, imleç üzerinde olmasa bile 20 yd taramasına girince ambient renkli
+emissive vurgu alıyordu. Orijinal `awesome_wotlk/Misc.cpp` içindeki 12 alt tiplik izin listesi ve
+`CanUse() && CanUseNow()` kontrolleri taşındı (yüklenmemiş nesneler de elenir). Gerçek etkileşim
+nesnelerinin vurgusu kapatılmadı; yalnızca geçersiz adaylar süzülür.
+- Konumlar: map 571, `(5875.5063, 678.70264, 643.1841)` ve `(5870.652, 679.2229, 643.1988)`, yön 6.1764207.
+- Gölgeler kapalıyken ve `lightStay=1` iken de sorun vardı; kaynak bu iki sistem değil.
+- Önce lambanın emissive tint'i `(0.157, 0.196, 0.361)` / `(0,0,0)` arasında değişiyordu;
+  düzeltmeden sonra iki konumda da `(0,0,0)`, `interactionHighlight=1` açıkken de sahte vurgu yok.
+- Kanıt: `build/autotest/dalaran-lamp-fixed/` (4 kare + `comparison.png`). 256 alt tip,
+  kullanılamaz/şu an kullanılamaz/null/yüklenmemiş nesne kontrolleri izole C++ harness'inde geçti.
+  `WrathModern` ve `AwesomeWotlk` derlendi, oyun dizinine kopyalandı; teşhis probe'ları kaldırıldı.
 
 Yapıldı (commit'lerde): `cameraFov`, `showPlayer` (3ea5ed5), `nameplateDistance`/`nameplatePlacement`,
 `GetItemInfoInstant` (e78c505), kare tick'i + etkileşim/`/interact`/vurgu (f9fad71), sohbet log dosya adları

@@ -13,6 +13,7 @@
 #include "Engine/Source/Gx/CGxDeviceMetal/MetalContext.h"
 #include "Engine/Source/Gx/CGxDeviceMetal/MetalPipeline.h"
 #include "Engine/Source/Gx/CGxDeviceMetal/MetalResources.h"
+#include "Engine/Source/Gx/CGxDeviceMetal/MetalFX.h"
 
 class CGxDeviceMetalNative : public CGxDevice {
     public:
@@ -119,14 +120,15 @@ class CGxDeviceMetalNative : public CGxDevice {
         uint64_t m_passId = 0;
         id<MTLRenderPipelineState> m_pipeline = nil;
         id<MTLDepthStencilState> m_depthStencil = nil;
-        int32_t m_cull;
-        int32_t m_fill;
-        float m_depthBias;
-        bool m_blendColorSet;
-        float m_blendColor[4];
-        MTLViewport m_viewport;
-        MTLScissorRect m_scissor;
-        bool m_viewportSet;
+        int32_t m_cull = -1;
+        int32_t m_fill = -1;
+        float m_depthBias = 0.0f;
+        uint32_t m_stencilReference = 0;
+        bool m_blendColorSet = false;
+        float m_blendColor[4] = {};
+        MTLViewport m_viewport = {};
+        MTLScissorRect m_scissor = {};
+        bool m_viewportSet = false;
         id<MTLBuffer> m_vertexBuffers[16] = {};
         uint32_t m_vertexOffsets[16] = {};
         id<MTLTexture> m_textures[16] = {};
@@ -177,6 +179,13 @@ class CGxDeviceMetalNative : public CGxDevice {
     GxMetal::Texture* m_textureDepthBuffer;
     GxMetal::Target m_savedDepthTarget;
     uint32_t m_samples;
+    GxMetal::SpatialUpscaler* m_upscaler = nullptr;
+    GxMetal::Texture* m_worldColor = nullptr;
+    GxMetal::Texture* m_worldDepth = nullptr;
+    bool m_worldUpscaleActive = false;
+    CRect m_worldSavedWindow;
+    bool BeginWorldUpscale();
+    void EndWorldUpscale();
     // GxMetalSetStencilTag: written to the stencil plane by every draw while it is not 0
     uint32_t m_stencilTag = 0;
     // GxMetalForceDepthWrite: every draw writes depth while set

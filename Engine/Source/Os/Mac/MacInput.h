@@ -20,6 +20,7 @@ void OsMacInputMouseButton(NSView* view, NSEvent* event, bool down);
 void OsMacInputMouseMoved(NSView* view, NSEvent* event);
 void OsMacInputScrollWheel(NSView* view, NSEvent* event);
 void OsMacInputCharacter(uint32_t character);
+bool OsMacInputCursorDetached();
 void OsMacInputFocus(bool active);
 void OsMacInputResized();
 void OsMacInputClose();

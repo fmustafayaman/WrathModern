@@ -9,10 +9,12 @@
 
 #import <AppKit/AppKit.h>
 #import <QuartzCore/CAMetalLayer.h>
+#include <mach/mach_time.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include "Engine/Source/Gx/CGxDeviceMetal/CGxDeviceMetalNative.h"
 #include "Engine/Source/Gx/Blit.h"
@@ -22,11 +24,71 @@
 #include "Engine/Source/Gx/Gx.h"
 #include "Engine/Source/Gx/CGxDevice/EmergencyMem.h"
 #include "Engine/Source/Gx/CGxDeviceMetal/MetalFormats.h"
+#include "Engine/Source/Gx/CGxDeviceMetal/MetalFXSettings.h"
 #include "Engine/Source/Os/Mac/MacOs.h"
 #include "Engine/Source/Os/Error.h"
 #include "Engine/Source/Os/Gui.h"
 
 namespace {
+
+// Opt-in same-process A/B diagnostics; the normal path does not read the clock.
+struct StateCacheProfile {
+    uint64_t m_ticks = 0;
+    uint64_t m_draws = 0;
+    uint64_t m_requested = 0;
+    uint64_t m_encoded = 0;
+};
+StateCacheProfile s_stateCacheProfile;
+
+struct StateCacheTimer {
+    uint64_t m_start;
+    explicit StateCacheTimer(bool enabled) : m_start(enabled ? mach_absolute_time() : 0) {}
+    ~StateCacheTimer() {
+        if (m_start) {
+            s_stateCacheProfile.m_ticks += mach_absolute_time() - m_start;
+        }
+    }
+};
+
+// Remove the fixed-function alpha-test discard only when alpha testing is disabled. Keeping a
+// potential discard in an opaque shader can inhibit hidden-surface removal on tile-based GPUs.
+// The reference path still honours disabled alpha testing via SHADERCOMPARE_ALWAYS.
+bool OpaqueShadersEnabled(uint64_t serial) {
+    static const int mode = [] {
+        const char* value = getenv("WRATHMODERN_METAL_OPAQUE_SHADERS");
+        return value && !strcmp(value, "alternate") ? 2 : (value && !strcmp(value, "0") ? 0 : 1);
+    }();
+    if (mode != 2) {
+        return mode != 0;
+    }
+    uint64_t block = serial / 600;
+    static uint64_t lastBlock = UINT64_MAX;
+    if (block != lastBlock) {
+        GxMetal::Log("metalopaqueshaders: serial %llu, %s", static_cast<unsigned long long>(serial), (block & 1) ? "on" : "off");
+        lastBlock = block;
+    }
+    return (block & 1) != 0;
+}
+
+// User clip planes are usually disabled. Omitting the clip-distance output then removes an
+// otherwise unused rasterizer interface without changing hardware frustum clipping. The reference
+// path keeps the output and its always-true writes; "alternate" enables a same-process A/B.
+bool ClipShadersEnabled(uint64_t serial) {
+    static const int mode = [] {
+        const char* value = getenv("WRATHMODERN_METAL_CLIP_SHADERS");
+        return value && !strcmp(value, "alternate") ? 2 : (value && !strcmp(value, "0") ? 0 : 1);
+    }();
+    if (mode != 2) {
+        return mode != 0;
+    }
+    uint64_t block = serial / 600;
+    static uint64_t lastBlock = UINT64_MAX;
+    if (block != lastBlock) {
+        GxMetal::Log("metalclipshaders: serial %llu, %s", static_cast<unsigned long long>(serial), (block & 1) ? "on" : "off");
+        lastBlock = block;
+    }
+    return (block & 1) != 0;
+}
 
 // The drawable is in pixels; the window's client size is in points and the layer scales it
 void DrawableSize(void* window, int32_t* width, int32_t* height) {
@@ -94,6 +156,8 @@ int32_t CGxDeviceMetalNative::ICreateMetal() {
         return 0;
     }
 
+    GxMetalFXInitSettings();
+    this->m_upscaler = new GxMetal::SpatialUpscaler();
     this->m_pipelines = new GxMetal::PipelineCache();
     this->m_pipelines->Init(device);
     GxMetal::Log("metal: native device on %s", [[device name] UTF8String]);
@@ -106,6 +170,11 @@ void CGxDeviceMetalNative::IDestroyMetal() {
     if (this->m_metal) {
         this->m_metal->EndEncoders();
         this->m_metal->Flush(true);
+        GxMetal::Clear(this->m_worldColor);
+        GxMetal::Clear(this->m_worldDepth);
+        delete this->m_upscaler;
+        this->m_upscaler = nullptr;
+        this->m_bound = Bound{};
         delete this->m_metal;
         this->m_metal = nullptr;
     }
@@ -253,6 +322,9 @@ void CGxDeviceMetalNative::ISetCaps(const CGxFormat& format) {
 }
 
 bool CGxDeviceMetalNative::ICreateWindowTargets(const CGxFormat& format) {
+    this->EndWorldUpscale();
+    GxMetal::Clear(this->m_worldColor);
+    GxMetal::Clear(this->m_worldDepth);
     GxMetal::Clear(this->m_backBuffer);
     GxMetal::Clear(this->m_depthBuffer);
 
@@ -350,6 +422,8 @@ int32_t CGxDeviceMetalNative::DeviceCreate(void* window, const CGxFormat& format
 }
 
 void CGxDeviceMetalNative::DeviceDestroy() {
+    this->EndWorldUpscale();
+    GxMetalFXCloseMenu();
     this->ICursorDestroy();
 
     if (this->m_metal) {
@@ -2563,13 +2637,7 @@ bool CGxDeviceMetalNative::IDrawPrepare(const CGxBatch* batch) {
         return false;
     }
 
-    id<MTLRenderCommandEncoder> encoder = this->m_metal->RenderEncoder();
-
-    if (!encoder) {
-        return false;
-    }
-
-    
+    // Mipmap generation can end the render encoder. Acquire it only after all inline blits.
     for (uint32_t i = 0; i < 16; i++) {
         GxMetal::Texture* texture = this->m_hw.m_textures[i];
 
@@ -2578,7 +2646,56 @@ bool CGxDeviceMetalNative::IDrawPrepare(const CGxBatch* batch) {
         }
     }
 
-    if (this->m_metal->PassId() != this->m_bound.m_passId) {
+    id<MTLRenderCommandEncoder> encoder = this->m_metal->RenderEncoder();
+    if (!encoder) {
+        return false;
+    }
+
+    // The reference path is useful for same-binary visual/performance A/B tests. "alternate"
+    // switches every 600 command buffers in one process, avoiding separate-run thermal bias.
+    static const int stateCacheMode = [] {
+        const char* value = getenv("WRATHMODERN_METAL_STATE_CACHE");
+        return value && !strcmp(value, "alternate") ? 2 : (value && !strcmp(value, "0") ? 0 : 1);
+    }();
+    bool cacheState = stateCacheMode != 0;
+    if (stateCacheMode == 2) {
+        uint64_t block = this->m_metal->CurrentSerial() / 600;
+        cacheState = (block & 1) != 0;
+        static uint64_t lastBlock = UINT64_MAX;
+        static uint64_t firstSerial = 0;
+        if (block != lastBlock) {
+            uint64_t serial = this->m_metal->CurrentSerial();
+            if (lastBlock != UINT64_MAX) {
+                mach_timebase_info_data_t timebase;
+                mach_timebase_info(&timebase);
+                double cpuMs = s_stateCacheProfile.m_ticks * (double(timebase.numer) / timebase.denom) * 1e-6;
+                GxMetal::Log("metalstatecache profile: %s buffers %llu draws %llu bindings %llu/%llu prepare %.3f ms/buffer",
+                    (lastBlock & 1) ? "on" : "off", static_cast<unsigned long long>(serial - firstSerial),
+                    static_cast<unsigned long long>(s_stateCacheProfile.m_draws),
+                    static_cast<unsigned long long>(s_stateCacheProfile.m_encoded),
+                    static_cast<unsigned long long>(s_stateCacheProfile.m_requested), cpuMs / (serial - firstSerial));
+            }
+            s_stateCacheProfile = {};
+            GxMetal::Log("metalstatecache: serial %llu, %s", static_cast<unsigned long long>(serial), cacheState ? "on" : "off");
+            firstSerial = serial;
+            lastBlock = block;
+        }
+    }
+    const bool profileState = stateCacheMode == 2;
+    StateCacheTimer stateTimer(profileState);
+    if (profileState) {
+        s_stateCacheProfile.m_draws++;
+    }
+    const auto shouldBind = [profileState](bool needed) {
+        if (profileState) {
+            s_stateCacheProfile.m_requested++;
+            s_stateCacheProfile.m_encoded += needed;
+        }
+        return needed;
+    };
+    const bool newPass = this->m_metal->PassId() != this->m_bound.m_passId;
+    const bool forceState = newPass || !cacheState;
+    if (newPass) {
         this->m_bound.m_passId = this->m_metal->PassId();
         this->m_bound.m_vertexFunction = 0;
         this->m_bound.m_fragmentFunction = 0;
@@ -2590,6 +2707,10 @@ bool CGxDeviceMetalNative::IDrawPrepare(const CGxBatch* batch) {
 
         this->m_bound.m_pipeline = nil;
         this->m_bound.m_depthStencil = nil;
+        for (uint32_t i = 0; i < 16; i++) {
+            this->m_bound.m_vertexBuffers[i] = nil;
+            this->m_bound.m_vertexOffsets[i] = 0;
+        }
         this->m_vsConstantsDirty = true;
         this->m_psConstantsDirty = true;
         this->m_vertexStateDirty = true;
@@ -2603,10 +2724,12 @@ bool CGxDeviceMetalNative::IDrawPrepare(const CGxBatch* batch) {
 
     GxMetal::CompiledFunction vertex;
     GxMetal::ShaderInfo vertexInfo;
+    const bool noClip = this->m_hw.m_clipPlaneMask == 0 && ClipShadersEnabled(this->m_metal->CurrentSerial());
 
     if (this->m_hw.m_vertexShader) {
-
-        vertex = this->m_pipelines->VertexShaderFunction(this->m_hw.m_vertexShader, layout->m_signature);
+        GxMetal::VertexInputSignature signature = layout->m_signature;
+        signature.m_noClip = noClip ? 1 : 0;
+        vertex = this->m_pipelines->VertexShaderFunction(this->m_hw.m_vertexShader, signature);
     } else {
         GxMetal::FixedVertexKey key;
         memcpy(key.m_attributes, layout->m_signature.m_class, GxMetal::ATTRIB_COUNT);
@@ -2631,6 +2754,7 @@ bool CGxDeviceMetalNative::IDrawPrepare(const CGxBatch* batch) {
 
         key.m_fog = this->m_hw.m_fog ? 1 : 0;
         key.m_pointScale = this->m_hw.m_pointScale ? 1 : 0;
+        key.m_noClip = noClip ? 1 : 0;
         vertex = this->m_pipelines->FixedVertexFunction(key);
     }
 
@@ -2641,6 +2765,7 @@ bool CGxDeviceMetalNative::IDrawPrepare(const CGxBatch* batch) {
     
     GxMetal::CompiledFunction fragment;
     GxMetal::ShaderInfo pixelInfo;
+    const bool noAlphaTest = !this->m_hw.m_alphaTest && OpaqueShadersEnabled(this->m_metal->CurrentSerial());
 
     if (this->m_hw.m_pixelShader) {
 
@@ -2670,6 +2795,7 @@ bool CGxDeviceMetalNative::IDrawPrepare(const CGxBatch* batch) {
 
         variant.m_pointSprite = this->m_hw.m_pointSprite ? 1 : 0;
         variant.m_alphaOnly = this->m_hw.m_colorWrite == MTLColorWriteMaskNone ? 1 : 0;
+        variant.m_noAlphaTest = noAlphaTest ? 1 : 0;
         fragment = this->m_pipelines->PixelShaderFunction(this->m_hw.m_pixelShader, variant);
     } else {
         GxMetal::FixedPixelKey key;
@@ -2689,6 +2815,7 @@ bool CGxDeviceMetalNative::IDrawPrepare(const CGxBatch* batch) {
 
         key.m_specularEnable = this->m_hw.m_specularEnable ? 1 : 0;
         key.m_pointSprite = this->m_hw.m_pointSprite ? 1 : 0;
+        key.m_noAlphaTest = noAlphaTest ? 1 : 0;
         fragment = this->m_pipelines->FixedPixelFunction(key);
     }
 
@@ -2726,20 +2853,40 @@ bool CGxDeviceMetalNative::IDrawPrepare(const CGxBatch* batch) {
         return false;
     }
 
-    [encoder setRenderPipelineState:pipeline];
+    if (shouldBind(forceState || this->m_bound.m_pipeline != pipeline)) {
+        [encoder setRenderPipelineState:pipeline];
+        this->m_bound.m_pipeline = pipeline;
+    }
     // A stencil tag (GxMetalSetStencilTag) applies where the depth target has a stencil plane
     GxMetal::Texture* depthTarget = this->m_metal->DepthTarget().m_texture;
     bool stencilTag = this->m_stencilTag != 0 && depthTarget &&
                       depthTarget->m_format.m_pixelFormat == MTLPixelFormatDepth32Float_Stencil8;
     bool depthWrite = this->m_hw.m_depthWrite || this->m_forceDepthWrite;
-    [encoder setDepthStencilState:this->m_pipelines->DepthStencil(this->m_hw.m_depthCompare, depthWrite, stencilTag)];
-    if (stencilTag) {
-        [encoder setStencilReferenceValue:this->m_stencilTag];
+    id<MTLDepthStencilState> depthState = this->m_pipelines->DepthStencil(this->m_hw.m_depthCompare, depthWrite, stencilTag);
+    if (shouldBind(forceState || this->m_bound.m_depthStencil != depthState)) {
+        [encoder setDepthStencilState:depthState];
+        this->m_bound.m_depthStencil = depthState;
     }
-    [encoder setCullMode:this->m_hw.m_cullMode];
-    [encoder setTriangleFillMode:this->m_hw.m_fillMode];
-    [encoder setDepthBias:this->m_hw.m_depthBias slopeScale:0.0f clamp:0.0f];
-    [encoder setBlendColorRed:this->m_hw.m_blendColor[0] green:this->m_hw.m_blendColor[1] blue:this->m_hw.m_blendColor[2] alpha:this->m_hw.m_blendColor[3]];
+    if (stencilTag && shouldBind(forceState || this->m_bound.m_stencilReference != this->m_stencilTag)) {
+        [encoder setStencilReferenceValue:this->m_stencilTag];
+        this->m_bound.m_stencilReference = this->m_stencilTag;
+    }
+    if (shouldBind(forceState || this->m_bound.m_cull != this->m_hw.m_cullMode)) {
+        [encoder setCullMode:this->m_hw.m_cullMode];
+        this->m_bound.m_cull = this->m_hw.m_cullMode;
+    }
+    if (shouldBind(forceState || this->m_bound.m_fill != this->m_hw.m_fillMode)) {
+        [encoder setTriangleFillMode:this->m_hw.m_fillMode];
+        this->m_bound.m_fill = this->m_hw.m_fillMode;
+    }
+    if (shouldBind(forceState || this->m_bound.m_depthBias != this->m_hw.m_depthBias)) {
+        [encoder setDepthBias:this->m_hw.m_depthBias slopeScale:0.0f clamp:0.0f];
+        this->m_bound.m_depthBias = this->m_hw.m_depthBias;
+    }
+    if (shouldBind(forceState || memcmp(this->m_bound.m_blendColor, this->m_hw.m_blendColor, sizeof(this->m_hw.m_blendColor)))) {
+        [encoder setBlendColorRed:this->m_hw.m_blendColor[0] green:this->m_hw.m_blendColor[1] blue:this->m_hw.m_blendColor[2] alpha:this->m_hw.m_blendColor[3]];
+        memcpy(this->m_bound.m_blendColor, this->m_hw.m_blendColor, sizeof(this->m_hw.m_blendColor));
+    }
 
     MTLViewport viewport;
     viewport.originX = this->m_hw.m_viewport[0];
@@ -2748,7 +2895,10 @@ bool CGxDeviceMetalNative::IDrawPrepare(const CGxBatch* batch) {
     viewport.height = this->m_hw.m_viewport[3] > 0.0f ? this->m_hw.m_viewport[3] : 1.0f;
     viewport.znear = this->m_hw.m_viewport[4];
     viewport.zfar = this->m_hw.m_viewport[5];
-    [encoder setViewport:viewport];
+    if (shouldBind(forceState || memcmp(&this->m_bound.m_viewport, &viewport, sizeof(viewport)))) {
+        [encoder setViewport:viewport];
+        this->m_bound.m_viewport = viewport;
+    }
 
     // The encoder keeps the last scissor rectangle (a partial clear sets one too), so a draw without
     // the scissor test covers the whole target; Metal requires the rectangle inside the target, which
@@ -2777,7 +2927,10 @@ bool CGxDeviceMetalNative::IDrawPrepare(const CGxBatch* batch) {
     scissor.y = static_cast<NSUInteger>(scissorTop);
     scissor.width = static_cast<NSUInteger>(scissorRight - scissorLeft);
     scissor.height = static_cast<NSUInteger>(scissorBottom - scissorTop);
-    [encoder setScissorRect:scissor];
+    if (shouldBind(forceState || memcmp(&this->m_bound.m_scissor, &scissor, sizeof(scissor)))) {
+        [encoder setScissorRect:scissor];
+        this->m_bound.m_scissor = scissor;
+    }
 
     for (uint32_t stream = 0; stream < 16; stream++) {
         if (!(layout->m_streamMask & (1u << stream))) {
@@ -2790,7 +2943,13 @@ bool CGxDeviceMetalNative::IDrawPrepare(const CGxBatch* batch) {
             return false;
         }
 
-        [encoder setVertexBuffer:buffer->m_buffer offset:this->m_streamOffsets[stream] atIndex:stream];
+        // Buffer::Lock may rename its MTLBuffer; compare the actual resource, not its wrapper.
+        if (shouldBind(forceState || this->m_bound.m_vertexBuffers[stream] != buffer->m_buffer ||
+            this->m_bound.m_vertexOffsets[stream] != this->m_streamOffsets[stream])) {
+            [encoder setVertexBuffer:buffer->m_buffer offset:this->m_streamOffsets[stream] atIndex:stream];
+            this->m_bound.m_vertexBuffers[stream] = buffer->m_buffer;
+            this->m_bound.m_vertexOffsets[stream] = this->m_streamOffsets[stream];
+        }
         buffer->m_use.m_lastUse = buffer->m_use.m_lastRenderUse = this->m_metal->CurrentSerial();
     }
 
@@ -2833,7 +2992,7 @@ bool CGxDeviceMetalNative::IDrawPrepare(const CGxBatch* batch) {
         memcpy(block.m_fogColor, this->m_hw.m_fogColor, sizeof(block.m_fogColor));
         bool fog = this->m_hw.m_fog && (!this->m_hw.m_pixelShader || pixelInfo.m_major < 3);
         block.m_flags[0] = fog ? 1 : 0;
-        block.m_flags[1] = GxMetal::SHADERCOMPARE_GREATEREQUAL;
+        block.m_flags[1] = this->m_hw.m_alphaTest ? GxMetal::SHADERCOMPARE_GREATEREQUAL : GxMetal::SHADERCOMPARE_ALWAYS;
         block.m_flags[2] = this->m_hw.m_alphaRef;
         block.m_textureFactor[0] = 1.0f;
         block.m_textureFactor[1] = 1.0f;
@@ -3206,6 +3365,74 @@ void CGxDeviceMetalNative::DeviceUnk83(uint32_t a, uint32_t b) {
 // The device the client creates for GxApi_Metal
 CGxDevice* CreateCGxDeviceMetal() {
     return new CGxDeviceMetalNative();
+}
+
+bool CGxDeviceMetalNative::BeginWorldUpscale() {
+    if (!m_metal || !m_backBuffer || m_worldUpscaleActive || !m_upscaler) return false;
+    const uint32_t ow = m_backBuffer->m_width, oh = m_backBuffer->m_height;
+    const bool supported = m_upscaler->Supported(m_metal->m_device);
+    const int mode = GxMetalFXMode();
+    if (!mode || !supported || ow < 32 || oh < 32 || m_textureTarget[GxBuffers_Color].m_texture || m_textureTarget[GxBuffers_Depth].m_texture) {
+        GxMetalFXUpdateStatus(supported, ow, oh, ow, oh, supported ? "MetalFX off - native rendering" : "This GPU does not support MetalFX Spatial.");
+        return false;
+    }
+    const float scale = GxMetalFXScale(mode);
+    const uint32_t iw = std::max(8u, static_cast<uint32_t>(ow * scale) & ~1u);
+    const uint32_t ih = std::max(8u, static_cast<uint32_t>(oh * scale) & ~1u);
+    if (!m_upscaler->Prepare(m_metal, m_backBuffer->m_format, iw, ih, ow, oh)) {
+        GxMetalFXUpdateStatus(supported, ow, oh, ow, oh, "MetalFX could not start - native rendering kept.");
+        return false;
+    }
+    if (!m_worldColor || !m_worldDepth || m_worldColor->m_width != iw || m_worldColor->m_height != ih ||
+        m_worldColor->m_samples != m_backBuffer->m_samples) {
+        auto* color = GxMetal::Texture::CreateTarget(m_metal, m_backBuffer->m_format, iw, ih, m_backBuffer->m_samples, m_upscaler->InputUsage());
+        auto* depth = GxMetal::Texture::CreateTarget(m_metal, m_depthBuffer->m_format, iw, ih, m_depthBuffer->m_samples);
+        if (!color || !depth) {
+            GxMetal::Clear(color); GxMetal::Clear(depth);
+            GxMetalFXUpdateStatus(supported, ow, oh, ow, oh, "Render target allocation failed - native rendering kept.");
+            return false;
+        }
+        GxMetal::Clear(m_worldColor); GxMetal::Clear(m_worldDepth);
+        m_worldColor = color; m_worldDepth = depth;
+    }
+    m_worldSavedWindow = m_defWindowRect;
+    std::swap(m_backBuffer, m_worldColor);
+    std::swap(m_depthBuffer, m_worldDepth);
+    m_worldUpscaleActive = true;
+    CRect window = m_worldSavedWindow;
+    window.maxX = static_cast<float>(iw); window.maxY = static_cast<float>(ih);
+    DeviceSetDefWindow(window);
+    ITargetsFromState();
+    m_viewportDirty = m_scissorRectDirty = 1;
+    // The world clear must use the lower-resolution targets, not the UI/back buffer cleared earlier.
+    const float black[4] = {0, 0, 0, 1};
+    m_metal->Clear({0, 0, static_cast<int32_t>(iw), static_cast<int32_t>(ih)}, true, true, black, 1.0f);
+    GxMetalFXUpdateStatus(true, iw, ih, ow, oh, "MetalFX Spatial active");
+    return true;
+}
+
+void CGxDeviceMetalNative::EndWorldUpscale() {
+    if (!m_worldUpscaleActive) return;
+    GxMetal::Texture* result = m_upscaler->Encode(m_metal, m_backBuffer);
+    GxMetal::Texture* source = result ? result : m_backBuffer;
+    std::swap(m_backBuffer, m_worldColor);
+    std::swap(m_depthBuffer, m_worldDepth);
+    m_worldUpscaleActive = false;
+    DeviceSetDefWindow(m_worldSavedWindow);
+    m_metal->SetProfileSection("metalfx composite");
+    m_metal->Stretch({source, 0, 0}, nullptr, {m_backBuffer, 0, 0}, nullptr, true);
+    ITargetsFromState();
+    m_viewportDirty = m_scissorRectDirty = 1;
+    m_metal->SetProfileSection("interface");
+}
+
+bool GxMetalBeginWorldUpscale() {
+    auto* device = dynamic_cast<CGxDeviceMetalNative*>(g_theGxDevicePtr);
+    return device && device->BeginWorldUpscale();
+}
+
+void GxMetalEndWorldUpscale() {
+    if (auto* device = dynamic_cast<CGxDeviceMetalNative*>(g_theGxDevicePtr)) device->EndWorldUpscale();
 }
 
 CGxDevice* CreateCGxDeviceMetalNative() {

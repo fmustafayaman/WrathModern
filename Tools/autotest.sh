@@ -9,6 +9,7 @@
 #   GAME_DIR        game directory (default: /Volumes/Yaman SSD/WoW_Wrath)
 #   WOWRE_LOGIN     credentials file for the world shots (default: ~/.wrathmodern-wowre-autologin)
 #   WOWRE_REALMLIST, WOWRE_REALM, WOWRE_CHARACTER   server, realm and character for the world shots
+#   WRATHMODERN_AUTOTEST_NO_ADDONS=1               disable Lua addons for this run (WTF restored below)
 #
 # The player's WTF folder is restored afterwards, and only the process this script started is
 # stopped, so a game the player is running is never touched.

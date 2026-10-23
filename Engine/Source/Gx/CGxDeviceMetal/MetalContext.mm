@@ -1190,7 +1190,8 @@ void Context::Present(Texture* backBuffer) {
         if (drawable) {
             id<MTLTexture> target = drawable.texture;
             bool sameSize = target.width == source.width && target.height == source.height;
-            bool direct = sameSize && this->m_gammaIdentity && source.pixelFormat == target.pixelFormat;
+            // A framebuffer-only drawable is renderable, but cannot be a blit destination.
+            bool direct = sameSize && this->m_gammaIdentity && source.pixelFormat == target.pixelFormat && !target.framebufferOnly;
 
             // Same size and format with an identity ramp: a copy is a straight transfer, no rasterisation
             if (direct) {

@@ -49,6 +49,24 @@ struct D3DVaryings {
     float clipDistance [[clip_distance]] [6];
 };
 
+// The same varyings without the rasterizer clip-distance output. Used only while every user clip
+// plane is disabled; hardware frustum clipping still happens after the vertex shader.
+struct D3DVaryingsNoClip {
+    float4 position [[position, invariant]];
+    float4 color0 [[user(d3d_color0)]];
+    float4 color1 [[user(d3d_color1)]];
+    float4 texcoord0 [[user(d3d_texcoord0)]];
+    float4 texcoord1 [[user(d3d_texcoord1)]];
+    float4 texcoord2 [[user(d3d_texcoord2)]];
+    float4 texcoord3 [[user(d3d_texcoord3)]];
+    float4 texcoord4 [[user(d3d_texcoord4)]];
+    float4 texcoord5 [[user(d3d_texcoord5)]];
+    float4 texcoord6 [[user(d3d_texcoord6)]];
+    float4 texcoord7 [[user(d3d_texcoord7)]];
+    float fog [[user(d3d_fog)]];
+    float pointSize [[point_size]];
+};
+
 // Direct3D 9 defines results for inputs where IEEE math produces infinities or NaNs
 static inline float d3d_rcp(float x) {
     return x == 0.0f ? FLT_MAX : 1.0f / x;
@@ -150,11 +168,11 @@ int32_t AttributeIndex(uint32_t usage, uint32_t usageIndex) {
 }
 
 bool VertexInputSignature::operator==(const VertexInputSignature& other) const {
-    return memcmp(this->m_class, other.m_class, sizeof(this->m_class)) == 0;
+    return this->m_noClip == other.m_noClip && memcmp(this->m_class, other.m_class, sizeof(this->m_class)) == 0;
 }
 
 bool PixelShaderVariant::operator==(const PixelShaderVariant& other) const {
-    return this->m_samplerKinds == other.m_samplerKinds && this->m_projected == other.m_projected && this->m_pointSprite == other.m_pointSprite && this->m_alphaOnly == other.m_alphaOnly;
+    return this->m_samplerKinds == other.m_samplerKinds && this->m_projected == other.m_projected && this->m_pointSprite == other.m_pointSprite && this->m_alphaOnly == other.m_alphaOnly && this->m_noAlphaTest == other.m_noAlphaTest;
 }
 
 namespace {
@@ -1390,7 +1408,8 @@ bool Translator::EmitVertex(const VertexInputSignature& inputs, std::string& sou
         source += "struct D3DVertexInput {\n" + inputStruct + "};\n\n";
     }
 
-    source += Format("vertex D3DVaryings %s(", kVertexFunctionName);
+    const char* varyings = inputs.m_noClip ? "D3DVaryingsNoClip" : "D3DVaryings";
+    source += Format("vertex %s %s(", varyings, kVertexFunctionName);
     if (hasInputs) {
         source += "D3DVertexInput in [[stage_in]], ";
     }
@@ -1429,7 +1448,7 @@ bool Translator::EmitVertex(const VertexInputSignature& inputs, std::string& sou
 
     source += this->m_body;
 
-    source += "    D3DVaryings out;\n";
+    source += Format("    %s out;\n", varyings);
 
     if (this->Major() < 3) {
         source += "    out.color0 = saturate(oD0);\n";
@@ -1479,9 +1498,13 @@ bool Translator::EmitVertex(const VertexInputSignature& inputs, std::string& sou
     source += "    out.fog = oFog;\n";
     source += "    out.pointSize = clamp(oPts, state.pointSize.y, state.pointSize.z);\n";
 
-    // User clip planes are in clip space for programmable vertex processing
-    for (uint32_t i = 0; i < 6; i++) {
-        source += Format("    out.clipDistance[%u] = (state.flags.x & %uu) ? dot(oPos, state.clipPlanes[%u]) : 1.0f;\n", i, 1u << i, i);
+    // User clip planes are in clip space for programmable vertex processing. With every plane
+    // disabled the output itself is omitted, not just written as one: a clip_distance output keeps
+    // the rasterizer's clip-distance stage in the vertex shader's interface.
+    if (!inputs.m_noClip) {
+        for (uint32_t i = 0; i < 6; i++) {
+            source += Format("    out.clipDistance[%u] = (state.flags.x & %uu) ? dot(oPos, state.clipPlanes[%u]) : 1.0f;\n", i, 1u << i, i);
+        }
     }
 
     // Direct3D 9 pixel centers are at integer coordinates; depth bias is in post-divide units
@@ -1689,7 +1712,9 @@ bool Translator::EmitPixel(const PixelShaderVariant& variant, std::string& sourc
         source += "    out.color = d3d_fog(state, out.color, in.fog);\n";
     }
 
-    source += "    if (!d3d_alpha_test(state, out.color.a)) discard_fragment();\n";
+    if (!variant.m_noAlphaTest) {
+        source += "    if (!d3d_alpha_test(state, out.color.a)) discard_fragment();\n";
+    }
 
     if (this->m_variant.m_alphaOnly) {
         source += "    out.color = float4(0.0f, 0.0f, 0.0f, out.color.a);\n";
