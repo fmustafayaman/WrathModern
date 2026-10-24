@@ -131,6 +131,13 @@ bütün 95 dakikayı kesintisiz dünya diye saymak yanlıştır.
   **673 ms**. Hash manifesti bu yeni pencereyi de ayrı korur. İptal edilen logout
   regresyonu buna rağmen tamamlandı diye sunulmaz; kesintisiz dünya aralığı doğrulandı.
   Sonraki canlı denetim **1870.851 saniyede** de geçti ve gözlem sürüyor.
+- Aynı düzeltilmiş uygulamanın ayrı bir saatlik checkpoint'i de bağımsız ve hashleri
+  değişmeden doğrulandı: `checkpoints/20261024T203234139331Z/`, **3621.900 saniye**,
+  **214625** sunulmuş kare, **25737** sunucu paketi; buck **24/24**, Warden **118/118**,
+  boş issues/errors. Ortalama aralık FPS **59.41**, minimum **54.19**, maksimum
+  event-loop boşluğu **673 ms**. Bu pencerede kullanıcının açık AFK izni kapsamındaki
+  normal kısa zıplamalar etkin; başka logout/login/restart yapılmadı. Daha sonraki
+  62.37 dakikalık canlı örnekte de buck **25/25**, Warden **122/122** ve hata yoktu.
 
 ## Bir saati aşan devam kontrolü — 2026-10-24
 

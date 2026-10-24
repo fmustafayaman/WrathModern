@@ -192,6 +192,9 @@ ground truth for protocol comparisons.
   **1810.818 seconds**, 107006 presented frames, 12/12 buck and 59/59 Warden replies,
   no issues/errors; mean interval FPS 59.41, max event-loop gap 673 ms. This does not
   claim the cancelled live logout test ran; the uninterrupted world itself was verified.
+  A second immutable checkpoint `20261024T203234139331Z` passed at **3621.900 seconds**,
+  214625 presented frames, 24/24 buck and 118/118 Warden replies, no issues/errors.
+  The narrowly authorized AFK jump helper was active during that continued window.
   `Tools/Wardendump/watch-session.py <private-run>` now persists across failed audits,
   archives distinct problems to `events/`, and independently audits periodic `checkpoints/`.
   It never drives input, relaunches the client, hides failed intervals, or overwrites an
