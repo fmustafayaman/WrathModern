@@ -53,6 +53,18 @@ Tekrar denetim: `python3 Tools/Wardendump/verify-session.py <özel-dizin>` ve
 içeriğinin, her sunucunun veya saatler süren gelecek oturumların kusursuzluğu iddiası
 değildir. Önceki başarısız koşular aşağıda tarihsel kanıt olarak korunur.
 
+## Bir saati aşan devam kontrolü — 2026-10-24
+
+Aynı PID/GUID ve aynı çalıştırılabilirle ayrı `checkpoint-1h/` log kopyası da
+bağımsız denetlendi: **3862.186 saniye** (~64.37 dakika), **226938** yeni sunulmuş
+kare, **30066** gerçek sunucu paketi; buck **26/26**, Warden **125/125**.
+`passed: true`, boş issues/errors; ortalama aralık FPS **58.90**, minimum **49.00**,
+en büyük event-loop boşluğu hâlâ **783 ms**. Uzun koşuda büyü kitabı da normal
+klavye girdisiyle açılıp pencere görüntüsüyle kontrol edildi. `checkpoint-1h/audit.json`
+ve `sha256.json` özel kanıt dizinindedir; ilk 30 dakikanın değişmez kopyası korunur.
+Bu ek pencere de geçmiştir, ancak kullanıcının “yeter diyene kadar gözle” talebi
+sürdüğü için izleme hedefi aktif kalır.
+
 ## 288 baytlık challenge — gerçek guest thread yürütmesi, 2026-10-24
 
 20. dakikadaki `0x006B3856` durması **yeni bir oyun fonksiyonu değil**, henüz

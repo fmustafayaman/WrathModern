@@ -173,6 +173,9 @@ ground truth for protocol comparisons.
   `/tmp/wowremac-stability-run.path`; private evidence is under
   `$HOME/Library/Logs/WoWReMac-Warden/stability-30m-threads-20261024-atdcyp5p/`.
   The frozen 30-minute `Logs/` and audit JSON must not be overwritten by later monitoring.
+  A separate `checkpoint-1h/` snapshot also passed at **3862.186 seconds** with 26/26
+  buck and 125/125 Warden replies; same process/player/binary, no issues. The spellbook
+  UI was also checked normally. Its snapshot/hash manifest are private alongside the run.
   The active user objective is now **continue observing and fix discovered errors until the
   user says enough**. Passing the earlier 30-minute sub-goal does not complete that ongoing
   monitoring objective; keep the observer running and inspect fresh results.
