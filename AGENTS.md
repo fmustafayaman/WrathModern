@@ -188,6 +188,10 @@ ground truth for protocol comparisons.
   The corrected application (`fcab95ff`, SHA-256
   `a5415eb4f44c4b246b3f6e307a4ec346f8d9b37e4a4b2601f1d22f9c784e6a55`) is being
   observed separately, PID 30543, under `monitor-autologin-done-20261024-iabau6fd/`.
+  Its first independent `checkpoints/20261024T200221516376Z/` snapshot passed at
+  **1810.818 seconds**, 107006 presented frames, 12/12 buck and 59/59 Warden replies,
+  no issues/errors; mean interval FPS 59.41, max event-loop gap 673 ms. This does not
+  claim the cancelled live logout test ran; the uninterrupted world itself was verified.
   `Tools/Wardendump/watch-session.py <private-run>` now persists across failed audits,
   archives distinct problems to `events/`, and independently audits periodic `checkpoints/`.
   It never drives input, relaunches the client, hides failed intervals, or overwrites an
@@ -251,6 +255,11 @@ unsealed content and make `codesign` refuse the bundle.
   issue logout/login commands, stop/restart the client or deploy over its running binary
   without explicit user approval. The user cancelled an unsolicited logout regression;
   do not repeat it or treat general "continue monitoring" as permission to control play.
+  Specific later approval: "afk kalmasın da" permits occasional short normal keyboard
+  activity (e.g. a jump) only to keep the monitored test character from idling. Guard the
+  exact PID/executable, live world/player health and recorded binary identity; do not
+  alter idle timers or send artificial packets/check results. This limited permission
+  does not authorize logout/login, restarting, deployment or other gameplay automation.
 - Prefer pragmatic scope: optional client features that are infeasible or disproportionately
   expensive may be skipped with a clear, fixed "not supported" message. State the limitation
   rather than spending indefinitely or claiming the feature works. This fallback must not

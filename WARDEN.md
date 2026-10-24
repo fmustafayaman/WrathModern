@@ -115,6 +115,22 @@ bütün 95 dakikayı kesintisiz dünya diye saymak yanlıştır.
   yeniden başlatma veya çalışan uygulamanın üzerine dağıtım yapılmaz. Hata görülürse
   önce kayıt korunur ve çevrimdışı incelenir; canlı müdahale gerekiyorsa kullanıcıya
   sorulur. Salt-okuma gözlemci çalışmaya devam eder.
+- **Sonraki açık ve dar izin:** kullanıcı “afk kalmasın da” dedi. Yalnız bu amaçla
+  ara sıra normal Space/zıplama girdisi yetkilendirildi; logout/login/restart/dağıtım
+  izni değildir. Ayrı özel yardımcı, aynı PID+executable+binary hash+GUID ve taze
+  native world health'i doğrular, gözlenen hareket sürerken atlar; üç dakika
+  hareketsizlikte tek kısa zıplama gönderir. Uygulama odağını değiştirmez, idle
+  saatini yazmaz ve kendi ağ paketi oluşturmaz. İlk gönderim native movement
+  `CMSG 00BB` (`25486250`) ve devam hareketleriyle görüldü. Özel koşudaki
+  `afk-activity-authorization.json`, `afk-activity-status.json` ve `afk-activity.log`
+  kapsamı/sonucu kaydeder; karakter ekranında veya kimlik değişiminde girdi yok.
+- Yeni `fcab95ff` koşusunun ilk bağımsız snapshot'ı da geçti:
+  `checkpoints/20261024T200221516376Z/`, **1810.818 saniye**, **107006** sunulmuş
+  kare, **15778** sunucu paketi, buck **12/12**, Warden **59/59**, boş issues/errors.
+  Aralık FPS ortalaması **59.41**, minimum **54.19**; maksimum event-loop boşluğu
+  **673 ms**. Hash manifesti bu yeni pencereyi de ayrı korur. İptal edilen logout
+  regresyonu buna rağmen tamamlandı diye sunulmaz; kesintisiz dünya aralığı doğrulandı.
+  Sonraki canlı denetim **1870.851 saniyede** de geçti ve gözlem sürüyor.
 
 ## Bir saati aşan devam kontrolü — 2026-10-24
 
