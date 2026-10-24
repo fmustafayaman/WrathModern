@@ -53,6 +53,38 @@ Tekrar denetim: `python3 Tools/Wardendump/verify-session.py <özel-dizin>` ve
 içeriğinin, her sunucunun veya saatler süren gelecek oturumların kusursuzluğu iddiası
 değildir. Önceki başarısız koşular aşağıda tarihsel kanıt olarak korunur.
 
+## Uzun izlemede normal boşta kalma çıkışı ve test-driver düzeltmesi — 2026-10-24
+
+İlk koşunun salt-okuma gözlemcisi **5383.035 saniyeye** (~89 dk 43 sn) kadar
+hatasız sonuç verdi. `23152801` tarihinde **istemciden CMSG_LOGOUT_REQUEST (0x4B)**
+çıktı; `23152916` normal başarılı `SMSG_LOGOUT_RESPONSE`, `23172053` logout-complete
+geldi. Soket bağlantısı kopmadı; bu sırada world buck **36/36**, Warden **175/175**,
+emülatör hataları ve sunucu uyarısı **0** idi. Önceki 30 dakika/bir saat kanıtları korunur;
+bütün 95 dakikayı kesintisiz dünya diye saymak yanlıştır.
+
+- Son normal klavye UI testi **21:51:11** büyü kitabıydı. `GameUI.cpp` içindeki
+  `OsGetAsyncTimeMs() - CSimpleTop::s_eventTime >= 1800000` yolu, sonraki 30 dakika
+  gerçek UI girdisi gelmeyince kendi `CharacterLogout(false, false)` isteğini gönderir.
+  Kayıt bununla örtüşüyor; anti-cheat reddi veya emülatör arızası bulgusu yok.
+- Asıl test otomasyonu kusuru: native dünya gerçekten doğrulandıktan sonra autologin
+  hâlâ `AUTOLOGIN_MONITOR` durumunda kalıyordu. Normal logout'tan sonra yeni karakter
+  listesi görünce `23200366` yeniden Enter World denedi; yeni gerçek UI girdisi olmadığı
+  için eski idle saatiyle `23201274` tekrar logout başladı. Bu gereksiz yeniden giriş
+  döngüsü kaldırılıyor: native oyuncu+bağlantı+kare doğrulaması sürücüyü
+  **AUTOLOGIN_DONE** yapar, bağımsız health gözlemcisi çalışmayı sürdürür.
+- `test-autologin-lifecycle.py` gerçek observer/timer gövdelerini çevrimdışı doubles ile
+  derleyip ASan/UBSan altında çalıştırır. Önceki kaynakta **4/8 test başarısız**,
+  düzeltmeden sonra **8/8 geçti**: normal logout sonrasında yeniden giriş yok; sonradan
+  disconnect UI sürecini öldürmüyor; manuel yeniden girişte health devam ediyor;
+  başlangıç hataları hâlâ hata ve ilk dünya öncesi sınırlı retry korunuyor.
+- **Stock idle/logout süresi veya sunucu denetimi değiştirilmedi.** Yeni gözlem koşusunda
+  normal hareket/UI kontrolleri ihmal edilmemeli; AFK karakter ekranında geçen süre
+  dünyada geçirilen süreye eklenmez.
+- Özel kanıtlar: eski koşunun `later-failure/`, `failure-audit.json`,
+  `post-world-222703/` ve `post-world-screen.jpg` dosyaları. Gözlemcinin hata arşivleyip
+  durduğu da kaydedildi; devam eden gözlem yeniden başlatılırken aynı eski hatalar
+  başarılı sayılmamalı, yeni dünya aralığı ayrı kaydedilmeli.
+
 ## Bir saati aşan devam kontrolü — 2026-10-24
 
 Aynı PID/GUID ve aynı çalıştırılabilirle ayrı `checkpoint-1h/` log kopyası da

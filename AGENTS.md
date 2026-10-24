@@ -176,6 +176,15 @@ ground truth for protocol comparisons.
   A separate `checkpoint-1h/` snapshot also passed at **3862.186 seconds** with 26/26
   buck and 125/125 Warden replies; same process/player/binary, no issues. The spellbook
   UI was also checked normally. Its snapshot/hash manifest are private alongside the run.
+  Later, after ~90 minutes, the client sent its own normal CMSG_LOGOUT_REQUEST after
+  30 minutes with no UI input. No socket disconnect, server warning or emulator failure;
+  all 36 buck / 175 Warden exchanges had replies at that transition. Do not count time
+  at character selection as world uptime. The old observer archived `later-failure/` and
+  stopped; its last passing full audit was 5383.035 seconds.
+  Fix the test driver, not the idle rule: real native readiness now sets AUTOLOGIN_DONE
+  while health observation continues, preventing an automatic reentry after normal logout
+  or a forced process exit after a later disconnect. Eight sanitized lifecycle tests cover
+  this (four failed against the previous source). Stock AFK/logout behavior stays intact.
   The active user objective is now **continue observing and fix discovered errors until the
   user says enough**. Passing the earlier 30-minute sub-goal does not complete that ongoing
   monitoring objective; keep the observer running and inspect fresh results.

@@ -108,7 +108,11 @@ int32_t ObserveNativeWorld(const void* data, void* param) {
         Log("native active player and rendering confirmed; monitoring");
 
         if (s_started) {
-            s_state = AUTOLOGIN_MONITOR;
+            // Authentication automation is finished only after real native world readiness.
+            // Keep this independent health observer, but let the next login timer expire:
+            // a later manual/idle logout or disconnect must not trigger an automatic reentry
+            // (with a stale UI idle timer) or terminate an otherwise usable client process.
+            s_state = AUTOLOGIN_DONE;
             s_loginEpoch = s_characterListEpoch;
         }
     } else if (!ready) {
