@@ -85,6 +85,27 @@ bütün 95 dakikayı kesintisiz dünya diye saymak yanlıştır.
   durduğu da kaydedildi; devam eden gözlem yeniden başlatılırken aynı eski hatalar
   başarılı sayılmamalı, yeni dünya aralığı ayrı kaydedilmeli.
 
+### Düzeltilmiş otomasyonla yeni izleme
+
+- `fcab95ff` uygulaması derlendi, imzası doğrulandı ve yalnız temiz Warmane
+  kurulumuna dağıtıldı. SHA-256:
+  `a5415eb4f44c4b246b3f6e307a4ec346f8d9b37e4a4b2601f1d22f9c784e6a55`.
+- Eski PID 26418, özel kanıtlar korunduktan sonra tam executable yolu kontrol
+  edilerek durduruldu. Yeni **PID 30543** dünyaya girdi; ayrı özel kanıt dizini:
+  `$HOME/Library/Logs/WoWReMac-Warden/monitor-autologin-done-20261024-iabau6fd/`.
+  Yeni koşu eski 90 dakikanın devamıymış gibi birleştirilmez. İlk normal hareket
+  ve karakter paneli testi yapıldı; ilk buck/Warden cevapları var, başlangıçta hata yok.
+- Kaynakta izlenen kalıcı araç: `Tools/Wardendump/watch-session.py <özel-dizin>`.
+  Tek gözlemci kilidi, atomik güncel JSON, her 20 saniyede salt-okuma denetimi;
+  hata bulunca ayrı `events/` arşivi yapar **ama durmaz**. Aynı eski hatanın zaman
+  damgalı tekrarını yeniden arşivlemez; yeni hata türünü ayrı kaydeder.
+- Başarılı uzun pencereler `checkpoints/` altına kopyalanıp **tekrar bağımsız
+  verifier denetiminden geçmeden** kabul edilmez. Önceki `Logs/`/kanıtların üzerine
+  yazılmaz. Erken başlangıç örnekleri “warming-up/measuring”, asla “passed” değildir.
+- **7 watcher testi** geçti: devamlı hata gözlemi, değişmez kanıt, log prefix/truncate,
+  tüm kanıtların hashlenmesi, eksik snapshot reddi, disk hatasında açık hata+retry,
+  başlangıç beklemesinin gerçek kopma/stall/emülatör hatasını gizlememesi.
+
 ## Bir saati aşan devam kontrolü — 2026-10-24
 
 Aynı PID/GUID ve aynı çalıştırılabilirle ayrı `checkpoint-1h/` log kopyası da

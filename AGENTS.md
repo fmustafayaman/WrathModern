@@ -168,9 +168,9 @@ ground truth for protocol comparisons.
   replies. Both live and immutable-snapshot audits passed with no issues. Real movement,
   character/backpack/world-map UI and the 288-byte guest worker were observed.
   Mean interval FPS 58.95, minimum 51.42; maximum event-loop gap 783 ms. This is not
-  an everywhere/always-60-FPS or full-game-content guarantee. The client remains running
-  and the read-only observer continues, as requested. Run pointer:
-  `/tmp/wowremac-stability-run.path`; private evidence is under
+  an everywhere/always-60-FPS or full-game-content guarantee. That original process was
+  later stopped after archiving its normal idle logout and the test-driver issue below.
+  The current run pointer is `/tmp/wowremac-stability-run.path`; original private evidence is under
   `$HOME/Library/Logs/WoWReMac-Warden/stability-30m-threads-20261024-atdcyp5p/`.
   The frozen 30-minute `Logs/` and audit JSON must not be overwritten by later monitoring.
   A separate `checkpoint-1h/` snapshot also passed at **3862.186 seconds** with 26/26
@@ -185,6 +185,14 @@ ground truth for protocol comparisons.
   while health observation continues, preventing an automatic reentry after normal logout
   or a forced process exit after a later disconnect. Eight sanitized lifecycle tests cover
   this (four failed against the previous source). Stock AFK/logout behavior stays intact.
+  The corrected application (`fcab95ff`, SHA-256
+  `a5415eb4f44c4b246b3f6e307a4ec346f8d9b37e4a4b2601f1d22f9c784e6a55`) is being
+  observed separately, PID 30543, under `monitor-autologin-done-20261024-iabau6fd/`.
+  `Tools/Wardendump/watch-session.py <private-run>` now persists across failed audits,
+  archives distinct problems to `events/`, and independently audits periodic `checkpoints/`.
+  It never drives input, relaunches the client, hides failed intervals, or overwrites an
+  earlier proof. Seven offline watcher regressions cover these properties. Read
+  `observer-status.json`/`latest-audit.json` for its PID/freshness; do not assume old PIDs.
   The active user objective is now **continue observing and fix discovered errors until the
   user says enough**. Passing the earlier 30-minute sub-goal does not complete that ongoing
   monitoring objective; keep the observer running and inspect fresh results.
