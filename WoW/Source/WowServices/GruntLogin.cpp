@@ -11,6 +11,9 @@
 #include "Engine/Source/Storm/H/storm.h"
 #include "Engine/Source/Storm/Source/MD5.h"
 #include "WoW/Source/WowServices/LoginResponse.h"
+#if defined(WOWDECOMP_PLATFORM_MAC)
+#include "Platform/Mac/EpochRelay.h"
+#endif
 
 // INLINED
 GruntLogin::MATRIXINPUT::MATRIXINPUT() {
@@ -74,6 +77,12 @@ void GruntLogin::GetLogonMethod() {
     logon.m_versionMinor = 3;
     logon.m_versionPatch = 5;
     logon.m_build = 12340;
+#if defined(WOWDECOMP_PLATFORM_MAC)
+    WowConnection* connection = this->m_clientLink->m_connection;
+    if (connection) {
+        logon.m_build = EpochRelay::ProtocolBuild(connection->m_connectAddress, connection->m_connectPort);
+    }
+#endif
     logon.m_locale = SFile::s_locale;
     logon.m_timeZone = OsGetTimeZone();
 

@@ -28,10 +28,13 @@ set_target_properties(Wow PROPERTIES
 )
 
 if (WOWDECOMP_PLATFORM_MAC)
+    # Isolated profiles can coexist in Launch Services without opening another branch's app.
+    set(WRATHMODERN_BUNDLE_ID "org.wrathmodern.client" CACHE STRING "macOS application bundle identifier")
+    set(WRATHMODERN_BUNDLE_NAME "WrathModern" CACHE STRING "macOS application display name")
     set_target_properties(Wow PROPERTIES
         MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/Mac/Info.plist.in
-        MACOSX_BUNDLE_BUNDLE_NAME WrathModern
-        MACOSX_BUNDLE_GUI_IDENTIFIER org.wrathmodern.client
+        MACOSX_BUNDLE_BUNDLE_NAME ${WRATHMODERN_BUNDLE_NAME}
+        MACOSX_BUNDLE_GUI_IDENTIFIER ${WRATHMODERN_BUNDLE_ID}
         MACOSX_BUNDLE_SHORT_VERSION_STRING 3.3.5
         MACOSX_BUNDLE_BUNDLE_VERSION 12340
     )

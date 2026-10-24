@@ -11,6 +11,9 @@
 #include "Engine/Source/Storm/H/storm.h"
 #include "WoW/Source/WowServices/WDataStore.h"
 #include "WoW/Source/WowServices/WowConnectionNet.h"
+#if defined(WOWDECOMP_PLATFORM_MAC)
+#include "Platform/Mac/EpochRelay.h"
+#endif
 
 // OFFSET: 0x00466670
 char* WowConnection::PeerAddrToStr(char* buffer, uint32_t size) {
@@ -712,6 +715,20 @@ void WowConnection::StartConnect() {
 
 // OFFSET: 0x00468D20
 bool WowConnection::Connect(const char* host, uint16_t port, int32_t timeout) {
+#if defined(WOWDECOMP_PLATFORM_MAC)
+    if (EpochRelay::IsLoginHost(host, port)) {
+        port = EpochRelay::LoginPort();
+        host = "127.0.0.1";
+        if (!port) {
+            // Fail through the normal connection-error callback. Never silently send Epoch
+            // credentials to the direct/unencrypted server when relay setup fails.
+            this->m_connectAddress = 0;
+            this->m_connectPort = 0;
+            this->StartConnect();
+            return false;
+        }
+    }
+#endif
     uint32_t address = inet_addr(host);
 
     if (address == INADDR_NONE || !address) {

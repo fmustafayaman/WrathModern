@@ -7,6 +7,7 @@
 #include "Engine/Source/Storm/H/storm.h"
 #include "Platform/Mac/CommandLine.h"
 #include "Platform/Mac/Paths.h"
+#include "Platform/Mac/EpochRelay.h"
 
 // The macOS entry point, doing what the Windows start() and WinMain do before CommonMain:
 //
@@ -41,6 +42,8 @@ int main(int argc, char** argv) {
     @autoreleasepool {
         OsMacInitApplication();
 
-        return CommonMain();
+        int32_t result = CommonMain();
+        EpochRelay::Shutdown();
+        return result;
     }
 }

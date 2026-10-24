@@ -6,6 +6,9 @@
 #include "WoW/Source/DB/DBClient/DBCacheInstances.h"
 #include "WoW/Source/UIUtil/AddOns.h"
 #include "WoW/Source/WowServices/WDataStore.h"
+#if defined(WOWDECOMP_PLATFORM_MAC)
+#include "Platform/Mac/EpochRelay.h"
+#endif
 
 // STATIC: 0x00AB953C
 TSList<RealmConnection::REALMCONNECTIONNODE> RealmConnection::s_allRealmConnections;
@@ -365,7 +368,13 @@ void RealmConnection::HandleAuthChallenge(AuthenticationChallenge* challenge) {
 
     WDataStore msg;
     msg.Put(static_cast<uint32_t>(CMSG_AUTH_SESSION));
-    msg.Put(static_cast<uint32_t>(12340));
+    uint32_t build = 12340;
+#if defined(WOWDECOMP_PLATFORM_MAC)
+    if (this->m_serverConnection) {
+        build = EpochRelay::ProtocolBuild(this->m_serverConnection->m_connectAddress, this->m_serverConnection->m_connectPort);
+    }
+#endif
+    msg.Put(build);
     msg.Put(static_cast<uint32_t>(this->m_loginData.m_loginServerID));
     msg.PutString(this->m_loginData.m_account);
     msg.Put(static_cast<uint32_t>(this->m_loginData.m_loginServerType));
