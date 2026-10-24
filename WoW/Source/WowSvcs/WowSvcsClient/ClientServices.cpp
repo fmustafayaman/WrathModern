@@ -822,7 +822,7 @@ int32_t SendBugOpcode(uint32_t suggestion, const char* text) {
 }
 
 #if defined(WRATHMODERN_CLIENT_PATCHES)
-// Some server launchers (Grimfall) write the realm list address as "XRL1:" and hex digits: the address XORed with a
+// Some server launchers write the realm list address as "XRL1:" and hex digits: the address XORed with a
 // fixed key. Their own client decodes it in a Windows extension DLL; this reads the same format. Anything that does not
 // decode to a printable address is passed on unchanged.
 static const char* DecodeRealmList(const char* realmList) {

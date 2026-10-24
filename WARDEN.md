@@ -1,7 +1,25 @@
 # Warden — durum ve devam notları
 
-Amaç: native macOS/arm64 WrathModern istemcisinin Warden etkin sunucularda (Grimfall, Warmane) tam değerli istemci gibi davranması.
+Amaç: native macOS/arm64 WrathModern istemcisinin Warden etkin sunucularda (Warmane dahil) tam değerli istemci gibi davranması.
 Yol: istemci tarafı Warden'ı emülasyonla çalıştırmak. Hile/sahte cevap YOK — sunucunun modülü gerçek kod olarak çalışıyor; "honest-compat".
+
+## Güncel dal düzeni — 2026-10-24
+
+- Ana geliştirme/taban dalı **`WowRe`**; bu çalışma dalı **`WowRe-warden`**.
+- `WowRe` @ `33b67424` üzerine 52 Warden/buck-data commit'i rebase edildi. Native Metal,
+  mod altyapısı, istemci yamaları ve autotest korunurken Warden/autologin akışı üstüne eklendi.
+- Sonraki taban güncellemeleri `git rebase WowRe` ile alınır. Sunucuya özel kod `WowRe`'ye
+  geri taşınmaz; `WowRe` worktree'sindeki kaydedilmemiş değişikliklere dokunulmaz.
+- Eski, ilgisiz sunucuya özel `ClientExtensions` 0x52E bildirimi ve ayrı sunucu notu kaldırıldı.
+  Tanımsız paketler artık `Logs/unhandled-packets.log` dosyasına yazılır.
+- Aşağıdaki 2026-10-17 kayıtları emülatörün tarihsel hata ayıklama kanıtlarıdır; güncel
+  projenin başka bir sunucuya bağlı olduğu veya yeni canlı giriş gerektiği anlamına gelmez.
+- **Doğrulama (commitli kaynak, önceki BuckCodeEmu WIP'i hariç):** `WrathModern`,
+  `WardenSmoke`, `BuckSmoke`, `LuxShoulderCam`, `AwesomeWotlk`, `CoAVolFog` derlendi.
+  Yerleşik Warden lifecycle, resmi 40 baytlık challenge'ın birebir 12 baytlık cevabı,
+  aynı emülatörde 40→660 sırası (12→112 bayt) ve 0x4B9 Lua çözümü geçti.
+  Native Metal/mod kaynakları `WowRe` ile birebir; canlı sunucuya giriş yapılmadı,
+  dağıtım kapalı tutuldu (`WRATHMODERN_GAME_DIR=""`).
 
 > **GÜNCEL DURUM (2026-10-17 öğle, en altta güncelleme var):** Sunucu modülü artık **yükleniyor, oluşturuluyor, initialize oluyor, sunucu paketlerini tüketiyor ve cevap üretiyor** — ama modülün `Process`'i okunamayan belleğe erişip fault veriyor ve `LCMapStringA` anlamsız argümanlarla çağrılıyor. El sıkışma tamamlanmadığı için karakter listesi gelmiyor.
 > **Takıldığım yer:** Gerçek oturum olmadan (doğru oturum anahtarı) bu iki hatayı offline çoğaltamıyorum. Bu yüzden tanı dump'ları eklendi; **bir kez daha login** gerekiyor — sonrası tamamen offline. Ayrıntı: en alttaki "NEREDE TAKILDIK" bölümü.
@@ -244,10 +262,10 @@ yanıtlanamadığı için oturum ~1 dk sonra düşüyor.
 
 ### Duman testi (Tools/Wardendump/warden_smoke.cpp)
 Derleme: `c++ -O2 -std=c++17 -arch arm64 -I. -I/opt/homebrew/include -DWOWDECOMP_PLATFORM_MAC=1 -DWRATHMODERN_WARDEN_EMULATION=1 Tools/Wardendump/warden_smoke.cpp Engine/Source/Os/Mac/WardenEmu.cpp -L/opt/homebrew/lib -lunicorn -lz -o Tools/Wardendump/warden_smoke`
-Sonuç: .load ok → .create ok → .initialize ok (result 1) → .processed → .done → .shutdown ok; StateLoad(520)/StateSave(520) modülün kendi state akışı köprüden düzgün geçiyor. Bu, BMC GÖNDERDRAW Handshake yok duman testinde bekleniris (sunucu verisi olmadan modül el sıkışma üretmez); gerçek test Grimfall'a karşı.
+Sonuç: .load ok → .create ok → .initialize ok (result 1) → .processed → .done → .shutdown ok; StateLoad(520)/StateSave(520) modülün kendi state akışı köprüden düzgün geçiyor. Bu, BMC GÖNDERDRAW Handshake yok duman testinde bekleniris (sunucu verisi olmadan modül el sıkışma üretmez); gerçek el sıkışma testi Warden etkin bir sunucuya karşı yapılır.
 
 ## KALAN — SIRADAKİ ADIMLAR
-1. Kullanıcı Grimfall login (loradona) → `Logs/` altında `warden-module-image.bin` (şifresiz görüntü), `warden-session-key.bin`, `warden-traffic.log`, `warden-module-key.bin` oluşur → **tam offline replay**.
+1. Canlı Warden oturumu → `Logs/` altında `warden-module-image.bin` (şifresiz görüntü), `warden-session-key.bin`, `warden-traffic.log`, `warden-module-key.bin` oluşur → **tam offline replay**.
 2. `WardenSmoke <image> <traffic> <session-key>` ile hatayı offline çoğalt; `Logs/warden.log`'da:
    - `LCMapStringA called from XXXX` → çağıran komutu disassemble et (RVA = XXXX-0x700000).
    - `... emu error ... (faulting EIP XXXX)` ve `guest read/write fault at ...` → gerçek fault adresi.
@@ -260,12 +278,10 @@ Sonuç: .load ok → .create ok → .initialize ok (result 1) → .processed →
 ## RİSK / HATIRLATMA
 - Unicorn hook'ları uc_emu_start içinde çalışır; içeride uc_mem_map çağrısı GuestAlloc uzatması HARİÇ YAPILMAMALI (heap uzatması hook içinde uc_mem_map yapiyorsa sorun çıkarabilir — şimdilik ext heap mapesi yalnız NewImportStub ve heap taşmasında; test edilirse!).
 - `list(FILTER EXCLUDE REGEX "WardenClient")` genelliği: başka "WardenClient" girdisi eklenirse yanlışcı çıkarır — dikkat.
-- Grimfall branch sadece System.mm (Win/x86 raporu) + GRIMFALL.md; warden emülasyonu macos'a merge ederken platform-override da gelir (kullanıcı onaylı yol: "replicate or merge into whatever branch the fix lands on").
 - Kullanıcı Türkçe konuşur; hile özelliği ve sahte-check cevabı KESİNLİKLE yok.
 
 ## BİLGİ (sunucu tarafında beklenti)
-- Grimfall: SMSG_WARDEN_DATA 0x02E6 AUTH_RESPONSE'dan ÖNCE geliyor; CMSG_CHAR_ENUM 0x0037 warden cevabına kadar tutuluyor olabilir.
-- İkinci şüpheli (warden yeterli olmazsa): istemci `clientextensions.dll` (Grimfall içerik modu) kendi handshake paketini gönderebilir.
+- Önceki test sunucusunda SMSG_WARDEN_DATA 0x02E6 AUTH_RESPONSE'dan ÖNCE geliyordu; CMSG_CHAR_ENUM 0x0037 Warden cevabına kadar tutuluyor olabilirdi.
 - 3.3.5 Warden protokolü tamamen modül içinde; istemci sadece bayt önden-arkaya taşır (Data/ModuleOutput) — emülasyon = gerçek davranış.
 
 ## VERSIYON KANITI (Warmane kapısı) — 2026-10-17
@@ -292,9 +308,9 @@ DİKKAT: kanıt oyun klasöründeki DOSYALARDAN üretir. DivxDecoder.dll değiş
 klasörde de .bak var!) kanıt orijinal olmaz; Warmane reddedebilir. Çözüm: orijinal .bak dosyasını geri koy.
 
 
-## MODÜL IMPORT KATMANI (Grimfall blocker'ı) — 2026-10-17 (devam)
+## MODÜL IMPORT KATMANI (tarihsel el sıkışma blokajı) — 2026-10-17 (devam)
 
-Bulgu (gerçek Grimfall oturumunun warden.log'u): yerleşik modül sunucu modülünü
+Bulgu (önceki test sunucusundaki gerçek oturumun warden.log'u): yerleşik modül sunucu modülünü
 parça parça (503B xN) alıp ModuleCache ile önbelleğe alıyor, sonra LoadModule
 çağrılıyor ama modül **import çözümlemesinde reddediliyordu** (LCMapStringA yok).
 Yeni "collect-all" davranışı tek oturumda TAM listeyi verdi: modül 33 fonksiyon
@@ -323,17 +339,17 @@ Yapılan (Engine/Source/Os/Mac/WardenEmu.cpp):
 - MacWardenServices::ModuleCache: her sunucu modülünü Logs/warden-module-<id>.bin'e YAZAR
   (offline import/kod analizi için). Sonraki oturumda bu dosya incelenecek.
 
-Durum: macos + grimfall derlendi, iki app güncellendi. Smoke yeşil. Sıradaki: kullanıcı
-Grimfall login → modül artık YÜKLENMELİ; log'da "import X was called but has no behavior"
+Dönemin durumu: iki macOS istemci dalı derlendi, iki app güncellendi. Smoke yeşil. Sıradaki test:
+Warden etkin sunucuda giriş → modül artık YÜKLENMELİ; log'da "import X was called but has no behavior"
 veya "RaiseException/RtlUnwind" satırları çıkarsa o çağrılar modülün gerçekten kullandığı
 yollardır → sırayla gerçek davranış eklenir.
 
 ---
 
-## NEREDE TAKILDIK — Grimfall el sıkışması (2026-10-17 akşam, güncel)
+## NEREDE TAKILDIK — Warden el sıkışması (2026-10-17 akşam, tarihsel)
 
 ### Ne ÇALIŞIYOR (kanıtlanmış)
-Gerçek Grimfall oturumunun `Logs/warden.log`'u (2. oturum, 11:22):
+Önceki test sunucusundaki gerçek oturumun `Logs/warden.log`'u (2. oturum, 11:22):
 ```
 [1] module loaded: imageSize=24576 ...          <- yerleşik modül
 [3] Initialize done (client key length 40, result 00000001)
@@ -452,7 +468,7 @@ Notlar:
   son oturumu oynatır.
 
 ### Sıradaki adım
-1. Kullanıcı Grimfall'a **bir kez** giriş yapar (karakter listesine kadar beklemesi yeterli).
+1. Yeni veri gerektiğinde Warden etkin sunucuda bir canlı oturum yakalanır (karakter listesine kadar).
 2. `Logs/warden.log` → `trace:` satırları vahşi sıçramanın yerini doğrudan gösterir.
 3. `Logs/warden-snapshot.bin` + `warden-session-key.bin` ile tüm iterasyon offline yürür; yeni giriş gerekmez.
 
@@ -483,14 +499,6 @@ veriyordu → çağrı image'ın boş kuyruğuna düşüp megabaytlarca sıfır�
 `WARDEN_CLIENT_EXE="<oyun>/Wow.exe" Tools/Wardendump/WardenSmoke <image> <traffic> <session-key>`
 (Eski manuel derleme satırı geçersiz; `ninja -C build/mac WardenSmoke` kullan. Eski snapshot'lar eski
 bellek düzenine ait, yeni sürümle oynatılamaz.)
-
-## SIRADAKİ BLOKAJ: Grimfall `ClientExtensions` kontrolü
-Hatasız çalışan modül, sunucunun isteğiyle `OsLoadLibrary("Data\Extensions\ClientExtensions")` yapıyor:
-Grimfall'ın içerik modu DLL'i yüklü mü diye bakıyor. Native istemcide bu Windows DLL'i yok; emüle loader
-dürüstçe 0 döndürüyor. Sunucu karakter listesini büyük ihtimalle bu kontrole bağlıyor. Sahte handle
-vermek hile korumasını kandırmak olur — YAPILMAYACAK. Yollar: (1) Grimfall geliştiricileriyle konuşmak
-(native istemci için istisna), (2) ClientExtensions'ın işlevini native yazmak; ama sunucu DLL'in kendisini
-de inceliyorsa bu da yetmez. Ayrıca modül `QueryDosDeviceA("IPSect")` soruyor (emülasyonda cihaz yok → başarısız).
 
 ## Bellek haritası (2026-10-17, commit f3e0fe1)
 Canlı oturumda modül `VirtualQuery` ile tüm adres alanını tarıyor ve `MEM_FREE` olup `PAGE_NOACCESS`

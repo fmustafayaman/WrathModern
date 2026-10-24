@@ -9,8 +9,8 @@ private-server bot and must never fake a server-side check.
 - `Engine/Source/` — engine and platform layers (`Os`, `Storm`, `Gx`, `FrameScript`, `Event`, ...).
 - `WoW/Source/` — the game client (glue/login, realm, world, UI, objects).
 - `Platform/Mac/` — macOS support (paths, command line, window, Metal application init).
-- `Engine/Source/Gx/CGxDeviceMetal/` — the Metal implementation of the D3D9 device the client
-  renders through.
+- `Engine/Source/Gx/CGxDeviceMetal/` — the native Metal backend inherited from `WowRe`;
+  the old D3D9 compatibility device has been removed.
 - `Tools/Wardendump/` — offline diagnostics (Warden emulator smoke test, buck-data smoke test,
   captured protocol fixtures).
 - `ThirdParty/` — vendored dependencies (Lua 5.1, zlib, unicorn, ...).
@@ -20,27 +20,33 @@ how the port stays comparable with the original binary.
 
 ## Worktrees and branches (important)
 
-The repository is checked out in two worktrees:
+- `../WrathModern-WowRe` — `WowRe`, the **main development/base branch** (native Metal,
+  client patches and mods). Do not move Warden/server-specific changes onto this branch.
+- `../WrathModern-warden` — `WowRe-warden`, **Warden and Warmane buck-data on top of `WowRe`**.
+  This branch was rebased onto `WowRe` at `33b67424` on 2026-10-24; it tracks the local
+  `WowRe` branch with rebase enabled. Keep it current with `git rebase WowRe`.
+- `../WrathModern` — `warmane-login`, older work and an uncommitted mods/Metal experiment.
+- Other feature worktrees may exist; use `git worktree list` for the complete list.
 
-- `../WrathModern` — `warmane-login` branch. Older Warmane work, plus an uncommitted mods/Metal
-  experiment (`Mods/`, `ModHost`, `WMModAPI`).
-- `../WrathModern-warden` — `grimfall-recovered` branch. **This is where current Warden and
-  Warmane buck-data work happens.** Recent commits: character list/world entry, 0x41B handler
-  execution, 0x4B9 Lua, 660-byte fingerprint, 192-byte module scan, 84-byte table.
-
-Check both `git status` and `git log` before assuming where the live work is. When continuing
-Warden/Warmane work, work in `../WrathModern-warden` and commit there.
+Check `git status` and `git log` in the relevant worktrees before changing anything. Keep their
+uncommitted changes separate. Continue Warden/Warmane work in `../WrathModern-warden` and commit
+there. `main` is not the development base. The external `upstream` remote remains the original
+`wowdecomp` repository; `WowRe` is the local base branch, not a replacement remote.
 
 ## Build
 
 ```sh
 cmake -S . -B build/mac -G Ninja \
   -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-  -DWRATHMODERN_GAME_DIR="/Volumes/Yaman SSD/wow3.3.5a"
-ninja -C build/mac WrathModern
+  -DWRATHMODERN_GAME_DIR="" \
+  -DWRATHMODERN_APP_NAME=WrathModern-Warden
+ninja -C build/mac WrathModern LuxShoulderCam AwesomeWotlk CoAVolFog
 ```
 
-`WRATHMODERN_GAME_DIR` copies the built `WrathModern.app` into the game directory after linking.
+An empty `WRATHMODERN_GAME_DIR` builds without deploying. To deploy explicitly, set it to
+`/Volumes/Yaman SSD/WoW_Wrath`; the app is copied as `WrathModern-Warden.app`. Do not overwrite
+`WrathModern-WowRe.app` or its matching mods while testing this branch. Mods share the game's
+`Mods/` folder, so use an isolated game directory for separate branch builds when needed.
 The app must run with the game directory as its working directory; `WoW/Source/Mac/Main.mm`
 `chdir`s there itself.
 
@@ -57,7 +63,7 @@ ninja -C build/mac WardenSmoke BuckSmoke
   Tools/Wardendump/captures/challenge-official-40.bin 5660000
 ./Tools/Wardendump/BuckSmoke --seq Tools/Wardendump/captures/handler-41b.bin \
   Tools/Wardendump/captures/client-40.bin Tools/Wardendump/captures/client-660.bin 04d30000 \
-  "/Volumes/Yaman SSD/wow3.3.5a/Wow.exe"
+  "/Volumes/Yaman SSD/WoW_Wrath/Wow.exe"
 ```
 
 `BuckSmoke --seq` is the important regression: it runs two challenges through **one** emulator
@@ -99,10 +105,12 @@ The client writes under the game directory's `Logs/`:
   object serves both phases).
 - `buck-data.log` — buck-data requests, challenge replies, Lua scripts, missing bridges.
 - `net-events.log` — connect/connected/auth-challenge/disconnect and dropped sends.
+- `unhandled-packets.log` — complete packets without a registered handler.
 - `warden.log`, `warden-traffic.log` — Warden emulator and module I/O.
 - `connection.log`, `FrameXML.log`, `GlueXML.log` — glue/login/UI.
 
-The game directory is `/Volumes/Yaman SSD/wow3.3.5a` unless the user says otherwise. Captured
+The current game directory is `/Volumes/Yaman SSD/WoW_Wrath` (the old `wow3.3.5a` path no longer
+exists on the volume). Paths in historical captures are evidence, not current deployment paths. Captured
 fixtures live in `Tools/Wardendump/captures/`; `wardenrealm.log` in the Wine prefix
 (`/Users/mustafayaman/WoWSilicon/drive_c/`) is a capture of the **official** client and is the
 ground truth for protocol comparisons.

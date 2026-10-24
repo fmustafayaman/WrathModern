@@ -1,6 +1,5 @@
 #include "RealmConnection.h"
 #include "Engine/Source/BlizzardCore/Source/Packages/Util/SHA1.h"
-#include "Engine/Source/Os/OsFile.h"
 #include "Engine/Source/Os/TimeManager.h"
 #include "Engine/Source/Storm/H/storm.h"
 #include "Engine/Source/Tempest/CRandom.h"
@@ -9,9 +8,6 @@
 #include "WoW/Source/Net/NetClient/BuckData.h"
 #include "WoW/Source/UIUtil/AddOns.h"
 #include "WoW/Source/WowServices/WDataStore.h"
-
-// Grimfall's client extension handshake opcode (outside the 3.3.5a range, see NUM_MSG_TYPES).
-static const uint32_t CMSG_GRIMFALL_CLIENT_EXTENSIONS = 0x52E;
 
 // STATIC: 0x00AB953C
 TSList<RealmConnection::REALMCONNECTIONNODE> RealmConnection::s_allRealmConnections;
@@ -453,27 +449,6 @@ void RealmConnection::HandleAuthChallenge(AuthenticationChallenge* challenge) {
 // VERIFY: 43999034 manual
 // OFFSET: 0x00464A40
 void RealmConnection::RequestCharacterEnum() {
-    // Grimfall: its client extension (Data/Extensions/clientextensions.dll) hooks this function
-    // and announces itself with an empty opcode-0x52E message right before the request, and the
-    // server answers the character list only after it. The native client carries that part of
-    // the extension itself.
-    //
-    // Only do that when the extension is actually installed: the official client only sends this
-    // because the DLL loaded and hooked the request. On a server without the extension (Warmane)
-    // the unknown opcode is a protocol violation and the server closes the connection.
-#if defined(WOWDECOMP_PLATFORM_MAC)
-    const char* extensionPath = "Data/Extensions/clientextensions.dll";
-#else
-    const char* extensionPath = "Data\\Extensions\\clientextensions.dll";
-#endif
-
-    if (OsFileExists(extensionPath)) {
-        CDataStore hello;
-        hello.Put(static_cast<uint32_t>(CMSG_GRIMFALL_CLIENT_EXTENSIONS));
-        hello.Finalize();
-        this->Send(&hello);
-    }
-
     CDataStore msg;
     msg.Put(static_cast<uint32_t>(CMSG_ENUM_CHARACTERS));
     msg.Finalize();

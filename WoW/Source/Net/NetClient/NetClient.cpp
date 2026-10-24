@@ -357,9 +357,8 @@ int32_t NetClient::ProcessMessage(uint32_t timeReceived, CDataStore* msg, int32_
         return this->m_handlers[msgId](this->m_handlerParams[msgId], static_cast<NETMESSAGE>(msgId), timeReceived, msg);
     }
 
-    // Grimfall sends its own messages (opcodes past the 3.3.5a range, handled by its client
-    // extension on Windows). Record every message nothing handles, whole, so the extension's
-    // protocol can be implemented from what the server really sends.
+    // Record unhandled messages in full, including extension opcodes outside the 3.3.5a
+    // range, so protocol diagnostics retain the bytes the server actually sent.
     LogUnhandledMessage(msgId, msg);
 
     msg->Reset();
@@ -371,7 +370,7 @@ void NetClient::ValidateMessageId(uint32_t msgId) {
 }
 
 void NetClient::LogUnhandledMessage(uint32_t msgId, CDataStore* msg) {
-    FILE* file = fopen("Logs/grimfall-packets.log", "a");
+    FILE* file = fopen("Logs/unhandled-packets.log", "a");
 
     if (!file) {
         return;
