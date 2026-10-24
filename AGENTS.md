@@ -44,7 +44,7 @@ ninja -C build/mac WrathModern LuxShoulderCam AwesomeWotlk CoAVolFog
 ```
 
 An empty `WRATHMODERN_GAME_DIR` builds without deploying. To deploy explicitly, set it to
-`/Volumes/Yaman SSD/WoW_Wrath`; the app is copied as `WrathModern-Warden.app`. Do not overwrite
+`/Volumes/Yaman SSD/Warmane`; the app is copied as `WrathModern-Warden.app`. Do not overwrite
 `WrathModern-WowRe.app` or its matching mods while testing this branch. Mods share the game's
 `Mods/` folder, so use an isolated game directory for separate branch builds when needed.
 The app must run with the game directory as its working directory; `WoW/Source/Mac/Main.mm`
@@ -63,7 +63,8 @@ ninja -C build/mac WardenSmoke BuckSmoke
   Tools/Wardendump/captures/challenge-official-40.bin 5660000
 ./Tools/Wardendump/BuckSmoke --seq Tools/Wardendump/captures/handler-41b.bin \
   Tools/Wardendump/captures/client-40.bin Tools/Wardendump/captures/client-660.bin 04d30000 \
-  "/Volumes/Yaman SSD/WoW_Wrath/Wow.exe"
+  "/Volumes/Yaman SSD/Warmane/Wow.exe"
+python3 Tools/Wardendump/test-buck-lua.py
 ```
 
 `BuckSmoke --seq` is the important regression: it runs two challenges through **one** emulator
@@ -85,10 +86,12 @@ cache bug that made the 660-byte challenge reply with the previous code.
   first, then the previous nonce), rotating right one bit per dword. The handler reads nonce and
   length with `CDataStore::GetInt` (0x401170), runs the code, which reads the trailing answer with
   another `GetInt`; the reply is `[0x41B][0xD0BE63D1][answer]` encoded with the nonce.
-- 0x4B9 Lua: the first payload byte is the rolling-XOR seed (`CDataStore::GetByte`, 0x464560);
-  decode the rest and pass it to `FrameScript_Execute`.
-- 0x41D/0x41C handlers are not installed natively yet; their data is logged. The 84-byte challenge
-  returns the 40-byte table at `0x00DD0FD8`, which the 0x41C handler populates.
+- 0x4B9 Lua: the first payload byte is the rolling-XOR seed (`CDataStore::GetByte`, 0x464560).
+  Decode **all** NUL-terminated chunks and execute each in order; the key advances across each
+  NUL and is never reset between chunks. The captured 1808-byte packet contains five chunks.
+- 0x41D/0x41C handler segments execute in the emulator, but the complete framework/install
+  flow and native database hooks are still incomplete. The 84-byte challenge reads their real
+  guest state at `0x00DD0FD8`; never replace it with a captured or hard-coded table.
 - When Unicorn writes code from inside a hook, invalidate translations
   (`uc_ctl_remove_cache`) or the previous challenge's code will keep running. This is already done
   in `StoreGetArray`, `RunHandlerChallenge`, `RunChallenge` and `RunDataHandler`.
@@ -109,31 +112,37 @@ The client writes under the game directory's `Logs/`:
 - `warden.log`, `warden-traffic.log` — Warden emulator and module I/O.
 - `connection.log`, `FrameXML.log`, `GlueXML.log` — glue/login/UI.
 
-The current game directory is `/Volumes/Yaman SSD/WoW_Wrath` (the old `wow3.3.5a` path no longer
-exists on the volume). Paths in historical captures are evidence, not current deployment paths. Captured
+The Warden test directory is `/Volumes/Yaman SSD/Warmane`, the user's clean 3.3.5a installation.
+Do not modify the separate `/Volumes/Yaman SSD/WoW_Wrath` development installation or its mods.
+Paths in historical captures are evidence, not current deployment paths. Captured
 fixtures live in `Tools/Wardendump/captures/`; `wardenrealm.log` in the Wine prefix
 (`/Users/mustafayaman/WoWSilicon/drive_c/`) is a capture of the **official** client and is the
 ground truth for protocol comparisons.
 
-## Current state (2026-10-19 evening)
+## Current state (2026-10-24)
 
-- Warmane login, character list and **world entry work** with the native client. The last live
-  run (autologin, character `Hendell`) stayed in the world for more than twelve minutes while the
-  Warden keepalives continued.
-- Buck-data challenges answered in that run: 40, 660, 192, 88, 92 and 84 bytes. The 192 reply is
-  the 56-byte single-module scan; the 88/92 replies are memory-read challenges whose pointers
-  point at client image/global addresses, so their **contents and lengths differ from the official
-  capture** (the server tolerated them but this is the first place to look if a later check
-  rejects the session). The 84 reply uses the zeroed `0x00DD0FD8` table because the 0x41C data
-  handler is not installed yet.
-- The client is launched unattended with `WRATHMODERN_AUTOLOGIN=1`; the current test instance may
-  still be running. Kill it before starting another login:
-  `pkill -f 'WrathModern.app/Contents/MacOS/WrathModern'`.
-- The external-volume TCC prompt is fixed by stable signing with the `WrathModern Dev` identity
-  (see below); one approval survives rebuilds.
-- Next fidelity steps if needed: run the delivered 0x41C/0x41D data handlers with
-  `BuckCodeEmu::RunDataHandler` (`BuckSmoke --data`) so `0x00DD0FD8` holds the real table, and
-  reproduce the 88/92 memory-read payloads from the official capture.
+- Clean Warmane installation: account authentication, character list and **world entry** were
+  confirmed with `Maheta` in Camp Narache (packet 0x236 and the rendered game window). This
+  session disconnected after approximately four minutes in the world; stability is not solved.
+- The complete session replays offline with **14/14 Warden replies matching the live trace**,
+  including Storm ADT file checks. This proves replay fidelity, not server acceptance.
+- Buck challenges: 40→12, 660→112, 192→1984, 84→48, 92→32 and 80→16 bytes. The last two
+  memory readers return exactly the requested 22 and 8 bytes from the clean Wow.exe; the
+  92-byte challenge also has two zero padding bytes. Its verifier must not count padding as
+  a mismatch. Disconnect followed the 80-byte challenge, but causation is not established.
+- 0x4B9 now executes every Lua chunk (five at character selection, nine in the world), with
+  six offline regression tests. The hard-coded table-override path has been removed.
+- Remaining fidelity gaps: complete 0x2E9/0x4B8 installation, native content/database hooks and
+  the module inventory. The existing Wine module list is a historical model, not a verified
+  inventory of this native process. Do not adjust canned values to make checks pass. The
+  framework API declarations in the existing BuckCodeEmu WIP are not yet implemented.
+- Preserve session keys with their traffic **before another login**: each login overwrites
+  `Logs/warden-session-key.bin`. Private captures from this test are under
+  `$HOME/Library/Logs/WrathModern-Warden/`; never commit keys or credentials.
+- The test application is `Warmane/WrathModern-Warden.app`; check the exact process path
+  before starting or stopping it. Do not kill another branch's running client.
+- Stable signing with `WrathModern Dev` keeps the external-volume TCC permission across builds.
+  See `WARDEN.md` for packet times, capture locations and the next offline investigation.
 
 ## Testing the live server
 
@@ -151,7 +160,7 @@ The file must be user-only (`chmod 600`); never commit it or print the password.
 `CGlueMgr::LoginServerLogin` rather than a bare `ClientServices::Logon`, because the glue state
 drives the version proof and realm list. Progress goes to `Logs/autologin.log`. The process is
 left running after the character login is sent, so the session can be observed and stopped with
-`pkill -f WrathModern.app/Contents/MacOS/WrathModern`.
+`kill <test-pid>` after checking its exact executable path. Do not stop another branch's client.
 
 When a live session drops, read `buck-data.log` first: a missing bridge appears as
 `delivered code called client XXXXXXXX with no bridge`, followed by a failed challenge. Implement

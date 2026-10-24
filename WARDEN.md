@@ -3,6 +3,77 @@
 Amaç: native macOS/arm64 WrathModern istemcisinin Warden etkin sunucularda (Warmane dahil) tam değerli istemci gibi davranması.
 Yol: istemci tarafı Warden'ı emülasyonla çalıştırmak. Hile/sahte cevap YOK — sunucunun modülü gerçek kod olarak çalışıyor; "honest-compat".
 
+## Temiz Warmane kurulumu — 2026-10-24 canlı test
+
+**Giriş ve dünya render'ı çalışıyor; uzun süreli bağlantı henüz çözülmedi.** Kullanıcının
+`/Volumes/Yaman SSD/Warmane` dizinindeki temiz 3.3.5a kurulumuna ayrı
+`WrathModern-Warden.app` dağıtıldı. `WoW_Wrath`, diğer worktree'ler ve modlarına dokunulmadı.
+Kimlik bilgileri yalnız repo dışındaki, `0600` izinli test dosyasında; buraya yazılmaz.
+
+### Somut düzeltme: 0x4B9 tek Lua dizgesi değil
+
+Kullanıcının paylaştığı [anti-cheat incelemesi](https://backend-development.net/post/warmane-anti-cheat),
+Lua işleyicisinin birden çok parça çalıştırdığını işaret etti. Asıl doğrulama kaydedilmiş
+`blob-893-seg1-350.bin` kodundan: `+0x32..+0xB7`, her NUL'dan sonra `ESI != EDI` iken tekrar
+çözüp çalıştırıyor; BL anahtarı NUL'da da `decoded + 1` ile ilerliyor, sıfırlanmıyor.
+REA'nın raw-binary/Ghidra sağlayıcısı yapılandırılmamıştı; bu dar disassembly mevcut Capstone
+ile yapıldı. Yazıdaki açıklamalar tek başına protokol kanıtı değildir (örneğin bizde doğrulanan
+cevap sabiti hâlâ `0xD0BE63D1`).
+
+- Eski kod ilk NUL'da duruyor, kalan Lua parçalarını sessizce atıyordu. Ortak
+  `BuckCodeEmu::DecodeLuaScripts` artık tüm paketi çözüyor; `BuckData` her parçayı sırayla
+  `FrameScript_Execute` ile çalıştırıyor. Son parçası tamamlanmamış paket çalıştırılmıyor.
+- 1808 baytlık kayıt: **799 / 404 / 126 / 19 / 454** baytlık beş parça. Canlı dünya paketi
+  6772 bayt ve **dokuz parça**; dokuzu da `buck-data.log`'da işlendi.
+- `python3 Tools/Wardendump/test-buck-lua.py`: **6 test geçti** (kayıtlı beş parça, tek parça,
+  parça sınırında devam eden/saran anahtar, boş parçalar, boş betik ve bozuk paketler).
+- `SetDataTable` ve `WRATHMODERN_BUCK_TABLE_OVERRIDE` yolu kaldırıldı. Tanı API'si
+  `ReadFrameworkState` yalnız gerçek guest durumunu okur; yakalanmış tabloyu yazmaz.
+- Mevcut BuckCodeEmu WIP'i korunurken eksik `HeapAllocPages` bildirimi derlemeyle uyumlandı.
+  `WrathModern`, `WardenSmoke`, `BuckSmoke`, yerleşik lifecycle ve aynı emülatörde 40→660
+  testi geçti. Resmî 40 baytlık fixture hâlâ birebir 12 baytlık cevabı üretir.
+
+### Canlı kanıt ve kopma
+
+İlk oturumda karakter girişine karşı yeniden `003B` geldi. Sonraki çalıştırmada:
+
+- `3990822`: `CMSG 003D` (Maheta); `3991137`: **`SMSG 0236`** (map 1). Camp Narache'deki
+  karakter ve oyun UI'si yalnız bu uygulamanın pencere görüntüsüyle de doğrulandı. Yeniden
+  girişin kabul edilmesinin Lua düzeltmesinden kaynaklandığı kanıtlanmış değil.
+- Buck-data cevapları: **40→12, 660→112, 192→1984, 84→48, 92→32, 80→16** bayt.
+- `4102982`, 92 baytlık kontrol: `0x0050D2B7+7`, `0x0040100A+6`, `0x0050A288+9` —
+  istenen **22/22 bayt** temiz Wow.exe ile aynı, ardından **iki sıfır padding baytı** var.
+  `verify-client-reads.py` bu padding'i yanlışlıkla fark sayıyordu; istenen veri ile hizalama
+  ayrıldı, uzunluk ve sıfır padding de doğrulanıyor. Bu araç mevcut untracked WIP olarak kaldı.
+- `4223065`, 80 baytlık kontrol: `0x00AA33DC+8` (`.rdata`) — **8/8 bayt** aynı.
+- `4225893`: **DISCONNECTED**, dünya onayından **234756 ms** sonra. Son kontrole yakınlık
+  onun reddedildiğini kanıtlamaz; kopmanın nedeni henüz bulunmadı. Yeni giriş döngüsü başlatılmadı.
+- Tam oturumun offline replay'i **14/14 CMSG birebir**, ADT dosyaları gerçek Storm/MPQ
+  okumalarıyla hash'leniyor (45/53/77 baytlık cevaplar dahil). Bu, canlı istemciyle aynı
+  hesabı yaptığımızı gösterir; sunucunun sonucu kabul ettiğini göstermez.
+
+Tam trafik, oturum anahtarı, modül, challenge'lar, ekran kanıtı ve replay çıktısı repo dışında:
+`$HOME/Library/Logs/WrathModern-Warden/warmane-20261024-VZqrz5/`.
+Yeni login'den önce bu arşiv korunmalı; oyun dizinindeki tek anahtar dosyası üzerine yazılıyor.
+
+**Sıradaki offline iş:** 0x2E9/0x4B8'in kurulumunu ve native içerik/DB hook'larını tamamlamak.
+Şu an istek opcode'u taranıp handler segmentleri çalıştırılıyor; bütün kurulum çalışmıyor ve
+84 baytlık kontrolün okuduğu framework durumu eksik. Mevcut sabit Wine modül listesi de native
+sürecin doğrulanmış envanteri değil; bunu gerçek eşlenmiş ortamla tutarlı hale getirmek gerekir.
+Başlıktaki `InstallFramework`/`Dispatch`/hook API'leri önceki WIP'ten, henüz uygulanmış değil.
+Kontrolü geçirtmek için sabit cevap/tablo/modül listesi ayarlamak çözüm değildir.
+
+Kurulumu gerçek kodla sürdürmek için ek bulgu: canlı 264 baytlık 0x2E9'da oyuncu sayısı 0,
+flag sayısı 249314. `Packet_MSG_BATTLEGROUND_PLAYER_POSITIONS` (0x0054B3F0) yazım düzeniyle
+ilk 16 GUID/XY çifti guest'te yeniden yerleştirilince `0x00DD1000..0x00DD107F` bootstrap'ı ve
+`0x00DD15A0..0x00DD161F` kodu çıkıyor. Bootstrap **`CGBattlefieldInfo::ShutdownGame`**
+(0x0054E220) çağırıyor, VirtualAlloc ile tampon alıyor, 0xDD15A0'dan 0x5E baytı oraya kopyalıyor
+ve 0x4B8'i `base+0x20` handler/param ile kaydediyor. Dispatcher ilk segmenti `param+0x3E`'ye
+kopyalayıp çalıştırıyor; install segmenti de sonraki handler/veri segmentlerini tüketiyor.
+PE import tablosundan doğrulanan slotlar: `0x009DF1B4=IsDebuggerPresent`,
+`0x009DF1C0=GetCurrentProcess`, `0x009DF294=FlushInstructionCache`. Sonuncusu Unicorn
+translation cache'ini de gerçekten temizlemeli. Bu çözümleme henüz canlı yürütücüye bağlanmadı.
+
 ## Güncel dal düzeni — 2026-10-24
 
 - Ana geliştirme/taban dalı **`WowRe`**; bu çalışma dalı **`WowRe-warden`**.

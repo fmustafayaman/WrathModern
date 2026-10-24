@@ -16,7 +16,6 @@
 #include "Engine/Source/Os/Mac/MacOs.h"
 #include "Engine/Source/Os/TimeManager.h"
 #include "Platform/Mac/Paths.h"
-#include "Platform/Mac/Paths.h"
 #include "WoW/Source/Net/NetClient/NetClient.h"
 #include "WoW/Source/Net/Types.h"
 
@@ -214,32 +213,20 @@ bool ExtractChallengeHandler(const uint8_t* data, uint32_t size, std::vector<uin
 }
 
 int32_t HandleLuaScript(const uint8_t* data, uint32_t size) {
-    // The delivered 0x4B9 handler first reads one byte with CDataStore::GetByte: that byte is
-    // the seed for the rolling XOR, not part of the script. It then decodes the rest of the
-    // message in place, each byte offset by a key that advances by the decoded byte plus one,
-    // and hands the NUL-terminated result to luaL_loadbuffer/lua_pcall.
-    if (size < 2) {
+    std::vector<std::string> scripts;
+
+    if (!BuckCodeEmu::DecodeLuaScripts(data, size, scripts)) {
+        BuckLog("SMSG 4B9 (%u bytes): missing seed or unterminated Lua chunk; not executed", size);
         return 1;
     }
 
-    std::string script;
-    uint8_t key = data[0];
+    BuckLog("delivered Lua packet (%u bytes, seed %02x): %u chunks", size, data[0],
+        static_cast<uint32_t>(scripts.size()));
 
-    for (uint32_t i = 1; i < size; i++) {
-        uint8_t decoded = data[i] ^ key;
-        key = static_cast<uint8_t>(key + decoded + 1);
-
-        if (!decoded) {
-            break;
-        }
-
-        script += static_cast<char>(decoded);
-    }
-
-    BuckLog("delivered Lua script (%u bytes, seed %02x): %.200s", static_cast<uint32_t>(script.size()),
-        data[0], script.c_str());
-
-    if (!script.empty()) {
+    for (uint32_t i = 0; i < scripts.size(); i++) {
+        const std::string& script = scripts[i];
+        BuckLog("delivered Lua chunk %u/%u (%u bytes): %.200s", i + 1,
+            static_cast<uint32_t>(scripts.size()), static_cast<uint32_t>(script.size()), script.c_str());
         FrameScript_Execute(script.c_str(), nullptr, nullptr);
     }
 
@@ -363,20 +350,6 @@ int32_t RunDeliveredDataHandler(uint32_t opcode, const uint8_t* data, uint32_t s
 
     BuckLog("ran the delivered 0x%03X data handler (%u bytes) on %u bytes: %s", opcode,
         static_cast<uint32_t>(handler.size()), size, ran ? "ok" : "failed");
-
-    // Compatibility test: the official client's 0x41D/0x41C handlers leave these ten dwords at
-    // 0x00DD0FD8. Until the handler's client-side parser (the hook it installs into the Wow.exe
-    // image) runs in this machine, the table only has the delivered code's partial writes. The
-    // override isolates whether the 84-byte check is what the server calls unauthorized.
-    if (opcode == BUCK_OPCODE_CLEAR && getenv("WRATHMODERN_BUCK_TABLE_OVERRIDE")) {
-        static const uint32_t official[10] = {
-            0x09987F00, 0x05660000, 0x00000003, 0x03D20000, 0x00000000,
-            0x099A9838, 0x000000C8, 0x03D00000, 0x03D10000, 0x03CD0000,
-        };
-
-        Emulator().SetDataTable(official);
-        BuckLog("table override applied");
-    }
 
     return 1;
 }

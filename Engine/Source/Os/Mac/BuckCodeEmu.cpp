@@ -1219,6 +1219,41 @@ bool BuckCodeEmu::DecodeChallenge(const uint8_t* payload, uint32_t size, uint32_
     return true;
 }
 
+bool BuckCodeEmu::DecodeLuaScripts(const uint8_t* payload, uint32_t size, std::vector<std::string>& scripts) {
+    scripts.clear();
+
+    if (!payload || size < 2) {
+        return false;
+    }
+
+    // Captured 0x4B9 handler +0x32..+0xB7: BL advances by decoded + 1 even at NUL,
+    // then ESI != EDI loops back for another chunk without re-reading the seed. The
+    // captured 1808-byte packet contains five chunks (799/404/126/19/454 bytes).
+    uint8_t key = payload[0];
+    std::string script;
+    uint32_t chunkStart = 1;
+
+    for (uint32_t i = 1; i < size; i++) {
+        uint8_t decoded = payload[i] ^ key;
+        key = static_cast<uint8_t>(key + decoded + 1);
+
+        if (!decoded) {
+            scripts.push_back(script);
+            script.clear();
+            chunkStart = i + 1;
+        } else {
+            script += static_cast<char>(decoded);
+        }
+    }
+
+    if (chunkStart != size) {
+        scripts.clear();
+        return false;
+    }
+
+    return true;
+}
+
 bool BuckCodeEmu::RunChallenge(const uint8_t* payload, uint32_t size, uint32_t token, uint32_t key,
     std::vector<uint8_t>& response, uint32_t& nextKey) {
     Impl& impl = *m_impl;
@@ -1393,17 +1428,9 @@ bool BuckCodeEmu::RunHandlerChallenge(const uint8_t* handler, uint32_t handlerSi
     return true;
 }
 
-void BuckCodeEmu::SetDataTable(const uint32_t* values) {
+bool BuckCodeEmu::ReadFrameworkState(uint32_t values[10]) {
     Impl& impl = *m_impl;
-
-    if (!impl.Boot()) {
-        return;
-    }
-
-    impl.WriteMemory(0x00DD0FD8, values, 10 * sizeof(uint32_t));
-    impl.Log("data table set; 0xDD0FD8: %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x",
-        values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7], values[8],
-        values[9]);
+    return values && impl.Boot() && impl.ReadMemory(0x00DD0FD8, values, 10 * sizeof(uint32_t));
 }
 
 bool BuckCodeEmu::RunDataHandler(const uint8_t* handler, uint32_t handlerSize, const uint8_t* payload,

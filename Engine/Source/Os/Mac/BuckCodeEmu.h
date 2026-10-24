@@ -2,6 +2,7 @@
 #define ENGINE_SOURCE_OS_MAC_BUCKCODEEMU_H
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 /*
@@ -81,14 +82,18 @@ public:
     bool RunDataHandler(const uint8_t* handler, uint32_t handlerSize, const uint8_t* payload,
         uint32_t size, uint32_t token, uint32_t hookOffset = 0);
 
-    // Writes the ten dwords the delivered 0x41D/0x41C handlers keep at 0x00DD0FD8. The 84-byte
-    // challenge copies those 40 bytes into its reply; this is used by the compatibility test to
-    // see which layout the server accepts.
-    void SetDataTable(const uint32_t* values);
+    // The ten dwords the framework keeps at 0x00DD0FD8 (its buffers, handler addresses and the
+    // content state); the 84-byte challenge copies them into its reply. Diagnostics only.
+    bool ReadFrameworkState(uint32_t values[10]);
 
     // Decodes a challenge without running it: header, code length and the decoded message.
     // Used by diagnostics to compare against the official client's traffic.
     static bool DecodeChallenge(const uint8_t* payload, uint32_t size, uint32_t token, std::vector<uint8_t>& decoded);
+
+    // 0x4B9 is [seed][NUL-terminated Lua chunks], not one string. The delivered handler keeps
+    // its rolling key across chunk terminators and executes each chunk in order. Reject a
+    // truncated final chunk before executing any of the packet.
+    static bool DecodeLuaScripts(const uint8_t* payload, uint32_t size, std::vector<std::string>& scripts);
 
 private:
     struct Impl;

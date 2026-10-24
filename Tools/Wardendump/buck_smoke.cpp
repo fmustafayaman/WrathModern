@@ -108,7 +108,7 @@ bool ReadFile(const char* path, std::vector<uint8_t>& out) {
     long size = ftell(file);
     fseek(file, 0, SEEK_SET);
 
-    if (size <= 0) {
+    if (size < 0) {
         fclose(file);
         return false;
     }
@@ -238,23 +238,19 @@ int main(int argc, char** argv) {
             return 2;
         }
 
-        // The delivered 0x4B9 handler's rolling XOR: the first payload byte is the key seed
-        // (CDataStore::GetByte), the NUL-terminated script follows.
-        std::string script;
-        uint8_t key = blob.empty() ? 0 : blob[0];
+        std::vector<std::string> scripts;
 
-        for (size_t i = 1; i < blob.size(); i++) {
-            uint8_t decoded = blob[i] ^ key;
-            key = static_cast<uint8_t>(key + decoded + 1);
-
-            if (!decoded) {
-                break;
-            }
-
-            script += static_cast<char>(decoded);
+        if (!BuckCodeEmu::DecodeLuaScripts(blob.data(), static_cast<uint32_t>(blob.size()), scripts)) {
+            fprintf(stderr, "Lua payload is missing a seed or has an unterminated chunk\n");
+            return 1;
         }
 
-        printf("script (%u bytes):\n%s\n", static_cast<uint32_t>(script.size()), script.c_str());
+        printf("scripts (%u):\n", static_cast<uint32_t>(scripts.size()));
+
+        for (uint32_t i = 0; i < scripts.size(); i++) {
+            printf("script %u (%u bytes):\n%s\n", i + 1, static_cast<uint32_t>(scripts[i].size()),
+                scripts[i].c_str());
+        }
         return 0;
     }
 
