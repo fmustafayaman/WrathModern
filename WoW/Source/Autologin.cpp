@@ -52,9 +52,9 @@ uint32_t s_lastLog;
 bool s_realmConnectTried;
 FILE* s_log;
 
-// The first login is rejected when the emulated module scan does not match the official client;
-// the server then re-sends SMSG_CHAR_ENUM. A new character list after a login attempt therefore
-// means "try again" (the second attempt is not challenged and enters the world).
+// A character-login attempt can return another SMSG_CHAR_ENUM instead of entering the
+// world. Observe that fresh list before a bounded retry; the capture does not establish
+// why the server rejected the first attempt or that a subsequent attempt skips checks.
 uint32_t s_characterListEpoch;
 uint32_t s_characterListSeenAt;
 uint32_t s_loginEpoch;

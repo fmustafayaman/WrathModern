@@ -3,6 +3,46 @@
 Amaç: native macOS/arm64 WoWReMac istemcisinin Warden etkin sunucularda (Warmane dahil) tam değerli istemci gibi davranması.
 Yol: istemci tarafı Warden'ı emülasyonla çalıştırmak. Hile/sahte cevap YOK — sunucunun modülü gerçek kod olarak çalışıyor; "honest-compat".
 
+## 288 baytlık challenge — çevrimdışı düzeltme, 2026-10-24
+
+20. dakikadaki `0x006B3856` durması **yeni bir oyun fonksiyonu değil**, henüz
+çözümlenmemiş `GetCurrentThreadId` import'uydu. Temiz Wow.exe SHA-256:
+`aa63a5750d60ef16746c686b3d5e26876d98953eab08b1c026cd0faf78e88cb8`. PE
+OriginalFirstThunk, `KERNEL32.dll!GetCurrentThreadId` için IAT `0x009DF218`
+gösteriyor; dosyadaki `0x006B3856` bir **import-name RVA**. Onu VA gibi çalıştırınca
+alakasız bir fonksiyonun epiloguna düşülüyordu.
+
+- Tam paket, `failure-20m/realm-packets.log` içindeki `14697987` satırından alındı:
+  `captures/challenge-288.bin`, SHA-256
+  `4cb66fa666c0063f8fa6886db6a24f62e898b3ed164dcf8272c8a443eb05ad1a`.
+  Önceki buck nonce'u `B5383598`; çözülünce nonce `670850AB`, kod uzunluğu **278**.
+- Kod, `GetCurrentThreadId` → `OpenThread(0x4A)` → `CreateThread` →
+  `WaitForSingleObject(INFINITE)` çağırıyor. Yardımcı x86 kodu ana thread'in
+  `CONTEXT_DEBUG_REGISTERS` durumunu okuyor, bekleyen kodun devamını dört NOP ile
+  değiştiriyor ve cache'i temizliyor. Gönderilen 28 bayt: API'nin gerçek BOOL sonucu
+  ve DR0/DR1/DR2/DR3/DR6/DR7; cevabı yine teslim edilen kod oluşturuyor.
+- `BuckCodeEmuThreads.inl`: tek Unicorn makinesi üzerinde ayrı register context/stack
+  taşıyan kooperatif guest thread'leri. Hook içinden iç içe `uc_emu_start` yok;
+  bekleme dış yürütücüye bırakılıyor. Context, canlı Unicorn CPU kaydından okunuyor;
+  sabit sıfır/başarı cevabı veya host ARM register'ıymış gibi gösterim yok.
+- Altı argümanlı Win32 çağrıları için host frame dizisi de genişletildi; önceki
+  altı-dword dizi, dönüş adresinden sonraki altıncı argümanda sınır dışına çıkıyordu.
+- Yakalanan challenge artık gerçek worker'ı çalıştırıp **36 bayt** cevap üretiyor.
+  Taze guest CPU'nun DR6/DR7 değerleri `FFFF0FF0`/`00000400`; bunlar sıfırlanmıyor.
+  Testte guest kodunun yazdığı **sıfır olmayan DR0/DR3 de aynen geri geliyor** ve
+  ikinci worker/challenge sonrasında korunuyor. Henüz canlı sunucu kabulü iddiası yok.
+- Regresyonlar: **12 framework + 6 Lua + 5 PE-runtime + 8 session-verifier** testi geçti.
+  Bilinmeyen CONTEXT grubu, desteklenmeyen sonlu bekleme ve worker bellek hatası
+  açıkça başarısız; yarım/bypass cevabı gönderilmiyor. Yürütme beş saniye ile sınırlı.
+- Kullanıcının pragmatik kapsam tercihi `AGENTS.md`'ye kaydedildi: isteğe bağlı,
+  uygulanamayan özellikler açık sabit “desteklenmiyor” mesajıyla atlanabilir;
+  sunucu/Warden kontrolünü sahte başarıyla atlama veya başarısız testi başarılı
+  sayma değildir.
+
+**Sıradaki kanıt:** yeni uygulamayla tek PID/GUID üzerinden en az 1800 saniye canlı
+oyun, hareket/UI, kesintisiz gerçek render ve bütün challenge cevapları. Önceki
+20 dakikalık başarısız koşu korunur ve aşağıda ayrıntılanır.
+
 ## 30 dakikalık kararlılık çalışması — 2026-10-24, hedef henüz sağlanmadı
 
 Kullanıcının hedefi: aynı native oturumda **en az 30 dakika kesintisiz dünya bağlantısı ve

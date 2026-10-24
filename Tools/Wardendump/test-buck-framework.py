@@ -169,6 +169,84 @@ class FrameworkTests(unittest.TestCase):
         self.assertFalse(any(decoded[end + 1:]))
         self.assertNotIn(b"windows", decoded.lower())
 
+    def thread_challenge(self):
+        plain = crypt((CAPTURES / "challenge-288.bin").read_bytes(), 0xB5383598)
+        nonce, length = struct.unpack_from("<II", plain)
+        self.assertEqual((nonce, length), (0x670850AB, 278))
+        return plain
+
+    def test_captured_worker_executes_and_reads_the_waiting_guest_cpu(self):
+        setup = install_packets()
+        token = states(self.successful(setup))[-1][1]
+        plain = self.thread_challenge()
+        nonce = struct.unpack_from("<I", plain)[0]
+        output = self.successful(setup + [packet(0x41B, crypt(plain, token))])
+        reply = replies(output)[-1]
+        decoded = reply[:4] + crypt(reply[4:], nonce)
+        self.assertEqual(len(decoded), 36)
+        # The worker replaces ContextFlags with the GetThreadContext BOOL before sending.
+        self.assertEqual(struct.unpack_from("<III", decoded), (0x41B, 0xD0BE63D1, 1))
+        self.assertIn("created delivered guest thread 2", output)
+        self.assertIn("delivered guest thread 2 exited", output)
+        self.assertIn("GetThreadContext guest 1", output)
+        observed = re.search(r"DR0\.\.3 ((?:[0-9a-f]{8} ){3}[0-9a-f]{8}), "
+                             r"DR6 ([0-9a-f]{8}) DR7 ([0-9a-f]{8})", output)
+        self.assertIsNotNone(observed)
+        registers = [int(value, 16) for value in " ".join(observed.groups()).split()]
+        self.assertEqual(struct.unpack_from("<6I", decoded, 12), tuple(registers))
+        self.assertEqual(registers[-2:], [0xFFFF0FF0, 0x400])  # Actual fresh x86 CPU reset state.
+
+    def test_nonzero_debug_registers_are_not_hidden_and_survive_worker_switches(self):
+        setup = install_packets()
+        token = states(self.successful(setup))[-1][1]
+        plain = self.thread_challenge()
+        nonce, length = struct.unpack_from("<II", plain)
+        # Test-only delivered x86 writes this virtual CPU's DR0/DR3. The captured program
+        # must return those values, not canned zeros, even after a second worker executes.
+        prefix = (b"\xB8" + struct.pack("<I", 0x12345000) + b"\x0F\x23\xC0"
+                  + b"\xB8" + struct.pack("<I", 0x76543000) + b"\x0F\x23\xD8")
+        changed = struct.pack("<II", nonce, length + len(prefix)) + prefix + plain[8:]
+        output = self.successful(setup + [packet(0x41B, crypt(changed, token)),
+                                          packet(0x41B, crypt(plain, nonce))])
+        for reply in replies(output)[-2:]:
+            decoded = reply[:4] + crypt(reply[4:], nonce)
+            self.assertEqual(len(decoded), 36)
+            registers = struct.unpack_from("<7I", decoded, 8)
+            self.assertEqual(registers[0], 1)  # Actual GetThreadContext success, written by the worker.
+            self.assertEqual(registers[1], 0x12345000)
+            self.assertEqual(registers[4], 0x76543000)
+        self.assertIn("created delivered guest thread 3", output)
+
+    def test_unknown_context_groups_fail_without_a_successful_challenge_reply(self):
+        setup = install_packets()
+        token = states(self.successful(setup))[-1][1]
+        plain = self.thread_challenge().replace(b"\xB9\x10\x00\x01\x00", b"\xB9\x01\x00\x01\x00")
+        result = self.run_stream(setup + [packet(0x41B, crypt(plain, token))])
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("unsupported CONTEXT group", result.stdout)
+        self.assertEqual(len(replies(result.stdout)), 3)  # Only the three install requests.
+
+    def test_unsupported_timed_wait_is_explicit_not_a_pretend_completion(self):
+        setup = install_packets()
+        token = states(self.successful(setup))[-1][1]
+        plain = self.thread_challenge().replace(b"\x68\xFF\xFF\xFF\xFF\x56", b"\x68\xE8\x03\x00\x00\x56")
+        result = self.run_stream(setup + [packet(0x41B, crypt(plain, token))])
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("finite WaitForSingleObject timeouts are not supported", result.stdout)
+        self.assertEqual(len(replies(result.stdout)), 3)
+
+    def test_worker_fault_does_not_wake_the_caller_as_if_it_completed(self):
+        setup = install_packets()
+        token = states(self.successful(setup))[-1][1]
+        plain = self.thread_challenge()
+        # Make the real worker dereference unmapped address zero, without changing its ABI.
+        broken = bytearray(plain)
+        broken[8 + 0xCF:8 + 0xD2] = b"\x31\xC0\x90"  # xor eax,eax; nop, before mov ebx,[eax].
+        result = self.run_stream(setup + [packet(0x41B, crypt(broken, token))])
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("faulted", result.stdout)
+        self.assertEqual(len(replies(result.stdout)), 3)
+
     def test_truncated_install_is_rejected_before_executing_code(self):
         packets = install_packets()
         result = self.run_stream([packets[0], packets[1][:-1]])

@@ -149,15 +149,20 @@ ground truth for protocol comparisons.
   place. Toolhelp reports only the PE image actually mapped into the guest, not a captured
   Wine DLL inventory. `GetDiskFreeSpaceExA` now queries the backing filesystem (the IAT slot
   was previously misidentified as FILETIME).
-- Offline regressions: 6 Lua, 7 framework/content/API, 5 shared PE-runtime tests. Instrumented
+- Offline regressions: 6 Lua, 12 framework/content/API/thread, 5 shared PE-runtime
+  and 8 session-verifier tests. Instrumented
   and bounded-JIT Warden replays produce identical 14 responses; removing the diagnostic
   instruction counter reduced a captured replay from 12.69 s to 1.92 s (6.62x).
 - The bounded-JIT 30-minute live run **failed at 1210.222 seconds**: 9 world buck
   challenges arrived but only 8 were answered. The 288-byte challenge called client
-  `0x006B3856`, which has no bridge. Logs are preserved under the run's `failure-20m/`.
+  `0x006B3856`, which was an unresolved GetCurrentThreadId import-name RVA. Logs
+  are preserved under the run's `failure-20m/`.
   The run had minimum interval FPS 56 and a maximum event-loop gap of 401 ms before
   this compatibility failure, but the 30-minute objective is **not achieved**. PID 18078
-  is no longer running. Reproduce the missing bridge offline before another live run.
+  is no longer running. The captured 288-byte challenge now runs offline: real guest
+  worker threads and GetThreadContext read the saved Unicorn debug registers and
+  produce a 36-byte reply. Nonzero DR0/DR3 and failure cases have regression coverage.
+  A new complete live run is still required; no canned "clean context" is allowed.
   `Tools/Wardendump/verify-session.py <private-run-directory> --live` must still enforce
   >=1800 seconds, the same PID/GUID, continued traffic, movement and no warning/failure.
 - Remaining compatibility limits: the captured version-200 content's known schemas only;
@@ -208,6 +213,11 @@ unsealed content and make `codesign` refuse the bundle.
 ## Conventions
 
 - The user speaks Turkish; answer in Turkish unless the task is code-only.
+- Prefer pragmatic scope: optional client features that are infeasible or disproportionately
+  expensive may be skipped with a clear, fixed "not supported" message. State the limitation
+  rather than spending indefinitely or claiming the feature works. This fallback must not
+  fabricate server/Warden check results, suppress server warnings, or count a failed check/session
+  as successful; those failures remain explicit and the stability goal remains unfulfilled.
 - Honesty is a hard rule for this project: no fake Warden results, no canned challenge answers, no
   bypassing server checks. Execute the delivered code and bridge the real client functions.
 - Keep the decompiled style (braces, spacing, `VERIFY`/`OFFSET` comments) and add comments that

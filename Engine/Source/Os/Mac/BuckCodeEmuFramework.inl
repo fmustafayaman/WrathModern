@@ -137,9 +137,7 @@ bool BuckCodeEmu::Impl::RunFunction(uint32_t address, const uint32_t* arguments,
     uc_reg_write(machine, UC_X86_REG_EFLAGS, &flags);
     faulted = false;
     faultReason.clear();
-    extraStop = stopAt;
-    uc_err error = uc_emu_start(machine, address, STOP_ADDRESS, 0, 50000000);
-    extraStop = 0;
+    uc_err error = RunGuest(address, stopAt);
     uint32_t eip = 0;
     uc_reg_read(machine, UC_X86_REG_EIP, &eip);
     uc_reg_read(machine, UC_X86_REG_EAX, &eax);

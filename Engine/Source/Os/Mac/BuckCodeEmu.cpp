@@ -9,6 +9,7 @@
 #include <zlib.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -84,6 +85,11 @@ constexpr uint32_t STUB_IS_DEBUGGER_PRESENT = 0x0FE000A0;
 constexpr uint32_t STUB_GET_CURRENT_PROCESS = 0x0FE000B0;
 constexpr uint32_t STUB_FLUSH_INSTRUCTION_CACHE = 0x0FE000C0;
 constexpr uint32_t STUB_CLOSE_HANDLE = 0x0FE000D0;
+constexpr uint32_t STUB_GET_CURRENT_THREAD_ID = 0x0FE000E0;
+constexpr uint32_t STUB_OPEN_THREAD = 0x0FE000F0;
+constexpr uint32_t STUB_CREATE_THREAD = 0x0FE00100;
+constexpr uint32_t STUB_WAIT_FOR_SINGLE_OBJECT = 0x0FE00110;
+constexpr uint32_t STUB_GET_THREAD_CONTEXT = 0x0FE00120;
 
 constexpr uint32_t IAT_LOAD_LIBRARY = 0x009DF248;
 constexpr uint32_t IAT_FREE_LIBRARY = 0x009DF250;
@@ -93,6 +99,13 @@ constexpr uint32_t IAT_REG_CLOSE_KEY = 0x009DF008;
 constexpr uint32_t IAT_DISK_FREE_SPACE = 0x009DF388;
 constexpr uint32_t CLIENT_GLOBAL_GET_PROC_ADDRESS = 0x00B2ED98;
 constexpr uint32_t IAT_CLOSE_HANDLE = 0x009DF124;
+// The 288-byte capture resolves these slots by XOR. Their raw file values are import-name
+// RVAs, not callable client addresses (0x6B3856 is GetCurrentThreadId's unresolved name RVA).
+constexpr uint32_t IAT_GET_CURRENT_THREAD_ID = 0x009DF218;
+constexpr uint32_t IAT_OPEN_THREAD = 0x009DF2B4;
+constexpr uint32_t IAT_CREATE_THREAD = 0x009DF338;
+constexpr uint32_t IAT_WAIT_FOR_SINGLE_OBJECT = 0x009DF2E0;
+constexpr uint32_t IAT_GET_THREAD_CONTEXT = 0x009DF2BC;
 
 // The client functions the delivered code calls, by their 12340 addresses.
 constexpr uint32_t CLIENT_STORE_GET_INT = 0x00401170;
@@ -261,6 +274,40 @@ struct BuckCodeEmu::Impl {
     std::map<uint32_t, Allocation> allocations;
     std::multimap<uint32_t, uint32_t> freeBlocks;
 
+    // Logical Windows threads execute on one Unicorn CPU, with separate saved register
+    // contexts/stacks and shared guest memory. No native thread or captured CONTEXT is used.
+    using ThreadClock = std::chrono::steady_clock;
+    struct GuestThread {
+        uc_context* context = nullptr;
+        uint32_t start = 0;
+        uint32_t parameter = 0;
+        uint32_t stack = 0;
+        uint32_t stackSize = 0;
+        uint32_t waitFor = 0;
+        uint32_t exitCode = 0;
+        bool finished = false;
+    };
+    struct ThreadHandle {
+        uint32_t id;
+        uint32_t access;
+    };
+    std::map<uint32_t, GuestThread> threads;
+    std::map<uint32_t, ThreadHandle> threadHandles;
+    uc_context* initialThreadContext = nullptr;
+    uint32_t currentThreadId = 1;
+    uint32_t nextThreadId = 2;
+    uint32_t nextThreadHandle = 0x03001000;
+    bool threadYielded = false;
+
+    bool BootThreads();
+    void DestroyThreads();
+    void ReapThreads();
+    uint32_t OpenGuestThread(uint32_t access, uint32_t id);
+    uint32_t CreateGuestThread(const uint32_t* arguments);
+    bool ReadGuestThreadContext(uint32_t handle, uint32_t buffer);
+    bool WaitForGuestThread(uint32_t handle, uint32_t timeout, uint32_t& result);
+    uc_err RunGuest(uint32_t address, uint32_t stopAt = 0);
+
     // Real native DBC rows, translated to the guest's uncompressed 32-bit layout.
     std::set<uint32_t> mirroredDatabases;
     struct ContentDatabase {
@@ -415,6 +462,11 @@ bool BuckCodeEmu::Impl::Boot() {
     WriteWord(0x009DF1B4, STUB_IS_DEBUGGER_PRESENT);
     WriteWord(0x009DF1C0, STUB_GET_CURRENT_PROCESS);
     WriteWord(0x009DF294, STUB_FLUSH_INSTRUCTION_CACHE);
+    WriteWord(IAT_GET_CURRENT_THREAD_ID, STUB_GET_CURRENT_THREAD_ID);
+    WriteWord(IAT_OPEN_THREAD, STUB_OPEN_THREAD);
+    WriteWord(IAT_CREATE_THREAD, STUB_CREATE_THREAD);
+    WriteWord(IAT_WAIT_FOR_SINGLE_OBJECT, STUB_WAIT_FOR_SINGLE_OBJECT);
+    WriteWord(IAT_GET_THREAD_CONTEXT, STUB_GET_THREAD_CONTEXT);
 
     // Dispatch every instruction in the machine range through one code hook; the delivered code
     // executes few instructions, and the hook is what catches client calls and the sentinel.
@@ -468,10 +520,17 @@ bool BuckCodeEmu::Impl::Boot() {
         }),
         this, 1, 0, UC_X86_INS_CPUID);
 
+    if (!BootThreads()) {
+        Log("buck guest thread contexts could not be initialized");
+        Teardown();
+        return false;
+    }
+
     return true;
 }
 
 void BuckCodeEmu::Impl::Teardown() {
+    DestroyThreads();
     if (machine) {
         uc_close(machine);
         machine = nullptr;
@@ -715,7 +774,7 @@ bool BuckCodeEmu::Impl::FillModuleEntry(uint32_t entry, uint32_t index) {
 }
 
 bool BuckCodeEmu::Impl::HandleClientCall(uint32_t address) {
-    if (address == STOP_ADDRESS || (extraStop && address == extraStop)) {
+    if (address == STOP_ADDRESS || (currentThreadId == 1 && extraStop && address == extraStop)) {
         uc_emu_stop(machine);
         return true;
     }
@@ -723,7 +782,9 @@ bool BuckCodeEmu::Impl::HandleClientCall(uint32_t address) {
     uint32_t esp = 0;
     uc_reg_read(machine, UC_X86_REG_ESP, &esp);
 
-    uint32_t frame[6] = { 0 };
+    // Return address plus up to eight stdcall arguments (CreateThread/RegQueryValueEx
+    // each need six). A six-dword frame made arguments[5] read beyond the host array.
+    uint32_t frame[9] = { 0 };
     ReadMemory(esp, frame, sizeof(frame));
 
     uint32_t ecx = 0;
@@ -1235,9 +1296,49 @@ bool BuckCodeEmu::Impl::HandleClientCall(uint32_t address) {
             finish(16);
             return true;
         }
+        case STUB_GET_CURRENT_THREAD_ID: {
+            result = currentThreadId;
+            finish(0);
+            return true;
+        }
+        case STUB_OPEN_THREAD: {
+            result = OpenGuestThread(arguments[0], arguments[2]);
+            finish(12);
+            return true;
+        }
+        case STUB_CREATE_THREAD: {
+            result = CreateGuestThread(arguments);
+            finish(24);
+            return true;
+        }
+        case STUB_GET_THREAD_CONTEXT: {
+            result = ReadGuestThreadContext(arguments[0], arguments[1]);
+            finish(8);
+            return true;
+        }
+        case STUB_WAIT_FOR_SINGLE_OBJECT: {
+            bool waiting = WaitForGuestThread(arguments[0], arguments[1], result);
+            finish(8);
+
+            if (waiting) {
+                threadYielded = true;
+                uc_emu_stop(machine);
+            }
+
+            return true;
+        }
         case STUB_CLOSE_HANDLE: {
-            result = moduleSnapshotOpen && arguments[0] == 0x03000300;
-            if (result) moduleSnapshotOpen = false;
+            auto thread = threadHandles.find(arguments[0]);
+
+            if (thread != threadHandles.end()) {
+                threadHandles.erase(thread);
+                ReapThreads();
+                result = 1;
+            } else {
+                result = moduleSnapshotOpen && arguments[0] == 0x03000300;
+                if (result) moduleSnapshotOpen = false;
+            }
+
             finish(4);
             return true;
         }
@@ -1472,7 +1573,8 @@ bool BuckCodeEmu::RunChallenge(const uint8_t* payload, uint32_t size, uint32_t t
     uc_reg_write(impl.machine, UC_X86_REG_EDI, &edi);
 
     impl.faulted = false;
-    uc_err error = uc_emu_start(impl.machine, codeAddress, STOP_ADDRESS, 0, 0);
+    impl.faultReason.clear();
+    uc_err error = impl.RunGuest(codeAddress);
 
     if (error != UC_ERR_OK || impl.faulted) {
         impl.Log("challenge code failed%s%s", error != UC_ERR_OK ? ": " : "", error != UC_ERR_OK ? uc_strerror(error) : "");
@@ -1555,8 +1657,9 @@ bool BuckCodeEmu::RunHandlerChallenge(const uint8_t* handler, uint32_t handlerSi
     impl.sentPacketValid = false;
     impl.lastRegistrationValid = false;
     impl.faulted = false;
+    impl.faultReason.clear();
 
-    uc_err error = uc_emu_start(impl.machine, handlerAddress, STOP_ADDRESS, 0, 0);
+    uc_err error = impl.RunGuest(handlerAddress);
 
     if (error != UC_ERR_OK || impl.faulted) {
         impl.Log("challenge handler failed%s%s", error != UC_ERR_OK ? ": " : "",
@@ -1619,7 +1722,8 @@ bool BuckCodeEmu::RunDataHandler(const uint8_t* handler, uint32_t handlerSize, c
     uc_reg_write(impl.machine, UC_X86_REG_ESP, &esp);
 
     impl.faulted = false;
-    uc_err error = uc_emu_start(impl.machine, handlerAddress, STOP_ADDRESS, 0, 0);
+    impl.faultReason.clear();
+    uc_err error = impl.RunGuest(handlerAddress);
 
     if (error != UC_ERR_OK || impl.faulted) {
         impl.Log("data handler failed%s%s", error != UC_ERR_OK ? ": " : "",
@@ -1644,7 +1748,8 @@ bool BuckCodeEmu::RunDataHandler(const uint8_t* handler, uint32_t handlerSize, c
         impl.WriteMemory(hookEsp, hookFrame, sizeof(hookFrame));
         uc_reg_write(impl.machine, UC_X86_REG_ESP, &hookEsp);
         impl.faulted = false;
-        uc_err hookError = uc_emu_start(impl.machine, hookAddress, STOP_ADDRESS, 0, 0);
+        impl.faultReason.clear();
+        uc_err hookError = impl.RunGuest(hookAddress);
 
         if (hookError != UC_ERR_OK || impl.faulted) {
             impl.Log("data handler hook failed%s%s", hookError != UC_ERR_OK ? ": " : "",
@@ -1660,6 +1765,7 @@ bool BuckCodeEmu::RunDataHandler(const uint8_t* handler, uint32_t handlerSize, c
     return true;
 }
 
+#include "Engine/Source/Os/Mac/BuckCodeEmuThreads.inl"
 #include "Engine/Source/Os/Mac/BuckCodeEmuFramework.inl"
 #include "Engine/Source/Os/Mac/BuckCodeEmuContent.inl"
 
