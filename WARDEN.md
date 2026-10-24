@@ -105,6 +105,16 @@ bütün 95 dakikayı kesintisiz dünya diye saymak yanlıştır.
 - **7 watcher testi** geçti: devamlı hata gözlemi, değişmez kanıt, log prefix/truncate,
   tüm kanıtların hashlenmesi, eksik snapshot reddi, disk hatasında açık hata+retry,
   başlangıç beklemesinin gerçek kopma/stall/emülatör hatasını gizlememesi.
+- Sonraki normal `/logout` UI regresyon girişimini **kullanıcı iptal etti**. Bu test
+  tamamlanmış veya canlı logout/reentry davranışı doğrulanmış gibi sunulmaz; yalnız
+  çevrimdışı 8 lifecycle testi geçmiştir. Yeni dünya aralığı bozulmadı: daha sonraki
+  taze denetimde aynı PID/GUID ile **920.201 saniye**, buck **6/6**, Warden **30/30**,
+  hata/uyarı/kopma yok; tek eksik kapı henüz 1800 saniyenin dolmamasıydı.
+- **İzin sınırı:** kullanıcı genel izlemeyi bana bıraktı ama canlı oturum salt-okuma
+  izlenir. Açık yeni onay olmadan klavye/fare girdisi, logout/login, süreç durdurma/
+  yeniden başlatma veya çalışan uygulamanın üzerine dağıtım yapılmaz. Hata görülürse
+  önce kayıt korunur ve çevrimdışı incelenir; canlı müdahale gerekiyorsa kullanıcıya
+  sorulur. Salt-okuma gözlemci çalışmaya devam eder.
 
 ## Bir saati aşan devam kontrolü — 2026-10-24
 

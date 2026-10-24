@@ -247,6 +247,10 @@ unsealed content and make `codesign` refuse the bundle.
 ## Conventions
 
 - The user speaks Turkish; answer in Turkish unless the task is code-only.
+- Live-session consent: continue observation read-only. Do not send keyboard/mouse input,
+  issue logout/login commands, stop/restart the client or deploy over its running binary
+  without explicit user approval. The user cancelled an unsolicited logout regression;
+  do not repeat it or treat general "continue monitoring" as permission to control play.
 - Prefer pragmatic scope: optional client features that are infeasible or disproportionately
   expensive may be skipped with a clear, fixed "not supported" message. State the limitation
   rather than spending indefinitely or claiming the feature works. This fallback must not
