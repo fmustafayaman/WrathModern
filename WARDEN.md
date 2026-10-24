@@ -3,7 +3,55 @@
 Amaç: native macOS/arm64 WoWReMac istemcisinin Warden etkin sunucularda (Warmane dahil) tam değerli istemci gibi davranması.
 Yol: istemci tarafı Warden'ı emülasyonla çalıştırmak. Hile/sahte cevap YOK — sunucunun modülü gerçek kod olarak çalışıyor; "honest-compat".
 
-## 288 baytlık challenge — çevrimdışı düzeltme, 2026-10-24
+## 30 dakikalık canlı doğrulama GEÇTİ — 2026-10-24
+
+**İlk değişmez test penceresi: 1800.869 saniye kesintisiz native dünya bağlantısı.**
+Aynı oturum daha sonra 31 dakikayı da geçti; kullanıcının isteğiyle oyun kapatılmadı
+ve 20 saniyede bir okuma yapan gözlemci izlemeye devam ediyor.
+
+- Kaynak/uygulama: `c60d0698`, `Warmane/WoWReMac-Warden.app`; çalıştırılabilir SHA-256:
+  `6f194724813f8cefb3eb763263114d0ea7cf99ae9f5629121f0667916b5bf8eb`.
+  Temiz Warmane kurulumu; isteğe bağlı native modlar yüklenmedi. `WoW_Wrath` ve Epoch
+  kurulumuna dokunulmadı.
+- PID **26418**, Maheta GUID **`060000000080713a`**, Camp Narache. Dünya başlangıcı
+  **17769666 ms**, değişmez pencerenin sonu **19570535 ms**. Zaman süreç uptime'ından
+  değil, gerçek aktif oyuncu + render gözleminden hesaplandı. Yeniden giriş/kopma yok.
+- **180** health örneği; örnekler arasında **105599** sunulmuş kare; **6** farklı
+  native konum. Normal ileri/geri, dönüş ve zıplama girdileri; karakter paneli,
+  çanta ve dünya haritası uygulama penceresinin görüntüleriyle doğrulandı.
+- **10779** gerçek sunucu paketi; dünya buck cevapları **13/13**, Warden cevapları
+  **58/58**. İki denetimde de `passed: true`, `issues: []`, `errors: []`. Sunucunun
+  unauthorized-software uyarısı, eksik cevap, köprü/emülatör hatası veya reconnect yok.
+- FPS aralık ortalaması **58.95**, minimumu **51.42**; en büyük event-loop boşluğu
+  **783 ms**, örnek aralığı en fazla **10317 ms**. Bunlar p99/1% low ölçümü veya
+  her sahnede kare-kare 60 FPS garantisi değildir; iki saniyelik stall kapısı aşılmadı.
+- Yeni **288 B** challenge bu canlı oturumda da geldi. `19263906` worker oluşturuldu,
+  `19263908` ana guest CPU'nun debug register'ları okundu, `19263909` worker gerçek
+  kodundan döndü; 36 baytlık cevap teslim edilen handler tarafından gönderildi.
+  Sonrasında oturum en az altı dakika daha uyarısız/kopmasız sürdü.
+- Ek çevrimdışı stres: ASan/UBSan altında **aynı emülatörde 100 gerçek worker
+  challenge'ı** geçti; kapanan worker context/stack'leri geri kullanıldı. 31 Python
+  regresyon testi de yeşil (12 framework + 6 Lua + 5 PE-runtime + 8 verifier).
+
+Özel kanıt dizini (oturum anahtarları/kimlik bilgileri Git'e girmez):
+`$HOME/Library/Logs/WoWReMac-Warden/stability-30m-threads-20261024-atdcyp5p/`
+
+- `final-live-audit.json`, `final-snapshot-audit.json`: aynı 1800.869 saniyelik
+  pencereyi bağımsız canlı ve kopyalanmış log okumalarıyla kabul etti.
+- `Logs/`: bu ilk başarılı pencerenin değişmez kopyası;
+  `frozen-window-sha256.json`: 27 kanıt dosyasının hash manifesti.
+- `progress.jsonl`, `latest-audit.json`, `watcher.log`: devam eden canlı gözlem.
+  Daha sonraki bir hata ilk başarılı pencerenin üzerine yazılmaz; ayrı arşivlenir.
+- `input-probes.log`, `character-panel.jpg`, `world-map.jpg`, `backpack.jpg`,
+  `final-character-panel.jpg`: normal girdi ve native UI kanıtı.
+- `initial-session/`: yeni bir girişin üzerine yazamayacağı erken anahtar/modül kopyası.
+
+Tekrar denetim: `python3 Tools/Wardendump/verify-session.py <özel-dizin>` ve
+`--live` biçimi. Bu sonuç **bu 30+ dakikalık test penceresini** doğrular; tüm oyun
+içeriğinin, her sunucunun veya saatler süren gelecek oturumların kusursuzluğu iddiası
+değildir. Önceki başarısız koşular aşağıda tarihsel kanıt olarak korunur.
+
+## 288 baytlık challenge — gerçek guest thread yürütmesi, 2026-10-24
 
 20. dakikadaki `0x006B3856` durması **yeni bir oyun fonksiyonu değil**, henüz
 çözümlenmemiş `GetCurrentThreadId` import'uydu. Temiz Wow.exe SHA-256:
@@ -30,7 +78,8 @@ alakasız bir fonksiyonun epiloguna düşülüyordu.
 - Yakalanan challenge artık gerçek worker'ı çalıştırıp **36 bayt** cevap üretiyor.
   Taze guest CPU'nun DR6/DR7 değerleri `FFFF0FF0`/`00000400`; bunlar sıfırlanmıyor.
   Testte guest kodunun yazdığı **sıfır olmayan DR0/DR3 de aynen geri geliyor** ve
-  ikinci worker/challenge sonrasında korunuyor. Henüz canlı sunucu kabulü iddiası yok.
+  ikinci worker/challenge sonrasında korunuyor. Bu çevrimdışı test tek başına sunucu
+  kabulü kanıtı değildi; daha sonraki canlı yürütme yukarıda ayrıca kaydedildi.
 - Regresyonlar: **12 framework + 6 Lua + 5 PE-runtime + 8 session-verifier** testi geçti.
   Bilinmeyen CONTEXT grubu, desteklenmeyen sonlu bekleme ve worker bellek hatası
   açıkça başarısız; yarım/bypass cevabı gönderilmiyor. Yürütme beş saniye ile sınırlı.
@@ -39,11 +88,10 @@ alakasız bir fonksiyonun epiloguna düşülüyordu.
   sunucu/Warden kontrolünü sahte başarıyla atlama veya başarısız testi başarılı
   sayma değildir.
 
-**Sıradaki kanıt:** yeni uygulamayla tek PID/GUID üzerinden en az 1800 saniye canlı
-oyun, hareket/UI, kesintisiz gerçek render ve bütün challenge cevapları. Önceki
-20 dakikalık başarısız koşu korunur ve aşağıda ayrıntılanır.
+**Sonraki doğrulama yapıldı:** yukarıdaki 1800.869 saniyelik canlı + değişmez-log
+denetimleri geçti. Önceki 20 dakikalık başarısız koşu da korunur; başarılıya çevrilmez.
 
-## 30 dakikalık kararlılık çalışması — 2026-10-24, hedef henüz sağlanmadı
+## Önceki kararlılık çalışmaları — 2026-10-24
 
 Kullanıcının hedefi: aynı native oturumda **en az 30 dakika kesintisiz dünya bağlantısı ve
 sorunsuz oyun**. Süre süreç açılışından değil aktif oyuncu + gerçek render doğrulamasından

@@ -158,19 +158,30 @@ ground truth for protocol comparisons.
   `0x006B3856`, which was an unresolved GetCurrentThreadId import-name RVA. Logs
   are preserved under the run's `failure-20m/`.
   The run had minimum interval FPS 56 and a maximum event-loop gap of 401 ms before
-  this compatibility failure, but the 30-minute objective is **not achieved**. PID 18078
+  this compatibility failure; that run did **not** achieve the objective. PID 18078
   is no longer running. The captured 288-byte challenge now runs offline: real guest
   worker threads and GetThreadContext read the saved Unicorn debug registers and
   produce a 36-byte reply. Nonzero DR0/DR3 and failure cases have regression coverage.
-  A new complete live run is still required; no canned "clean context" is allowed.
-  `Tools/Wardendump/verify-session.py <private-run-directory> --live` must still enforce
-  >=1800 seconds, the same PID/GUID, continued traffic, movement and no warning/failure.
+  No canned "clean context" is allowed. A later native run now verifies the objective:
+  **1800.869 continuous world seconds**, PID 26418, GUID `060000000080713a`, 105599
+  presented frames between samples, 10779 server packets, 13/13 buck and 58/58 Warden
+  replies. Both live and immutable-snapshot audits passed with no issues. Real movement,
+  character/backpack/world-map UI and the 288-byte guest worker were observed.
+  Mean interval FPS 58.95, minimum 51.42; maximum event-loop gap 783 ms. This is not
+  an everywhere/always-60-FPS or full-game-content guarantee. The client remains running
+  and the read-only observer continues, as requested. Run pointer:
+  `/tmp/wowremac-stability-run.path`; private evidence is under
+  `$HOME/Library/Logs/WoWReMac-Warden/stability-30m-threads-20261024-atdcyp5p/`.
+  The frozen 30-minute `Logs/` and audit JSON must not be overwritten by later monitoring.
+  `verify-session.py <private-run-directory> --live` continues to enforce >=1800 seconds,
+  the same PID/GUID, traffic, movement and no warning/failure; do not relax its gates.
 - Remaining compatibility limits: the captured version-200 content's known schemas only;
   unknown content operations fail honestly. No canned check results, token/table overrides
   or module-list matching are allowed.
 - Preserve session keys with their traffic **before another login**: each login overwrites
   `Logs/warden-session-key.bin`. Private captures from this test are under
-  `$HOME/Library/Logs/WrathModern-Warden/`; never commit keys or credentials.
+  `$HOME/Library/Logs/WoWReMac-Warden/` (older runs remain under `WrathModern-Warden/`);
+  never commit keys or credentials.
 - New builds use `Warmane/WoWReMac-Warden.app`; archived runs used the old application name.
   Check the exact process path before starting/stopping it. Never kill another branch's client.
 - The existing stable development certificate is retained, keeping its signing identity.

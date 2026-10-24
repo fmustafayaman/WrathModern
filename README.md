@@ -24,9 +24,12 @@ This branch executes the server-delivered 32-bit Warden/buck-data code through U
 it does not fabricate successful checks. Install Unicorn (`brew install unicorn`) and keep
 your own matching build-12340 `Wow.exe` with the game data for the emulated client image.
 
-Warmane login and world entry work, but the latest stability run failed after about 20 minutes
-on an unimplemented client-function bridge. **The 30-minute stability target is not achieved.**
-See [WARDEN.md](WARDEN.md) for evidence and the next offline investigation.
+**A 30-minute native Warmane stability window is verified** (2026-10-24): continuous world
+connection, advancing frames, normal movement/UI, all captured buck/Warden replies and no
+server warning or emulator failure. The formerly failing thread-context challenge also ran live.
+The test used the clean installation without optional native mods. This is evidence for that
+test window, not a guarantee for every area, feature or future server check.
+See [WARDEN.md](WARDEN.md) for the measured results, limitations and ongoing monitoring.
 
 ## Requirements
 
@@ -40,6 +43,7 @@ See [WARDEN.md](WARDEN.md) for evidence and the next offline investigation.
 ```sh
 git clone https://github.com/fmustafayaman/WoWReMac.git
 cd WoWReMac
+git switch WoWReMac-Warden
 
 # Build without copying anything into an existing game installation.
 cmake -S . -B build/mac -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
