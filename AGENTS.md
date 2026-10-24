@@ -173,6 +173,9 @@ ground truth for protocol comparisons.
   `/tmp/wowremac-stability-run.path`; private evidence is under
   `$HOME/Library/Logs/WoWReMac-Warden/stability-30m-threads-20261024-atdcyp5p/`.
   The frozen 30-minute `Logs/` and audit JSON must not be overwritten by later monitoring.
+  The active user objective is now **continue observing and fix discovered errors until the
+  user says enough**. Passing the earlier 30-minute sub-goal does not complete that ongoing
+  monitoring objective; keep the observer running and inspect fresh results.
   `verify-session.py <private-run-directory> --live` continues to enforce >=1800 seconds,
   the same PID/GUID, traffic, movement and no warning/failure; do not relax its gates.
 - Remaining compatibility limits: the captured version-200 content's known schemas only;

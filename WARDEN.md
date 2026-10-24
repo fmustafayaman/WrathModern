@@ -8,6 +8,8 @@ Yol: istemci tarafı Warden'ı emülasyonla çalıştırmak. Hile/sahte cevap YO
 **İlk değişmez test penceresi: 1800.869 saniye kesintisiz native dünya bağlantısı.**
 Aynı oturum daha sonra 31 dakikayı da geçti; kullanıcının isteğiyle oyun kapatılmadı
 ve 20 saniyede bir okuma yapan gözlemci izlemeye devam ediyor.
+**Güncel talep:** kullanıcı “yeter” diyene kadar gözlem ve bulunan hataların düzeltilmesi
+sürer; önceki 30 dakikalık alt hedefin geçmesi bu sürekli gözlem hedefini bitirmez.
 
 - Kaynak/uygulama: `c60d0698`, `Warmane/WoWReMac-Warden.app`; çalıştırılabilir SHA-256:
   `6f194724813f8cefb3eb763263114d0ea7cf99ae9f5629121f0667916b5bf8eb`.
