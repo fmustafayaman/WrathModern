@@ -411,6 +411,17 @@ FodyWeavers.xsd
 # Local Visual Studio CMake settings (absolute paths to re/tools)
 CMakeSettings.json
 
-# WrathModern: CMake build trees
+# WoWReMac: local builds and macOS metadata
 /build/
 .DS_Store
+
+# Private development/session notebooks; keep maintained documentation in Docs/.
+/WOWRE.md
+/OTURUM-*.md
+
+# Generated Warden diagnostics and live process snapshots (fixtures stay tracked).
+/Tools/Wardendump/BuckSmoke
+/Tools/Wardendump/WardenSmoke
+/Tools/Wardendump/WardenVersionProbe
+/warden-snapshot.bin
+/Tools/Wardendump/captures/warden-check-snap.*

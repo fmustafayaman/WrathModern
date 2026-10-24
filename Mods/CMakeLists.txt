@@ -1,7 +1,7 @@
 # Mods built with the client. They include the client's headers (the engine SDK) and call client
 # functions by name: the executable exports its symbols, and a mod links with -undefined dynamic_lookup
 # so every call reaches the running client. A mod therefore has to be rebuilt with the client it runs in.
-# With WRATHMODERN_GAME_DIR set, each mod is copied into the game directory's Mods folder after linking.
+# With WOWREMAC_GAME_DIR set, each mod is copied into the game directory's Mods folder after linking.
 
 function(wrathmodern_add_mod name)
     add_library(${name} MODULE ${ARGN})
@@ -23,7 +23,8 @@ function(wrathmodern_add_mod name)
     endif ()
 endfunction()
 
-option(WRATHMODERN_BUILD_MODS "Build the mods in Mods/ with the client" ON)
+wowremac_cache_setting(WOWREMAC_BUILD_MODS WRATHMODERN_BUILD_MODS BOOL
+    "Build the mods in Mods/ with the client" ON)
 
 if (WRATHMODERN_BUILD_MODS)
     # Mods/LuxShoulderCam also builds on its own; it needs only the mod interface and Lua headers

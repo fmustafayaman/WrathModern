@@ -15,7 +15,7 @@ else ()
 endif ()
 
 if (WOWDECOMP_PLATFORM_MAC)
-    set(WOW_OUTPUT_NAME WrathModern)
+    set(WOW_OUTPUT_NAME WoWReMac)
 elseif (WOWDECOMP_ARCH_64)
     set(WOW_OUTPUT_NAME Wow64)
 else ()
@@ -30,17 +30,19 @@ set_target_properties(Wow PROPERTIES
 if (WOWDECOMP_PLATFORM_MAC)
     set_target_properties(Wow PROPERTIES
         MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/Mac/Info.plist.in
-        MACOSX_BUNDLE_BUNDLE_NAME WrathModern
-        MACOSX_BUNDLE_GUI_IDENTIFIER org.wrathmodern.client
+        MACOSX_BUNDLE_BUNDLE_NAME WoWReMac
+        MACOSX_BUNDLE_GUI_IDENTIFIER org.wowremac.client
         MACOSX_BUNDLE_SHORT_VERSION_STRING 3.3.5
         MACOSX_BUNDLE_BUNDLE_VERSION 12340
     )
 
     # The client reads its data from the directory holding the application, so development builds
-    # can be copied into a game directory: -DWRATHMODERN_GAME_DIR=/path/to/World of Warcraft
-    set(WRATHMODERN_GAME_DIR "" CACHE PATH "Game directory to copy the application into after each build")
+    # can be copied into a game directory: -DWOWREMAC_GAME_DIR=/path/to/World of Warcraft
+    wowremac_cache_setting(WOWREMAC_GAME_DIR WRATHMODERN_GAME_DIR PATH
+        "Game directory to copy the application into after each build" "")
     # Name of the copy in the game directory, so builds of different branches can sit side by side
-    set(WRATHMODERN_APP_NAME "WrathModern" CACHE STRING "Name of the application copied into the game directory, without .app")
+    wowremac_cache_setting(WOWREMAC_APP_NAME WRATHMODERN_APP_NAME STRING
+        "Name of the application copied into the game directory, without .app" "WoWReMac")
 
     # A stable signature keeps macOS's grants (access to the game volume) across rebuilds
     add_custom_command(TARGET Wow POST_BUILD

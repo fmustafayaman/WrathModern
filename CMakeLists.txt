@@ -8,7 +8,7 @@ if (${CMAKE_SOURCE_DIR} STREQUAL ${CMAKE_BINARY_DIR})
     )
 endif ()
 
-project(wowdecomp CXX C)
+project(WoWReMac CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -17,6 +17,7 @@ if (NOT CMAKE_SYSTEM_NAME MATCHES "Windows|Darwin")
     message(FATAL_ERROR "wowdecomp targets Windows and macOS.")
 endif ()
 
+include(${CMAKE_SOURCE_DIR}/cmake/ProjectOptions.cmake)
 include(${CMAKE_SOURCE_DIR}/cmake/Platform.cmake)
 
 # x64 is the target. Win32 stays buildable: it is the configuration whose struct layouts can be
@@ -97,14 +98,16 @@ endif ()
 
 # Client-side improvements in the style of the common 3.3.5a executable patches: raised graphics limits, client bug
 # fixes, interface conveniences and privacy defaults. Nothing that changes what the server sees or checks.
-option(WRATHMODERN_CLIENT_PATCHES "Build with the WrathModern client improvements" ON)
+wowremac_cache_setting(WOWREMAC_CLIENT_PATCHES WRATHMODERN_CLIENT_PATCHES BOOL
+    "Build with the WoWReMac client improvements" ON)
 if (WRATHMODERN_CLIENT_PATCHES)
     add_compile_definitions(WRATHMODERN_CLIENT_PATCHES=1)
 endif ()
 
 # Mods: dynamic libraries in the game's Mods folder that draw with Metal at hooks of the world render
 # (WoW/Source/WorldClient/Mods/WMModAPI.h). Without a Mods folder nothing is loaded.
-option(WRATHMODERN_MODS "Load mods from the game's Mods folder (macOS)" ON)
+wowremac_cache_setting(WOWREMAC_MODS WRATHMODERN_MODS BOOL
+    "Load mods from the game's Mods folder (macOS)" ON)
 if (WRATHMODERN_MODS AND WOWDECOMP_PLATFORM_MAC)
     add_compile_definitions(WRATHMODERN_MODS=1)
 endif ()

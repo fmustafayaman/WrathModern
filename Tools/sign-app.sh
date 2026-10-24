@@ -1,5 +1,5 @@
 #!/bin/sh
-# Sign the application with the WrathModern development identity so macOS keeps TCC grants
+# Sign the application with the existing stable development identity so macOS keeps TCC grants
 # (for example access to the game volume) across rebuilds. An ad-hoc signature changes its hash
 # with every build and makes macOS ask again every launch.
 #
@@ -13,8 +13,8 @@ if [ -z "$app" ] || [ ! -d "$app" ]; then
     exit 0
 fi
 
-if ! security find-certificate -c "WrathModern Dev" "$HOME/Library/Keychains/login.keychain-db" >/dev/null 2>&1; then
-    echo "sign-app: no WrathModern Dev identity; leaving $app ad-hoc"
+if ! security find-identity -v -p codesigning "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null | grep -q "$identity"; then
+    echo "sign-app: no stable development identity; leaving $app ad-hoc"
     exit 0
 fi
 

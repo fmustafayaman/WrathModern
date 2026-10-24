@@ -5,7 +5,7 @@
 #     shots: e.g. "glue@10" (login screen only) or "glue@10,world@15,world@25" (logs in)
 #
 # Environment:
-#   WOWRE_APP       application to run (default: $GAME_DIR/WrathModern-WowRe.app)
+#   WOWRE_APP       application to run (default: $GAME_DIR/WoWReMac.app)
 #   GAME_DIR        game directory (default: /Volumes/Yaman SSD/WoW_Wrath)
 #   WOWRE_LOGIN     credentials file for the world shots (default: ~/.wrathmodern-wowre-autologin)
 #   WOWRE_REALMLIST, WOWRE_REALM, WOWRE_CHARACTER   server, realm and character for the world shots
@@ -20,8 +20,13 @@ out="${1:?output directory}"
 shots="${2:?shots}"
 timeout="${3:-240}"
 game="${GAME_DIR:-/Volumes/Yaman SSD/WoW_Wrath}"
-app="${WOWRE_APP:-$game/WrathModern-WowRe.app}"
-binary="$app/Contents/MacOS/WrathModern"
+app="${WOWRE_APP:-$game/WoWReMac.app}"
+binary="$app/Contents/MacOS/WoWReMac"
+# Read the bundle metadata rather than assuming a branch-specific executable name.
+if [ -f "$app/Contents/Info.plist" ]; then
+    executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist" 2>/dev/null || true)"
+    [ -z "$executable" ] || binary="$app/Contents/MacOS/$executable"
+fi
 
 mkdir -p "$out"
 

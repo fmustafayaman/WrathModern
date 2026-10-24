@@ -2,7 +2,7 @@
 //
 // The Windows client finds Data/, WTF/, Interface/ and its logs next to Wow.exe. On macOS the
 // executable lives inside an application bundle, so the client's directory is the one that
-// contains the bundle: WrathModern.app is placed in the 3.3.5a game directory like Wow.exe is.
+// contains the bundle: WoWReMac.app is placed in the 3.3.5a game directory like Wow.exe is.
 // A bare executable outside a bundle uses its own directory.
 
 #ifndef PLATFORM_MAC_PATHS_H
