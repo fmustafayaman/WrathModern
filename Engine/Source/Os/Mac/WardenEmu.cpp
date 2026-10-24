@@ -4,6 +4,7 @@
 
 #include "Engine/Source/Os/WardenEmu.h"
 #include "Engine/Source/Os/Mac/WardenSystemExports.h"
+#include "Engine/Source/Os/Mac/ClientImageRuntime.h"
 
 #include <unicorn/unicorn.h>
 
@@ -540,18 +541,22 @@ bool WardenEmu::Impl::Boot() {
         }),
         this, 1, 0);
 
-    // Branch history for the diagnostics: one ring entry per basic block, cheap next to the
-    // per-instruction hooks and enough to reconstruct how a wild call was reached.
-    uc_hook blockHook;
-    uc_hook_add(machine, &blockHook, UC_HOOK_BLOCK,
-        reinterpret_cast<void*>(+[](uc_engine* machine, uint64_t address, uint32_t size, void* user) {
-            (void)size;
-            WardenEmu::Impl* impl = static_cast<WardenEmu::Impl*>(user);
-            uint32_t esp = 0;
-            uc_reg_read(machine, UC_X86_REG_ESP, &esp);
-            impl->RecordBlock((uint32_t)address, esp);
-        }),
-        this, 1, 0);
+    // Full branch history is diagnostic, not part of module execution. Recording ESP through
+    // the C API on every SHA1 basic block stalls the render thread while multi-megabyte ADTs
+    // are hashed. Keep it opt-in; failing calls still capture snapshots that can be replayed
+    // with WARDEN_TRACE_BLOCKS=1. Client/import hooks and every delivered instruction remain.
+    if (getenv("WARDEN_TRACE_BLOCKS")) {
+        uc_hook blockHook;
+        uc_hook_add(machine, &blockHook, UC_HOOK_BLOCK,
+            reinterpret_cast<void*>(+[](uc_engine* machine, uint64_t address, uint32_t size, void* user) {
+                (void)size;
+                WardenEmu::Impl* impl = static_cast<WardenEmu::Impl*>(user);
+                uint32_t esp = 0;
+                uc_reg_read(machine, UC_X86_REG_ESP, &esp);
+                impl->RecordBlock((uint32_t)address, esp);
+            }),
+            this, 1, 0);
+    }
 
     // Diagnostics: the module's own SHA1 / RC4 routines, so a hash response can be traced to
     // the bytes it was computed from. Off unless WARDEN_TRACE_SHA1 is set.
@@ -686,6 +691,19 @@ void WardenEmu::Impl::MapClientImage() {
 
     m_clientBase = base;
     m_clientSize = size;
+
+    // The native startup validates function pointers, which initializes this cached PE range.
+    // Warden's captured 85-byte check reads both globals; the separate buck-data machine had
+    // them initialized, but leaving this image's copies at zero was not the same client state.
+    uint32_t textStart = 0;
+    uint32_t textEnd = 0;
+
+    if (ClientImageRuntime::TextBounds(data, size, textStart, textEnd)) {
+        WriteWord(ClientImageRuntime::TEXT_START_GLOBAL, textStart);
+        WriteWord(ClientImageRuntime::TEXT_END_GLOBAL, textEnd);
+        WardenLog("client .text %08x..%08x cached at %08x/%08x (OsFindTextSectionBounds)",
+            textStart, textEnd, ClientImageRuntime::TEXT_START_GLOBAL, ClientImageRuntime::TEXT_END_GLOBAL);
+    }
 
     // The image as the loader maps it: one MEM_IMAGE allocation, the headers read-only and each
     // section with the protection its characteristics give a running process.
@@ -1947,18 +1965,19 @@ bool WardenEmu::Impl::CallGuest(uint32_t address, const uint32_t* stackArguments
         outDecryptValid = ReadMemory(moduleObject + 0x20, outDecryptState, sizeof(outDecryptState));
     }
 
-    // The module hashes whole map files inside one Process call. At 50M instructions the two
-    // large file checks in a session (3.7 MB and 4.4 MB of input) ran out mid-file: the module
-    // stopped on a full 16 KB read, never closed the file, and sent a partial reply the server
-    // rejected. Keep a bound for runaway code, but high enough for the largest check.
-    uint64_t stepLimit = 500000000;
+    // Unicorn implements its instruction-count limit with a per-instruction hook, even when
+    // our own hooks cover only imports. That turns the module's multi-megabyte SHA1 loops
+    // into render-thread stalls. Keep a real wall-time bound without the instruction counter;
+    // an explicit WARDEN_STEP_LIMIT still enables instruction-level diagnostic reproduction.
+    uint64_t stepLimit = 0;
+    uint64_t timeLimitUs = 5000000;
 
     if (const char* limit = getenv("WARDEN_STEP_LIMIT")) {
         stepLimit = strtoull(limit, nullptr, 0);
     }
 
     m_faulted = false;
-    uc_err error = uc_emu_start(machine, address, STOP_ADDRESS, 0, stepLimit);
+    uc_err error = uc_emu_start(machine, address, STOP_ADDRESS, timeLimitUs, stepLimit);
 
     uc_reg_read(machine, UC_X86_REG_EAX, &(eax = 0));
 
@@ -1967,10 +1986,10 @@ bool WardenEmu::Impl::CallGuest(uint32_t address, const uint32_t* stackArguments
         uc_reg_read(machine, UC_X86_REG_EIP, &eip);
 
         if (eip != STOP_ADDRESS) {
-            WardenLog("%s at %08x: instruction budget exhausted at %08x (%llu steps)", what, address,
-                eip, static_cast<unsigned long long>(stepLimit));
-            DumpTrace("instruction budget exhausted");
-            ReleaseOpenFiles("instruction budget exhausted");
+            WardenLog("%s at %08x: execution budget exhausted at %08x (limit %llu us, %llu steps)", what, address,
+                eip, static_cast<unsigned long long>(timeLimitUs), static_cast<unsigned long long>(stepLimit));
+            DumpTrace("execution budget exhausted");
+            ReleaseOpenFiles("execution budget exhausted");
 
             // The guest never reached the sentinel: this call produced no valid result. Do not
             // hand a half-built reply to the server.

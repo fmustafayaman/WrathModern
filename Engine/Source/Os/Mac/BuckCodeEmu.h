@@ -22,11 +22,28 @@
  * Layout, mirroring the official process:
  *  - Wow.exe mapped at 0x00400000 (the framework's globals live far into its address space,
  *    e.g. 0x00DD0Fxx, and are writable).
- *  - The handler buffer the realm was given as token, with the delivered code copied to
- *    token + 0x154 exactly where the official handler copies it.
- *  - A guest CDataStore carrying the message (the delivered code reads it through ESI).
- *  - A guest WDataStore the delivered code fills through EDI.
+ *  - VirtualAlloc regions from 0x03CD0000 with the Windows 64 KiB allocation granularity: the
+ *    framework buffer, then every handler buffer the install code allocates (the 0x41B one is
+ *    the token the realm is told).
+ *  - The process heap (SMem, operator new) from 0x04000000.
+ *  - The machine's own ClientServices handler table: what the delivered code registered with
+ *    SetMessageHandler, so each message reaches the handler and param the framework chose.
  */
+
+// A native client database serialized into the original 32-bit record layout. String fields
+// carry offsets into `strings` (UINT32_MAX means nullptr), so host pointers never enter the
+// guest. The delivered parser edits real rows; updated rows are translated back for native use.
+struct BuckDatabase {
+    bool rle = false;
+    int32_t numRecords = 0;
+    int32_t minID = 0;
+    int32_t maxID = 0;
+    std::vector<int32_t> ids;
+    uint32_t recordSize = 0;
+    std::vector<uint8_t> records;
+    std::vector<uint8_t> strings;
+    std::vector<uint32_t> stringFields;
+};
 
 class BuckCodeServices {
 public:
@@ -47,15 +64,84 @@ public:
     // FrameScript::Execute: the client's Lua entry point. Delivered code can reach it through
     // the client image the same way Warden modules do.
     virtual void RunLua(const char* source, const char* filename, const char* taint) = 0;
+
+    // The client database object the official client keeps at `address` (a WowClientDB global
+    // in Wow.exe's data section, e.g. 0x00AD4160 g_mapDB), as this client has it loaded. The
+    // content Warmane delivers with SMSG 0x41D edits these databases by address. False when
+    // the address is not a database this client knows.
+    virtual bool ClientDatabase(uint32_t address, BuckDatabase& database) {
+        (void)address;
+        (void)database;
+        return false;
+    }
+
+    // Applies the rows the delivered content parser actually changed to the native database.
+    // Unknown databases or layouts fail explicitly; never substitute a successful check result.
+    virtual bool CommitClientDatabase(uint32_t address, const BuckDatabase& database) {
+        (void)address;
+        (void)database;
+        return false;
+    }
+
+    // SFile::IsTrial (0x00422140): the call the 0x41D content hook wraps at the start of
+    // ClientInitializeGame.
+    virtual int32_t IsTrial() {
+        return 0;
+    }
 };
 
 class BuckCodeEmu {
 public:
+    // A client call site the delivered code can redirect: the official code at these addresses
+    // is `call rel32`, and the install segments rewrite the displacement to reach their own
+    // hooks. The client runs its native implementation; it asks the machine at the same point
+    // whether the delivered code took the call over.
+    static constexpr uint32_t CALL_CLIENT_INITIALIZE_GAME = 0x00405543; // call SFile::IsTrial
+    static constexpr uint32_t CALL_FRAMESCRIPT_EXECUTE_FILE = 0x008190A4; // call FrameScript_ExecuteBuffer
+
     explicit BuckCodeEmu(BuckCodeServices* services);
     ~BuckCodeEmu();
 
     BuckCodeEmu(const BuckCodeEmu&) = delete;
     BuckCodeEmu& operator=(const BuckCodeEmu&) = delete;
+
+    // SMSG 0x2E9: the framework the server plants before the first 0x4B8. On the official client
+    // the message overruns the battleground position arrays (Packet_MSG_BATTLEGROUND_PLAYER_-
+    // POSITIONS, 0x0054B3F0) into a stub that allocates the framework buffer, records its base
+    // at 0x00DD0FFC and registers the 0x4B8 dispatcher at base + 0x20 (param base + 0x20). The
+    // machine reproduces those GUID/XY writes only in guest memory, then executes the actual
+    // bootstrap and dispatcher. The delivered code chooses the buffers, globals and handlers.
+    // Idempotent: a later 0x2E9 keeps the existing framework.
+    bool InstallFramework(const uint8_t* payload, uint32_t size);
+
+    // Delivers one message to the handler the delivered code registered for `opcode`, exactly
+    // as the client's message dispatch calls it: handler(param, opcode, time, message) with the
+    // message positioned past its opcode and EAX holding the handler address. Every packet the
+    // handler sends through ClientServices::Send2 is returned in order (opcode first). False when
+    // nothing is registered for the opcode or the handler faults.
+    bool Dispatch(uint32_t opcode, uint32_t time, const uint8_t* payload, uint32_t size,
+        std::vector<std::vector<uint8_t>>& sent);
+
+    // Whether the delivered code registered a handler for the opcode, and with which param.
+    bool HandlerFor(uint32_t opcode, uint32_t& handler, uint32_t& param) const;
+
+    // Runs the client call at `site` the way the official client would after the delivered code
+    // rewrote it: when the call still reaches its original target this returns false and the
+    // caller continues natively; otherwise the delivered hook runs with `arguments` on the stack
+    // and `result` receives EAX. A hook that ends by jumping into the original function's body
+    // (`resume`, past its prologue) stops there, and the caller runs the original itself.
+    bool IsCallHooked(uint32_t site);
+    bool PatchScriptBuffer(void* buffer, uint32_t bytes, const char* chunkname);
+    bool RunHookedCall(uint32_t site, const uint32_t* arguments, uint32_t argumentCount, uint32_t resume,
+        uint32_t& result);
+
+    // Copies bytes between this process and the machine, for hooked calls whose arguments point
+    // at client data (a script buffer the hook edits in place). AllocateGuest returns a scratch
+    // area in the machine's heap.
+    uint32_t AllocateGuest(uint32_t size);
+    bool FreeGuest(uint32_t address);
+    bool WriteGuest(uint32_t address, const void* data, uint32_t size);
+    bool ReadGuest(uint32_t address, void* data, uint32_t size);
 
     // Decodes one SMSG 0x41B challenge (the payload the realm sends, without the opcode) with
     // the token this client reported in its CMSG 0x41B request, executes the delivered code as

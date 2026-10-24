@@ -18,6 +18,10 @@ class CDataStore;
  * normally; without the emulator they always return 0.
  */
 
+// Runs the delivered ClientInitializeGame content hook and commits its real DBC edits.
+// False means the hook failed; the caller must not continue an inconsistent world login.
+bool BuckDataApplyContent();
+
 int32_t BuckDataProcessMessage(NetClient* connection, uint32_t msgId, CDataStore* msg);
 int32_t BuckDataHandleCustomCode(NetClient* connection, const uint8_t* data, uint32_t size);
 

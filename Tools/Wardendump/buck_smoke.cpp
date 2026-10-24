@@ -22,13 +22,50 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
 
 #include "Engine/Source/Os/Mac/BuckCodeEmu.h"
 #include "Engine/Source/Os/Mac/MacOs.h"
+#include "Engine/Source/Storm/H/storm.h"
+#include "Engine/Source/BlizzardCore/SFile2-Core.h"
+#include "WoW/Source/Net/NetClient/BuckDatabases.h"
+#include "WoW/Source/DB/DBClient/DBClient.h"
 
 namespace {
+
+bool InitializeGameFiles() {
+    static bool ready = false;
+
+    if (ready) return true;
+    const char* exe = getenv("WARDEN_CLIENT_EXE");
+    if (!exe || !exe[0]) return false;
+    namespace fs = std::filesystem;
+    fs::path directory = fs::absolute(exe).parent_path();
+    fs::path previous = fs::current_path();
+    fs::current_path(directory);
+    StormInitialize();
+    int32_t priority = 1;
+    const char* archives[] = { "Data/common.MPQ", "Data/common-2.MPQ", "Data/expansion.MPQ",
+        "Data/lichking.MPQ", "Data/enUS/locale-enUS.MPQ", "Data/enUS/expansion-locale-enUS.MPQ",
+        "Data/enUS/lichking-locale-enUS.MPQ", "Data/patch.MPQ", "Data/patch-2.MPQ", "Data/patch-3.MPQ",
+        "Data/enUS/patch-enUS.MPQ", "Data/enUS/patch-enUS-2.MPQ", "Data/enUS/patch-enUS-3.MPQ" };
+
+    for (const char* name : archives) {
+        if (!fs::exists(name)) continue;
+        SArchive* archive = nullptr;
+
+        if (!SFile::OpenArchive((directory / name).c_str(), priority++, 0xC00, &archive)) {
+            fs::current_path(previous);
+            return false;
+        }
+    }
+
+    fs::current_path(previous);
+    ready = true;
+    return true;
+}
 
 class SmokeServices : public BuckCodeServices {
 public:
@@ -64,6 +101,18 @@ public:
         size = static_cast<uint32_t>(s_image.size());
         base = s_base;
         return true;
+    }
+
+    bool ClientDatabase(uint32_t address, BuckDatabase& database) override {
+        return InitializeGameFiles() && BuckReadNativeDatabase(address, database);
+    }
+
+    bool CommitClientDatabase(uint32_t address, const BuckDatabase& database) override {
+        return BuckCommitNativeDatabase(address, database);
+    }
+
+    int32_t IsTrial() override {
+        return SFile::IsTrial();
     }
 
     void Log(const char* line) override {
@@ -132,6 +181,90 @@ void PrintHex(const char* label, const std::vector<uint8_t>& bytes) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    if (argc >= 4 && strcmp(argv[1], "--stream") == 0) {
+        // Each fixture is [uint16 opcode][payload]. Keep one machine for the complete
+        // install/data/challenge stream, exactly as the live client must.
+        setenv("WARDEN_CLIENT_EXE", argv[2], 1);
+        SmokeServices services;
+        BuckCodeEmu emulator(&services);
+
+        for (int i = 3; i < argc; i++) {
+            uint32_t opcode = 0xFFFF;
+            std::vector<std::vector<uint8_t>> sent;
+            bool ran = false;
+
+            if (strcmp(argv[i], "--initialize-game") == 0) {
+                uint32_t result = 0;
+                ran = emulator.RunHookedCall(BuckCodeEmu::CALL_CLIENT_INITIALIZE_GAME, nullptr, 0, 0, result);
+            } else if (strncmp(argv[i], "--patch-script=", 15) == 0) {
+                const char* filename = argv[i] + 15;
+                void* buffer = nullptr;
+                uint32_t bytes = 0;
+
+                if (!InitializeGameFiles() || !SFile::ReadFile(nullptr, filename, &buffer, &bytes, 0, 1, nullptr)) {
+                    fprintf(stderr, "script file could not be read: %s\n", filename);
+                    return 2;
+                }
+
+                std::vector<uint8_t> original(static_cast<uint8_t*>(buffer), static_cast<uint8_t*>(buffer) + bytes);
+                std::string chunkname = std::string("@") + filename;
+                opcode = 0xFFFE;
+                ran = emulator.PatchScriptBuffer(buffer, bytes, chunkname.c_str());
+                printf("patched script '%s': changed=%u\n", filename,
+                    memcmp(original.data(), buffer, bytes) != 0 ? 1 : 0);
+                SFile::Unload(buffer);
+            } else {
+                std::vector<uint8_t> packet;
+
+                if (!ReadFile(argv[i], packet) || packet.size() < 2) {
+                    fprintf(stderr, "stream packet could not be read: %s\n", argv[i]);
+                    return 2;
+                }
+
+                opcode = packet[0] | (static_cast<uint32_t>(packet[1]) << 8);
+                const uint8_t* payload = packet.data() + 2;
+                uint32_t size = static_cast<uint32_t>(packet.size() - 2);
+                ran = opcode == 0x2E9 ? emulator.InstallFramework(payload, size)
+                    : emulator.Dispatch(opcode, 0, payload, size, sent);
+            }
+
+            if (!ran) {
+                fprintf(stderr, "stream opcode %04x failed\n", opcode);
+                return 1;
+            }
+
+            printf("stream opcode %04x: %u sent\n", opcode, static_cast<uint32_t>(sent.size()));
+
+            for (const auto& response : sent) {
+                PrintHex("sent", response);
+            }
+
+            uint32_t state[10] = {};
+
+            if (!emulator.ReadFrameworkState(state)) {
+                return 1;
+            }
+
+            printf("framework state:");
+            for (uint32_t value : state) printf(" %08x", value);
+            printf("\n");
+
+            if (opcode == 0xFFFF) {
+                MapRec* map = g_mapDB.GetRecord(37);
+                SpellRec spell;
+
+                if (!map || !g_spellDB.GetRecord(300057, &spell)) {
+                    fprintf(stderr, "delivered native map/spell records are missing\n");
+                    return 1;
+                }
+
+                printf("native content: map %d directory '%s', spell %d\n", map->m_id, map->m_directory, spell.m_id);
+            }
+        }
+
+        return 0;
+    }
+
     if (argc >= 6 && strcmp(argv[1], "--data") == 0) {
         std::vector<uint8_t> handler;
         std::vector<uint8_t> payload;

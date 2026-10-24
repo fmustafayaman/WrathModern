@@ -846,6 +846,12 @@ int32_t FrameScript_ExecuteBuffer(const char* buffer, size_t bytes, const char* 
     return 1;
 }
 
+static FrameScript_ExecuteFileHook s_executeFileHook = nullptr;
+
+void FrameScript_SetExecuteFileHook(FrameScript_ExecuteFileHook hook) {
+    s_executeFileHook = hook;
+}
+
 // VERIFY: 82c92a71 auto
 // OFFSET: 0x00818F60
 int32_t FrameScript_ExecuteFile(const char* filename, const char* wrapper, MD5_CTX* md5, CStatus* status) {
@@ -894,6 +900,15 @@ int32_t FrameScript_ExecuteFile(const char* filename, const char* wrapper, MD5_C
 
     if (md5) {
         MD5Update(md5, static_cast<const uint8_t*>(data), bytes);
+    }
+
+    if (s_executeFileHook && !s_executeFileHook(data, bytes, chunkname)) {
+        if (status) {
+            status->Add(STATUS_ERROR, "Client script hook failed for %s", path);
+        }
+
+        SFile::Unload(data);
+        return 0;
     }
 
     int32_t result = FrameScript_ExecuteBuffer(static_cast<const char*>(data), bytes, chunkname, status, wrapper);

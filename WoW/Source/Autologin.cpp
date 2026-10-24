@@ -7,7 +7,11 @@
 
 #include "WoW/Source/Autologin.h"
 #include "Engine/Source/Event/Event.h"
+#include "Engine/Source/Gx/Gx.h"
+#include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
 #include "Engine/Source/Os/TimeManager.h"
+#include "WoW/Source/Object/ObjectClient/Player_C.h"
+#include "WoW/Source/ObjectMgrClient/ObjectMgrClient.h"
 #include "WoW/Source/Glue/CGlueMgr.h"
 #include "WoW/Source/Glue/CharacterSelection.h"
 #include "WoW/Source/WowServices/Login.h"
@@ -59,6 +63,12 @@ uint32_t s_loginSentAt;
 uint32_t s_worldVerifiedAt;
 WOWGUID s_loginGuid;
 bool s_worldVerified;
+uint32_t s_nativeWorldSince;
+uint32_t s_healthLast;
+uint32_t s_healthFrames;
+uint32_t s_idleLast;
+uint32_t s_idleCount;
+uint32_t s_idleMaxGap;
 
 void Log(const char* format, ...) __attribute__((format(printf, 1, 2)));
 void Log(const char* format, ...) {
@@ -77,6 +87,53 @@ void Log(const char* format, ...) {
     va_end(args);
     fputc('\n', s_log);
     fflush(s_log);
+}
+
+int32_t ObserveNativeWorld(const void* data, void* param) {
+    (void)data;
+    (void)param;
+    uint32_t now = OsGetAsyncTimeMs();
+    if (s_idleLast && now - s_idleLast > s_idleMaxGap) s_idleMaxGap = now - s_idleLast;
+    s_idleLast = now;
+    s_idleCount++;
+    ClientConnection* connection = ClientServices::Connection();
+    CGPlayer_C* player = ClntObjMgrGetActivePlayerObj();
+    bool connected = connection && connection->m_connected;
+    uint32_t frames = g_theGxDevicePtr ? static_cast<uint32_t>(g_theGxDevicePtr->m_frameCount) : 0;
+    bool ready = connected && player && frames;
+
+    if (ready && !s_nativeWorldSince) {
+        s_nativeWorldSince = now;
+        s_idleMaxGap = 0;
+        Log("native active player and rendering confirmed; monitoring");
+
+        if (s_started) {
+            s_state = AUTOLOGIN_MONITOR;
+            s_loginEpoch = s_characterListEpoch;
+        }
+    } else if (!ready) {
+        s_nativeWorldSince = 0;
+    }
+
+    if (s_healthLast && now - s_healthLast < 10000) return 1;
+    FILE* health = fopen("Logs/session-health.log", "a");
+
+    if (health) {
+        C3Vector position = player ? player->GetPosition() : C3Vector(0.0f, 0.0f, 0.0f);
+        uint64_t guid = player ? ClntObjMgrGetActivePlayer().m_guid : 0;
+        fprintf(health, "%u pid=%d connected=%u net=%d player=%016llx map=%u readyMs=%u frames=%u frameDelta=%u idleTicks=%u maxIdleGapMs=%u x=%.3f y=%.3f z=%.3f glueSuspended=%d\n",
+            now, getpid(), connected ? 1 : 0, connection ? static_cast<int32_t>(connection->m_netState) : -1,
+            static_cast<unsigned long long>(guid), ClntObjMgrGetMapID(), s_nativeWorldSince ? now - s_nativeWorldSince : 0,
+            frames, s_healthLast ? frames - s_healthFrames : 0, s_idleCount, s_idleMaxGap,
+            position.x, position.y, position.z, CGlueMgr::m_suspended ? 1 : 0);
+        fclose(health);
+    }
+
+    s_healthLast = now;
+    s_healthFrames = frames;
+    s_idleCount = 0;
+    s_idleMaxGap = 0;
+    return 1;
 }
 
 bool ReadCredentials() {
@@ -180,6 +237,15 @@ int32_t AutologinTick(const void* data, void* param) {
         }
 
         case AUTOLOGIN_WAIT_REALM: {
+            // A human can press Enter World before this timer's five-second delay. Observe that
+            // real transition instead of spinning forever on the now-cleared glue list.
+            if (CGlueMgr::m_idleState == IDLE_ENTER_WORLD || CGlueMgr::m_suspended) {
+                s_loginSentAt = now;
+                s_loginEpoch = s_characterListEpoch;
+                s_state = AUTOLOGIN_WAIT_WORLD;
+                break;
+            }
+
             if (connection && connection->m_characterList.Count() > 0) {
                 CHARACTER_INFO& character = connection->m_characterList.m_data[0];
 
@@ -210,12 +276,12 @@ int32_t AutologinTick(const void* data, void* param) {
                 s_characterListSeenAt = 0;
                 s_worldVerified = false;
                 s_worldVerifiedAt = 0;
-                CGlueMgr::EnterWorld();
                 s_loginGuid = character.m_guid;
                 s_loginAttempts = 1;
                 s_loginSentAt = now;
                 s_loginEpoch = s_characterListEpoch;
                 s_state = AUTOLOGIN_WAIT_WORLD;
+                CGlueMgr::EnterWorld();
                 break;
             }
 
@@ -359,6 +425,17 @@ void AutologinInitialize() {
     s_started = OsGetAsyncTimeMs();
     Log("armed for account %s, realm %s", s_account, s_realm);
     EventSetTimer(1000, AutologinTick, nullptr);
+}
+
+void AutologinWorldInitialize() {
+    if (!s_started && !getenv("WRATHMODERN_SESSION_HEALTH")) return;
+    s_nativeWorldSince = 0;
+    s_healthLast = 0;
+    s_idleLast = 0;
+    s_idleCount = 0;
+    s_idleMaxGap = 0;
+    EventUnregister(EVENT_ID_IDLE, ObserveNativeWorld);
+    EventRegister(EVENT_ID_IDLE, ObserveNativeWorld);
 }
 
 void AutologinNotifyCharacterList() {

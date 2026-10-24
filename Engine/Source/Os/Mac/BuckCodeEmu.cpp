@@ -3,16 +3,21 @@
 #if defined(WOWDECOMP_PLATFORM_MAC) && defined(WRATHMODERN_WARDEN_EMULATION)
 
 #include "Engine/Source/Os/Mac/BuckCodeEmu.h"
+#include "Engine/Source/Os/Mac/ClientImageRuntime.h"
 
 #include <unicorn/unicorn.h>
 #include <zlib.h>
 
+#include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <map>
+#include <set>
 #include <string>
+#include <sys/statvfs.h>
 
 /*
  * Warmane's server-delivered x86 code runner. See BuckCodeEmu.h for what this is and why.
@@ -25,7 +30,10 @@
  * The memory layout mirrors the official process closely enough that the addresses the code
  * carries mean the same thing:
  *  0x00400000 + imageSize  the mapped Wow.exe
- *  0x0E000000              guest heap for the buffers the code allocates
+ *  0x03CD0000              VirtualAlloc regions, 64 KiB granular like Windows: the framework
+ *                          buffer first, then the handler buffers the install code allocates
+ *  0x04000000              guest heap (SMem, operator new); large enough for the client
+ *                          databases the 0x41D content edits (Spell alone is ~34 MiB)
  *  0x0F000000              guest stack
  *  0x0F800000              the message and the reply store objects
  *  0x0FFFFFF0              stop sentinel
@@ -39,7 +47,14 @@ constexpr uint32_t CLIENT_BASE = 0x00400000;
 constexpr uint32_t MACHINE_BASE = 0x00400000;
 constexpr uint32_t MACHINE_SIZE = 0x10000000; // 256 MiB, holds the image and every guest area
 
-constexpr uint32_t HEAP_BASE = 0x0E000000;
+// The official process's framework buffer sits at 0x03CD0000 and the handler buffers follow it
+// in 64 KiB steps (0x03D00000, 0x03D10000, 0x03D20000); Windows hands VirtualAlloc(NULL, ...)
+// the next free allocation-granularity block.
+constexpr uint32_t VIRTUAL_BASE = 0x03CD0000;
+constexpr uint32_t VIRTUAL_LIMIT = 0x04000000;
+constexpr uint32_t VIRTUAL_GRANULARITY = 0x10000;
+
+constexpr uint32_t HEAP_BASE = 0x04000000;
 constexpr uint32_t HEAP_LIMIT = 0x0F000000;
 
 constexpr uint32_t STACK_BASE = 0x0F000000;
@@ -62,9 +77,12 @@ constexpr uint32_t STUB_FREE_LIBRARY = 0x0FE00030;
 constexpr uint32_t STUB_REG_OPEN_KEY = 0x0FE00040;
 constexpr uint32_t STUB_REG_QUERY_VALUE = 0x0FE00050;
 constexpr uint32_t STUB_REG_CLOSE_KEY = 0x0FE00060;
-constexpr uint32_t STUB_SYSTEM_FILE_TIME = 0x0FE00070;
+constexpr uint32_t STUB_DISK_FREE_SPACE = 0x0FE00070;
 constexpr uint32_t STUB_GET_PROC_ADDRESS = 0x0FE00080;
 constexpr uint32_t STUB_GET_CURRENT_HW_PROFILE = 0x0FE00090;
+constexpr uint32_t STUB_IS_DEBUGGER_PRESENT = 0x0FE000A0;
+constexpr uint32_t STUB_GET_CURRENT_PROCESS = 0x0FE000B0;
+constexpr uint32_t STUB_FLUSH_INSTRUCTION_CACHE = 0x0FE000C0;
 constexpr uint32_t STUB_CLOSE_HANDLE = 0x0FE000D0;
 
 constexpr uint32_t IAT_LOAD_LIBRARY = 0x009DF248;
@@ -72,7 +90,7 @@ constexpr uint32_t IAT_FREE_LIBRARY = 0x009DF250;
 constexpr uint32_t IAT_REG_OPEN_KEY = 0x009DF00C;
 constexpr uint32_t IAT_REG_QUERY_VALUE = 0x009DF010;
 constexpr uint32_t IAT_REG_CLOSE_KEY = 0x009DF008;
-constexpr uint32_t IAT_SYSTEM_FILE_TIME = 0x009DF388;
+constexpr uint32_t IAT_DISK_FREE_SPACE = 0x009DF388;
 constexpr uint32_t CLIENT_GLOBAL_GET_PROC_ADDRESS = 0x00B2ED98;
 constexpr uint32_t IAT_CLOSE_HANDLE = 0x009DF124;
 
@@ -117,6 +135,57 @@ constexpr uint32_t CLIENT_SMEM_REALLOC = 0x0076E5E0;
 constexpr uint32_t CLIENT_ZLIB_UNCOMPRESS = 0x00778180;
 constexpr uint32_t CLIENT_SEND2 = 0x006B0B50;
 constexpr uint32_t CLIENT_SET_MESSAGE_HANDLER = 0x006B0B80;
+constexpr uint32_t CLIENT_STORE_GET32 = 0x0047B3C0;  // CDataStore::Get(uint32_t&)
+constexpr uint32_t CLIENT_SMEM_FREE = 0x0076E5A0;
+constexpr uint32_t CLIENT_SFILE_IS_TRIAL = 0x00422140;
+constexpr uint32_t CLIENT_STRCMP = 0x0040F9D0;      // CRT strcmp
+constexpr uint32_t CLIENT_STRSTR = 0x0088BCA0;      // CRT strstr
+constexpr uint32_t CLIENT_MEMMOVE = 0x0040CB10;     // CRT memcpy/memmove (overlap-aware)
+
+// The framework's state, ten dwords the install segments and handlers keep in Wow.exe's data
+// section (identified from the delivered code; the official values are from its 84-byte reply):
+//  +0x00 0x00DD0FD8  the 0x4B9 install's FrameXML patch list (operator new)
+//  +0x04 0x00DD0FDC  the 0x41B handler buffer: the token the realm is told
+//  +0x08 0x00DD0FE0  the 0x41C data version, sent back in the next 0x41C request
+//  +0x0C 0x00DD0FE4  the 0x4B9 handler buffer
+//  +0x10 0x00DD0FE8  the decompressed 0x41D content, freed once ClientInitializeGame parsed it
+//  +0x14 0x00DD0FEC  the content's string pool (SMemAlloc)
+//  +0x18 0x00DD0FF0  the content version, sent back in the next 0x41D request
+//  +0x1C 0x00DD0FF4  the 0x41D handler buffer
+//  +0x20 0x00DD0FF8  the 0x41C handler buffer
+//  +0x24 0x00DD0FFC  the framework buffer the 0x2E9 stub allocated
+constexpr uint32_t FRAMEWORK_STATE = 0x00DD0FD8;
+constexpr uint32_t FRAMEWORK_CONTENT = 0x00DD0FE8;
+constexpr uint32_t FRAMEWORK_BASE_GLOBAL = 0x00DD0FFC;
+constexpr uint32_t FRAMEWORK_OPCODE = 0x4B8;
+constexpr uint32_t FRAMEWORK_DISPATCHER_OFFSET = 0x20;
+// The dispatcher copies each segment to its param + 0x3E (base + 0x5E) and calls it there.
+constexpr uint32_t FRAMEWORK_SEGMENT_OFFSET = 0x3E;
+
+// The content stream the 0x41D hook parses (decoded from the delivered parser at handler +
+// 0x16C): [version] then commands until the end:
+//  0 [size][bytes]                       the string pool
+//  1 [count][database]*count             reset these databases when the version changed
+//  2 [database][recordSize][count][maxID][minID][records]   replace a database
+//  3 [database][recordSize][count][stringFields][fieldOffset]*stringFields
+//    ([id][recordSize - 4 bytes])*count  insert or overwrite records by ID
+//  4 [database][size][bytes]             overwrite the record block
+constexpr uint32_t CONTENT_STRINGS = 0;
+constexpr uint32_t CONTENT_RESET = 1;
+constexpr uint32_t CONTENT_REPLACE = 2;
+constexpr uint32_t CONTENT_UPSERT = 3;
+constexpr uint32_t CONTENT_OVERWRITE = 4;
+
+// WowClientDB fields (WoW/Source/DB/WowClientDB.h, 32-bit layout). WowClientDB<T> keeps its
+// records at +0x1C and the by-ID index at +0x20; WowClientDB_RLE<T> keeps the row data at
+// +0x18, the record pointers at +0x1C and the by-ID index right after them (+0x20).
+constexpr uint32_t DB_LOADED = 0x04;
+constexpr uint32_t DB_NUM_RECORDS = 0x08;
+constexpr uint32_t DB_MAX_ID = 0x0C;
+constexpr uint32_t DB_MIN_ID = 0x10;
+constexpr uint32_t DB_RLE_DATA = 0x18;
+constexpr uint32_t DB_RECORDS = 0x1C;
+constexpr uint32_t DB_RECORDS_BY_ID = 0x20;
 
 // The reply store's fixed preamble: the handler builds CMSG 0x41B with this id and constant
 // before the delivered code adds its answer (see the decompiled 0x05660000 handler).
@@ -137,64 +206,9 @@ uint32_t RotateRight(uint32_t value, uint32_t count) {
     return (value >> count) | (value << (32 - count));
 }
 
-// A module as Module32First/Next report it: MODULEENTRY32 base, size and full path. The module
-// scan the server sends after login walks this list, and a single-entry list is visibly not a
-// Windows client.
-struct EmulatedModule {
-    uint32_t base;
-    uint32_t size;
-    const char* path;
-};
-
-// The exact module list the official Wine-hosted HD client reports through Module32First/Next
-// at the login screen (43 entries, read from the live process with the same Toolhelp calls the
-// 192-byte module-scan code uses). The server compares this list, so the bases, sizes and paths
-// are reproduced verbatim, including the launcher mods/libSiliconPatch DLL and mtld3d.
-const EmulatedModule EMULATED_MODULES[] = {
-    { 0x00400000, 0x009FD000, "Z:\\Volumes\\Yaman SSD\\wow3.3.5a\\wow.exe" },
-    { 0x7BF40000, 0x000A2000, "C:\\windows\\system32\\ntdll.dll" },
-    { 0x7BED0000, 0x00053000, "C:\\windows\\system32\\kernel32.dll" },
-    { 0x7BDB0000, 0x0010F000, "C:\\windows\\system32\\kernelbase.dll" },
-    { 0x7BC80000, 0x00120000, "C:\\windows\\system32\\OPENGL32.dll" },
-    { 0x7BC00000, 0x00070000, "C:\\windows\\system32\\gdi32.dll" },
-    { 0x7BA50000, 0x0019B000, "C:\\windows\\system32\\user32.dll" },
-    { 0x7BA20000, 0x0001B000, "C:\\windows\\system32\\sechost.dll" },
-    { 0x7B930000, 0x000DA000, "C:\\windows\\system32\\ucrtbase.dll" },
-    { 0x7B8E0000, 0x00036000, "C:\\windows\\system32\\advapi32.dll" },
-    { 0x7B830000, 0x000A0000, "C:\\windows\\system32\\msvcrt.dll" },
-    { 0x7B7E0000, 0x00033000, "C:\\windows\\system32\\win32u.dll" },
-    { 0x7B780000, 0x00042000, "C:\\windows\\system32\\VERSION.dll" },
-    { 0x7B750000, 0x00015000, "C:\\windows\\system32\\VCRUNTIME140.dll" },
-    { 0x7B720000, 0x0001B000, "C:\\windows\\system32\\IMM32.dll" },
-    { 0x7B6C0000, 0x0004E000, "C:\\windows\\system32\\WININET.dll" },
-    { 0x7B690000, 0x00012000, "C:\\windows\\system32\\mpr.dll" },
-    { 0x7B640000, 0x0003D000, "C:\\windows\\system32\\shlwapi.dll" },
-    { 0x7B610000, 0x00013000, "C:\\windows\\system32\\shcore.dll" },
-    { 0x7AD50000, 0x008AB000, "C:\\windows\\system32\\shell32.dll" },
-    { 0x7AD10000, 0x00022000, "C:\\windows\\system32\\ws2_32.dll" },
-    { 0x7ACC0000, 0x00036000, "C:\\windows\\system32\\DINPUT8.dll" },
-    { 0x7AC90000, 0x00020000, "C:\\windows\\system32\\cfgmgr32.dll" },
-    { 0x7AB90000, 0x000E9000, "C:\\windows\\system32\\comctl32.dll" },
-    { 0x7AAE0000, 0x0009D000, "C:\\windows\\system32\\ole32.dll" },
-    { 0x7AA80000, 0x00047000, "C:\\windows\\system32\\combase.dll" },
-    { 0x7A9F0000, 0x00076000, "C:\\windows\\system32\\rpcrt4.dll" },
-    { 0x7A9D0000, 0x00008000, "C:\\windows\\system32\\cryptbase.dll" },
-    { 0x7A9A0000, 0x00014000, "C:\\windows\\system32\\coml2.dll" },
-    { 0x7A980000, 0x0000C000, "C:\\windows\\system32\\hid.dll" },
-    { 0x10000000, 0x00069000, "Z:\\Volumes\\Yaman SSD\\wow3.3.5a\\DivxDecoder.dll" },
-    { 0x7A920000, 0x00043000, "C:\\windows\\system32\\WINMM.dll" },
-    { 0x7A8F0000, 0x00016000, "C:\\windows\\system32\\msacm32.dll" },
-    { 0x7A880000, 0x00059000, "C:\\windows\\system32\\SETUPAPI.dll" },
-    { 0x7A800000, 0x0006D000, "Z:\\Volumes\\Yaman SSD\\wow3.3.5a\\mods\\libSiliconPatch_WOTLK_3.3.0_preview.dll" },
-    { 0x7A7E0000, 0x00007000, "c:\\windows\\system32\\winemac.drv" },
-    { 0x7A7A0000, 0x0002E000, "C:\\windows\\system32\\uxtheme.dll" },
-    { 0x7A780000, 0x00007000, "Z:\\Volumes\\Yaman SSD\\wow3.3.5a\\libDllLdr.dll" },
-    { 0x7A620000, 0x00146000, "Z:\\Volumes\\Yaman SSD\\wow3.3.5a\\d3d9.dll" },
-    { 0x7A5D0000, 0x00033000, "C:\\windows\\system32\\mtld3d.dll" },
-    { 0x7A560000, 0x00051000, "C:\\windows\\system32\\bcrypt.dll" },
-    { 0x7A520000, 0x00023000, "C:\\windows\\system32\\mmdevapi.dll" },
-    { 0x7A460000, 0x000A5000, "C:\\windows\\system32\\oleaut32.dll" },
-};
+// Toolhelp reports only PE images actually mapped into this 32-bit guest. Native Mach-O
+// libraries are outside that address space; historical Wine DLL inventories are not evidence
+// that those DLLs are loaded here. See FillModuleEntry.
 
 }  // namespace
 
@@ -214,14 +228,51 @@ struct BuckCodeEmu::Impl {
     std::vector<uint8_t> sentPacket;
     bool sentPacketValid = false;
 
+    // Every packet sent through Send2 during the current run, in order.
+    std::vector<std::vector<uint8_t>> sentPackets;
+
     // The last SetMessageHandler registration the delivered code made, so the caller can carry
     // the handler's param (the next message's key) forward exactly as the framework does.
     bool lastRegistrationValid = false;
     uint32_t lastRegistrationOpcode = 0;
     uint32_t lastRegistrationParam = 0;
 
+    // The machine's ClientServices handler table: opcode -> handler and param, as the delivered
+    // code registered them (the 0x41B handler re-registers itself with each challenge's nonce).
+    struct Registration {
+        uint32_t handler;
+        uint32_t param;
+    };
+    std::map<uint32_t, Registration> handlers;
+
+    // Both the bootstrap and dispatcher execute the delivered x86. Only the reconstructed
+    // bootstrap may execute in the client's data section; normal client code needs a bridge.
+    uint32_t frameworkBase = 0;
+    bool bootstrapActive = false;
+
+    uint32_t virtualNext = VIRTUAL_BASE;
+
+    // SMem/operator new blocks: requested size and capacity. Large blocks keep headroom, so a
+    // record-by-record SMemReAlloc of a 34 MiB database does not copy it every time.
+    struct Allocation {
+        uint32_t size;
+        uint32_t capacity;
+    };
+    std::map<uint32_t, Allocation> allocations;
+    std::multimap<uint32_t, uint32_t> freeBlocks;
+
+    // Real native DBC rows, translated to the guest's uncompressed 32-bit layout.
+    std::set<uint32_t> mirroredDatabases;
+    struct ContentDatabase {
+        uint32_t stride = 0;
+        std::vector<uint32_t> ids;
+        std::vector<uint32_t> stringFields;
+    };
+    std::map<uint32_t, ContentDatabase> contentDatabases;
+
     bool Boot();
     void Teardown();
+    void Fail(const char* reason);
 
     void Log(const char* format, ...) __attribute__((format(printf, 2, 3)));
 
@@ -229,10 +280,13 @@ struct BuckCodeEmu::Impl {
     bool WriteMemory(uint32_t address, const void* in, uint32_t size) const;
     bool ReadWord(uint32_t address, uint32_t& value) const;
     bool WriteWord(uint32_t address, uint32_t value) const;
-    std::string ReadGuestString(uint32_t address, uint32_t capacity = 4096) const;
+    std::string ReadGuestString(uint32_t address, uint32_t capacity = 4096);
 
     uint32_t HeapAlloc(uint32_t size, uint32_t alignment = 16);
-    uint32_t HeapAllocPages(uint32_t size);
+    uint32_t VirtualAllocate(uint32_t size);
+    uint32_t TrackedAlloc(uint32_t size);
+    bool TrackedFree(uint32_t block);
+    uint32_t TrackedReAlloc(uint32_t block, uint32_t size);
 
     // CDataStore / WDataStore semantics on guest objects.
     void StoreConstruct(uint32_t store);
@@ -241,7 +295,22 @@ struct BuckCodeEmu::Impl {
     uint32_t StorePut(uint32_t store, uint32_t value, uint32_t width);
     void StoreGetArray(uint32_t store, uint32_t destination, uint32_t count);
 
-    bool RunFunction(uint32_t address, const uint32_t* stackArguments, uint32_t argumentCount, uint32_t ecx, uint32_t& eax);
+    // Calls guest code at `address` with `stackArguments` pushed right to left (cdecl order),
+    // ECX and EAX as given, and a return address that stops the machine; `eax` receives the
+    // result. `stopAt` (when non-zero) is a second address that ends the run, for hooks that
+    // leave by jumping into the original function. False when the code faults.
+    bool RunFunction(uint32_t address, const uint32_t* stackArguments, uint32_t argumentCount, uint32_t ecx, uint32_t& eax,
+        uint32_t stopAt = 0);
+    uint32_t extraStop = 0;
+
+    // The message store as the client's dispatch hands it to a handler: opcode in front and
+    // already read, the payload untouched.
+    void BuildDispatchMessage(uint32_t opcode, const uint8_t* payload, uint32_t size);
+
+    // Mirrors the client databases the 0x41D content is about to edit (see MirrorDatabase).
+    bool PrepareContentDatabases();
+    bool CommitContentDatabases();
+    bool MirrorDatabase(uint32_t address, uint32_t recordSize);
 
     bool HandleClientCall(uint32_t address);
     bool FillModuleEntry(uint32_t entry, uint32_t index);
@@ -250,6 +319,7 @@ struct BuckCodeEmu::Impl {
 
     // Module32First/Next walk position. CreateToolhelp32Snapshot resets it.
     uint32_t s_moduleIndex = 0;
+    bool moduleSnapshotOpen = false;
 
     bool BuildMessage(const std::vector<uint8_t>& decoded, uint32_t readPosition);
     bool BuildReply(uint32_t& replySize);
@@ -279,56 +349,19 @@ void BuckCodeEmu::Impl::Log(const char* format, ...) {
 // re-derives them when both are zero. The machine maps the client image but never executes the
 // client's own startup, so do exactly what 0x0086B510 does, from the same section table.
 void BuckCodeEmu::Impl::SeedClientGlobals(const uint8_t* image, uint32_t size) {
-    auto read16 = [](const uint8_t* p) {
-        uint16_t value;
-        memcpy(&value, p, sizeof(value));
-        return value;
-    };
-    auto read32 = [](const uint8_t* p) {
-        uint32_t value;
-        memcpy(&value, p, sizeof(value));
-        return value;
-    };
+    uint32_t start = 0;
+    uint32_t end = 0;
 
-    if (!image || size < 0x40) {
+    if (!ClientImageRuntime::TextBounds(image, size, start, end)) {
+        Log("client .text section could not be derived from this PE image");
         return;
     }
 
-    // IMAGE_DOS_HEADER.e_lfanew -> IMAGE_NT_HEADERS; PE32 optional header, so ImageBase is at
-    // +0x34 and the section table follows the optional header.
-    uint32_t header = read32(image + 0x3C);
-
-    if (header + 0x18 > size || read32(image + header) != 0x00004550) {
-        return;
-    }
-
-    uint16_t sectionCount = read16(image + header + 6);
-    uint16_t optionalSize = read16(image + header + 20);
-    uint32_t imageBase = read32(image + header + 0x34);
-    const uint8_t* section = image + header + 0x18 + optionalSize;
-
-    for (uint16_t i = 0; i < sectionCount; i++, section += 0x28) {
-        if (section + 0x28 > image + size) {
-            return;
-        }
-
-        if (memcmp(section, ".text", 5) != 0) {
-            continue;
-        }
-
-        uint32_t virtualSize = read32(section + 8);
-        uint32_t virtualAddress = read32(section + 12);
-        uint32_t start = imageBase + virtualAddress;
-        uint32_t end = start + virtualSize;
-
-        WriteWord(CLIENT_TEXT_START_GLOBAL, start);
-        WriteWord(CLIENT_TEXT_END_GLOBAL, end);
-        Log("client .text %08x..%08x cached at %08x/%08x (OsFindTextSectionBounds %08x, "
-            "OsValidateFunctionPointer %08x)",
-            start, end, CLIENT_TEXT_START_GLOBAL, CLIENT_TEXT_END_GLOBAL,
-            CLIENT_OS_FIND_TEXT_SECTION_BOUNDS, CLIENT_OS_VALIDATE_FUNCTION_POINTER);
-        return;
-    }
+    WriteWord(CLIENT_TEXT_START_GLOBAL, start);
+    WriteWord(CLIENT_TEXT_END_GLOBAL, end);
+    Log("client .text %08x..%08x cached at %08x/%08x (OsFindTextSectionBounds %08x, "
+        "OsValidateFunctionPointer %08x)", start, end, CLIENT_TEXT_START_GLOBAL, CLIENT_TEXT_END_GLOBAL,
+        CLIENT_OS_FIND_TEXT_SECTION_BOUNDS, CLIENT_OS_VALIDATE_FUNCTION_POINTER);
 }
 
 bool BuckCodeEmu::Impl::Boot() {
@@ -376,9 +409,12 @@ bool BuckCodeEmu::Impl::Boot() {
     WriteWord(IAT_REG_OPEN_KEY, STUB_REG_OPEN_KEY);
     WriteWord(IAT_REG_QUERY_VALUE, STUB_REG_QUERY_VALUE);
     WriteWord(IAT_REG_CLOSE_KEY, STUB_REG_CLOSE_KEY);
-    WriteWord(IAT_SYSTEM_FILE_TIME, STUB_SYSTEM_FILE_TIME);
+    WriteWord(IAT_DISK_FREE_SPACE, STUB_DISK_FREE_SPACE);
     WriteWord(CLIENT_GLOBAL_GET_PROC_ADDRESS, STUB_GET_PROC_ADDRESS);
     WriteWord(IAT_CLOSE_HANDLE, STUB_CLOSE_HANDLE);
+    WriteWord(0x009DF1B4, STUB_IS_DEBUGGER_PRESENT);
+    WriteWord(0x009DF1C0, STUB_GET_CURRENT_PROCESS);
+    WriteWord(0x009DF294, STUB_FLUSH_INSTRUCTION_CACHE);
 
     // Dispatch every instruction in the machine range through one code hook; the delivered code
     // executes few instructions, and the hook is what catches client calls and the sentinel.
@@ -470,47 +506,50 @@ bool BuckCodeEmu::Impl::WriteWord(uint32_t address, uint32_t value) const {
     return WriteMemory(address, &value, sizeof(value));
 }
 
-std::string BuckCodeEmu::Impl::ReadGuestString(uint32_t address, uint32_t capacity) const {
+std::string BuckCodeEmu::Impl::ReadGuestString(uint32_t address, uint32_t capacity) {
     std::string text;
+    if (!address) return text;
 
-    for (uint32_t i = 0; address && i < capacity; i++) {
+    for (uint32_t i = 0; i < capacity; i++) {
         uint8_t byte = 0;
 
-        if (!ReadMemory(address + i, &byte, 1) || !byte) {
-            break;
+        if (!ReadMemory(address + i, &byte, 1)) {
+            Fail("string read outside guest memory");
+            return {};
         }
 
+        if (!byte) return text;
         text += static_cast<char>(byte);
     }
 
-    return text;
+    Fail("guest string exceeded the bounded read");
+    return {};
 }
 
 uint32_t BuckCodeEmu::Impl::HeapAlloc(uint32_t size, uint32_t alignment) {
-    if (alignment > 1) {
-        heapNext = (heapNext + alignment - 1) & ~(alignment - 1);
+    uint64_t result = (static_cast<uint64_t>(heapNext) + alignment - 1) & ~uint64_t(alignment - 1);
+    uint64_t end = (result + (size ? size : 1) + 15) & ~uint64_t(15);
+
+    if (end > HEAP_LIMIT) {
+        Fail("buck heap exhausted");
+        return 0;
     }
 
-    uint32_t result = heapNext;
-    heapNext += size;
-    heapNext = (heapNext + 15) & ~15u;
-
-    if (heapNext > HEAP_LIMIT) {
-        Log("buck heap exhausted (%u bytes wanted)", size);
-    }
-
-    return result;
+    heapNext = static_cast<uint32_t>(end);
+    return static_cast<uint32_t>(result);
 }
 
-uint32_t BuckCodeEmu::Impl::HeapAllocPages(uint32_t size) {
-    uint32_t rounded = (size + 0xFFF) & ~0xFFFu;
-    uint32_t result = (heapNext + 0xFFF) & ~0xFFFu;
-    heapNext = result + rounded;
+uint32_t BuckCodeEmu::Impl::VirtualAllocate(uint32_t size) {
+    uint64_t end = static_cast<uint64_t>(virtualNext)
+        + ((static_cast<uint64_t>(size) + VIRTUAL_GRANULARITY - 1) & ~uint64_t(VIRTUAL_GRANULARITY - 1));
 
-    if (heapNext > HEAP_LIMIT) {
-        Log("buck page heap exhausted (%u bytes wanted)", size);
+    if (!size || end > VIRTUAL_LIMIT) {
+        Fail("buck VirtualAlloc region exhausted");
+        return 0;
     }
 
+    uint32_t result = virtualNext;
+    virtualNext = static_cast<uint32_t>(end);
     return result;
 }
 
@@ -545,8 +584,14 @@ uint32_t BuckCodeEmu::Impl::StoreGetInt(uint32_t store) {
 
     uint32_t value = 0;
 
-    if (read + 4 <= size && buffer) {
-        ReadMemory(buffer + read - base, &value, sizeof(value));
+    // GetInt initializes its local result to zero; a failed FetchRead leaves it zero.
+    // End-of-store is a normal CDataStore failure, not an invented successful read.
+    if (read >= base && read <= size && size - read >= 4) {
+        if (!buffer || !ReadMemory(buffer + read - base, &value, sizeof(value))) {
+            Fail("CDataStore::GetInt source outside guest memory");
+            return 0;
+        }
+
         WriteWord(store + STORE_READ, read + 4);
     }
 
@@ -617,8 +662,16 @@ void BuckCodeEmu::Impl::StoreGetArray(uint32_t store, uint32_t destination, uint
     ReadWord(store + STORE_READ, read);
 
     uint32_t available = size > read ? size - read : 0;
-    uint32_t bytes = count < available ? count : available;
 
+    // The original GetArray streams until FetchRead fails and can consume fewer than count
+    // bytes (CDataStore.cpp:399). The delivered 0x41B installer deliberately passes ECX's
+    // stack-local pointer as count, so this is not a strict exact-length read.
+    if (read < base || (count && (!buffer || !destination))) {
+        Fail("CDataStore::GetArray has an invalid source/destination");
+        return;
+    }
+
+    uint32_t bytes = count < available ? count : available;
     static const bool trace = getenv("BUCK_TRACE") != nullptr;
 
     if (trace) {
@@ -628,8 +681,11 @@ void BuckCodeEmu::Impl::StoreGetArray(uint32_t store, uint32_t destination, uint
 
     if (bytes && buffer && destination) {
         std::vector<uint8_t> copy(bytes);
-        ReadMemory(buffer + read - base, copy.data(), bytes);
-        WriteMemory(destination, copy.data(), bytes);
+        if (!ReadMemory(buffer + read - base, copy.data(), bytes)
+            || !WriteMemory(destination, copy.data(), bytes)) {
+            Fail("CDataStore::GetArray transfer outside guest memory");
+            return;
+        }
         // The destination can be code the previous challenge already executed; Unicorn keeps
         // translations of guest writes made from a hook, so drop them or the old code runs.
         uc_ctl_remove_cache(machine, destination, destination + bytes);
@@ -643,28 +699,23 @@ void BuckCodeEmu::Impl::StoreGetArray(uint32_t store, uint32_t destination, uint
 // =====================================================================
 
 bool BuckCodeEmu::Impl::FillModuleEntry(uint32_t entry, uint32_t index) {
-    const uint32_t count = sizeof(EMULATED_MODULES) / sizeof(EMULATED_MODULES[0]);
-
-    if (index >= count) {
-        return false;
-    }
-
-    const EmulatedModule& module = EMULATED_MODULES[index];
-    const char* name = strrchr(module.path, '\\');
-    name = name ? name + 1 : module.path;
-
-    // MODULEENTRY32: base at +0x14, size at +0x18, module name at +0x20, full path at +0x120.
-    // The 192-byte scan reads base, size and the path at +0x120; the name keeps the structure
-    // usable by any other Toolhelp consumer.
-    WriteWord(entry + 0x14, module.base);
-    WriteWord(entry + 0x18, module.size);
+    if (index || !clientSize || !services) return false;
+    const char* path = services->ClientPath();
+    if (!path || !path[0]) return false;
+    std::string fullPath(path);
+    if (fullPath.size() > 259) fullPath.resize(259);
+    const char* name = strrchr(fullPath.c_str(), '\\');
+    name = name ? name + 1 : fullPath.c_str();
+    WriteWord(entry + 0x14, clientBase);
+    WriteWord(entry + 0x18, clientSize);
+    WriteWord(entry + 0x1C, clientBase);
     WriteMemory(entry + 0x20, name, static_cast<uint32_t>(strlen(name)) + 1);
-    WriteMemory(entry + 0x120, module.path, static_cast<uint32_t>(strlen(module.path)) + 1);
+    WriteMemory(entry + 0x120, fullPath.c_str(), static_cast<uint32_t>(fullPath.size()) + 1);
     return true;
 }
 
 bool BuckCodeEmu::Impl::HandleClientCall(uint32_t address) {
-    if (address == STOP_ADDRESS) {
+    if (address == STOP_ADDRESS || (extraStop && address == extraStop)) {
         uc_emu_stop(machine);
         return true;
     }
@@ -696,11 +747,60 @@ bool BuckCodeEmu::Impl::HandleClientCall(uint32_t address) {
     };
 
     switch (address) {
+        case 0x0054E220: { // CGBattlefieldInfo::ShutdownGame
+            // This guest has no native battlefield score objects. Unregister the same stock
+            // handlers as BattlefieldInfo.cpp; never run the native client's shutdown here.
+            const uint32_t opcodes[] = { 0x23D, 0x2D4, 0x2E0, 0x2E8, 0x2E9, 0x2EC, 0x2ED,
+                0x4C7, 0x14B, 0x4DE, 0x4E0, 0x4E4, 0x4E5, 0x4E6, 0x4E1, 0x4E8 };
+
+            for (uint32_t opcode : opcodes) {
+                handlers.erase(opcode);
+            }
+
+            finish(0);
+            return true;
+        }
+        case CLIENT_STORE_GET32: {
+            result = StoreGetInt(ecx);
+            WriteWord(arguments[0], result);
+            result = ecx;
+            finish(4);
+            return true;
+        }
+        case CLIENT_SFILE_IS_TRIAL: {
+            result = services->IsTrial();
+            finish(0);
+            return true;
+        }
+        case CLIENT_STRCMP: {
+            std::string first = ReadGuestString(arguments[0], 0x100000);
+            std::string second = ReadGuestString(arguments[1], 0x100000);
+            result = static_cast<uint32_t>(strcmp(first.c_str(), second.c_str()));
+            finish(0);
+            return true;
+        }
+        case CLIENT_STRSTR: {
+            std::string text = ReadGuestString(arguments[0], 0x100000);
+            std::string needle = ReadGuestString(arguments[1], 0x100000);
+            size_t offset = text.find(needle);
+            result = offset == std::string::npos ? 0 : arguments[0] + static_cast<uint32_t>(offset);
+            finish(0);
+            return true;
+        }
         case CLIENT_STORE_GET_INT: {
             // CDataStore::GetInt: consumes the next dword and returns it. The 0x41B handler
             // reads the challenge nonce, then the code length, then the delivered code reads
             // the trailing answer dword with the same call.
+            uint32_t read = 0;
+            ReadWord(ecx + STORE_READ, read);
             result = StoreGetInt(ecx);
+            // 0x401170 calls Get(uint32_t&) with its local at entry ESP-8. The latter leaves
+            // ECX pointing there and EDX holding the pre-read cursor; preserve those observed
+            // volatile registers as the delivered installer uses ECX immediately afterwards.
+            uint32_t local = esp - 8;
+            WriteWord(local, result);
+            uc_reg_write(machine, UC_X86_REG_ECX, &local);
+            uc_reg_write(machine, UC_X86_REG_EDX, &read);
             finish(0);
             return true;
         }
@@ -740,7 +840,11 @@ bool BuckCodeEmu::Impl::HandleClientCall(uint32_t address) {
 
             if (data && count) {
                 std::vector<uint8_t> bytes(count);
-                ReadMemory(data, bytes.data(), count);
+                if (!ReadMemory(data, bytes.data(), count)) {
+                    Fail("CDataStore::PutArray source outside guest memory");
+                    return true;
+                }
+
                 StorePutBytes(ecx, bytes.data(), count);
             }
 
@@ -775,8 +879,12 @@ bool BuckCodeEmu::Impl::HandleClientCall(uint32_t address) {
 
             uint8_t byte = 0;
 
-            if (read < size && buffer) {
-                ReadMemory(buffer + read - base, &byte, 1);
+            if (read >= base && read < size) {
+                if (!buffer || !ReadMemory(buffer + read - base, &byte, 1)) {
+                    Fail("CDataStore::GetByte source outside guest memory");
+                    return true;
+                }
+
                 WriteWord(ecx + STORE_READ, read + 1);
             }
 
@@ -795,7 +903,14 @@ bool BuckCodeEmu::Impl::HandleClientCall(uint32_t address) {
             ReadWord(ecx + STORE_SIZE, size);
 
             uint32_t available = size > read ? size - read : 0;
-            uint32_t bytes = arguments[1] < available ? arguments[1] : available;
+
+            if (!buffer || read < base || arguments[1] > available) {
+                result = 0;
+                finish(8);
+                return true;
+            }
+
+            uint32_t bytes = arguments[1];
 
             if (arguments[0]) {
                 WriteWord(arguments[0], buffer + read - base);
@@ -809,16 +924,26 @@ bool BuckCodeEmu::Impl::HandleClientCall(uint32_t address) {
         case CLIENT_MEMSET: {
             uint32_t size = arguments[2];
             std::vector<uint8_t> bytes(size, static_cast<uint8_t>(arguments[1]));
-            WriteMemory(arguments[0], bytes.data(), size);
+            if (!WriteMemory(arguments[0], bytes.data(), size)) {
+                Fail("memset destination outside guest memory");
+                return true;
+            }
+
+            if (size) uc_ctl_remove_cache(machine, arguments[0], static_cast<uint64_t>(arguments[0]) + size);
             result = arguments[0];
             finish(0); // __cdecl, the caller cleans
             return true;
         }
-        case CLIENT_MEMCPY: {
+        case CLIENT_MEMCPY:
+        case CLIENT_MEMMOVE: {
             uint32_t size = arguments[2];
             std::vector<uint8_t> bytes(size);
-            ReadMemory(arguments[1], bytes.data(), size);
-            WriteMemory(arguments[0], bytes.data(), size);
+            if (!ReadMemory(arguments[1], bytes.data(), size) || !WriteMemory(arguments[0], bytes.data(), size)) {
+                Fail("memcpy/memmove transfer outside guest memory");
+                return true;
+            }
+
+            if (size) uc_ctl_remove_cache(machine, arguments[0], static_cast<uint64_t>(arguments[0]) + size);
             result = arguments[0];
             finish(0);
             return true;
@@ -836,35 +961,23 @@ bool BuckCodeEmu::Impl::HandleClientCall(uint32_t address) {
             return true;
         }
         case CLIENT_OPERATOR_NEW: {
-            result = HeapAlloc(arguments[0], 16);
+            result = TrackedAlloc(arguments[0]);
             finish(0);
             return true;
         }
-        case CLIENT_OPERATOR_DELETE: {
-            result = 0;
-            finish(0);
+        case CLIENT_OPERATOR_DELETE:
+        case CLIENT_SMEM_FREE: {
+            TrackedFree(arguments[0]);
+            finish(address == CLIENT_SMEM_FREE ? 16 : 0);
             return true;
         }
         case CLIENT_SMEM_ALLOC: {
-            result = HeapAlloc((arguments[0] + 7) & ~7u, 16);
+            result = TrackedAlloc(arguments[0]);
             finish(16); // STORMAPI (stdcall)
             return true;
         }
         case CLIENT_SMEM_REALLOC: {
-            uint32_t bytes = arguments[1];
-            uint32_t old = arguments[0];
-
-            if (!bytes) {
-                result = 0;
-            } else if (!old) {
-                result = HeapAlloc(bytes, 16);
-            } else {
-                result = HeapAlloc(bytes, 16);
-                std::vector<uint8_t> copy(bytes);
-                ReadMemory(old, copy.data(), bytes);
-                WriteMemory(result, copy.data(), bytes);
-            }
-
+            result = TrackedReAlloc(arguments[0], arguments[1]);
             finish(20); // STORMAPI (stdcall)
             return true;
         }
@@ -946,6 +1059,7 @@ bool BuckCodeEmu::Impl::HandleClientCall(uint32_t address) {
                 packet.size() > 64 ? "..." : "");
             sentPacket = packet;
             sentPacketValid = true;
+            sentPackets.push_back(packet);
             result = 0;
             finish(0); // __cdecl, the caller pops the argument
             return true;
@@ -956,8 +1070,26 @@ bool BuckCodeEmu::Impl::HandleClientCall(uint32_t address) {
             lastRegistrationValid = true;
             lastRegistrationOpcode = arguments[0];
             lastRegistrationParam = arguments[2];
+            handlers[arguments[0]] = { arguments[1], arguments[2] };
             result = 0;
             finish(0); // __cdecl, the caller pops the arguments
+            return true;
+        }
+        case STUB_IS_DEBUGGER_PRESENT: {
+            // There is no guest Windows debugger attached to this Unicorn process.
+            result = 0;
+            finish(0);
+            return true;
+        }
+        case STUB_GET_CURRENT_PROCESS: {
+            result = 0xFFFFFFFF; // The Windows pseudo-handle for this guest process.
+            finish(0);
+            return true;
+        }
+        case STUB_FLUSH_INSTRUCTION_CACHE: {
+            result = uc_ctl_remove_cache(machine, arguments[1],
+                static_cast<uint64_t>(arguments[1]) + arguments[2]) == UC_ERR_OK;
+            finish(12);
             return true;
         }
         case STUB_VIRTUAL_ALLOC: {
@@ -967,7 +1099,7 @@ bool BuckCodeEmu::Impl::HandleClientCall(uint32_t address) {
             if (requested) {
                 result = requested;
             } else {
-                result = HeapAllocPages(size);
+                result = VirtualAllocate(size);
             }
 
             finish(16); // Windows API (stdcall)
@@ -1071,49 +1203,68 @@ bool BuckCodeEmu::Impl::HandleClientCall(uint32_t address) {
             finish(4);
             return true;
         }
-        case STUB_SYSTEM_FILE_TIME: {
-            // The code zeroes an 8-byte buffer and asks the client for a 64-bit time value.
-            uint64_t ticks = static_cast<uint64_t>(time(nullptr)) * 10000000ull + 116444736000000000ull;
-            WriteMemory(arguments[2], &ticks, sizeof(ticks));
-            result = 0;
+        case STUB_DISK_FREE_SPACE: {
+            // Wow.exe IAT 0x9DF388 is GetDiskFreeSpaceExA, NOT GetSystemTimeAsFileTime.
+            // The 660-byte code passes (NULL, NULL, &totalBytes, NULL), so a FILETIME here
+            // reported an ever-changing ~134 PB disk. Query the real backing filesystem.
+            std::string path = arguments[0] ? ReadGuestString(arguments[0]) : services->ClientPath();
+
+            if (path.size() >= 2 && (path[0] == 'Z' || path[0] == 'z') && path[1] == ':') {
+                path.erase(0, 2);
+            }
+
+            for (char& c : path) if (c == '\\') c = '/';
+            struct statvfs info = {};
+            result = !path.empty() && statvfs(path.c_str(), &info) == 0;
+
+            if (result) {
+                uint64_t unit = info.f_frsize ? info.f_frsize : info.f_bsize;
+                uint64_t values[] = { info.f_bavail * unit, info.f_blocks * unit, info.f_bfree * unit };
+
+                for (uint32_t i = 0; i < 3; i++) {
+                    if (arguments[i + 1] && !WriteMemory(arguments[i + 1], &values[i], sizeof(uint64_t))) {
+                        Fail("GetDiskFreeSpaceExA output is outside guest memory");
+                        result = 0;
+                        break;
+                    }
+                }
+
+                Log("GetDiskFreeSpaceExA: total=%llu available=%llu free=%llu", values[1], values[0], values[2]);
+            }
+
             finish(16);
             return true;
         }
         case STUB_CLOSE_HANDLE: {
-            result = 1;
+            result = moduleSnapshotOpen && arguments[0] == 0x03000300;
+            if (result) moduleSnapshotOpen = false;
             finish(4);
             return true;
         }
         case CLIENT_TOOLHELP_SNAPSHOT: {
-            // CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, 0): a pseudo-handle for the module walk.
+            // These import thunks retain the Windows API's stdcall ABI. Enumerate the actual
+            // guest image rather than a captured Wine module list.
             s_moduleIndex = 0;
-            result = 0x03000300;
-            finish(0);
+            moduleSnapshotOpen = (arguments[0] & 0x18) && !arguments[1] && clientSize;
+            result = moduleSnapshotOpen ? 0x03000300 : 0xFFFFFFFF;
+            finish(8);
             return true;
         }
-        case CLIENT_MODULE32_FIRST: {
-            s_moduleIndex = 0;
-            result = FillModuleEntry(arguments[1], s_moduleIndex) ? 1 : 0;
-
-            if (result) {
-                s_moduleIndex++;
-            }
-
-            finish(0);
-            return true;
-        }
+        case CLIENT_MODULE32_FIRST:
         case CLIENT_MODULE32_NEXT: {
-            result = FillModuleEntry(arguments[1], s_moduleIndex) ? 1 : 0;
-
-            if (result) {
-                s_moduleIndex++;
-            }
-
-            finish(0);
+            if (address == CLIENT_MODULE32_FIRST) s_moduleIndex = 0;
+            result = moduleSnapshotOpen && arguments[0] == 0x03000300
+                && FillModuleEntry(arguments[1], s_moduleIndex);
+            if (result) s_moduleIndex++;
+            finish(8);
             return true;
         }
         default:
             break;
+    }
+
+    if (bootstrapActive && address >= 0x00DD1000 && address < 0x00DD1080) {
+        return true;
     }
 
     // Normal delivered-code instruction: only addresses inside the mapped client image are
@@ -1508,5 +1659,8 @@ bool BuckCodeEmu::RunDataHandler(const uint8_t* handler, uint32_t handlerSize, c
 
     return true;
 }
+
+#include "Engine/Source/Os/Mac/BuckCodeEmuFramework.inl"
+#include "Engine/Source/Os/Mac/BuckCodeEmuContent.inl"
 
 #endif

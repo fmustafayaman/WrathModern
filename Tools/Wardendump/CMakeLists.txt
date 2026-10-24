@@ -13,6 +13,15 @@ if (WOWDECOMP_PLATFORM_MAC)
 
         add_executable(${probe} ${sources})
 
+        if (probe STREQUAL BuckSmoke)
+            # Native DBC round-trip tests use the same globals and record readers as the game.
+            # Include the client's non-entrypoint sources instead of inventing diagnostic stubs.
+            file(GLOB buck_client_sources CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/WoW/Source/*.cpp")
+            target_sources(${probe} PRIVATE ${buck_client_sources}
+                "${CMAKE_SOURCE_DIR}/WoW/Source/Mac/BotCheck.cpp")
+            target_link_libraries(${probe} PRIVATE ObjectAlloc)
+        endif ()
+
         set_target_properties(${probe} PROPERTIES
             RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/Tools/Wardendump
         )

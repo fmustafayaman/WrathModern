@@ -4,6 +4,7 @@
 #include <cstring>
 #include "Client.h"
 #include "Autologin.h"
+#include "WoW/Source/Net/NetClient/BuckData.h"
 #include "Engine/Source/Base/Base.h"
 #include "Engine/Source/Base/CmdLine.h"
 #include "Engine/Source/BlizzardCore/OggDecompress.h"
@@ -1270,6 +1271,12 @@ int32_t STORMAPI WowLogHeader(char* buffer, uint32_t bufferchars) {
 // VERIFY: 4abe30a5 manual
 // OFFSET: 0x00405540
 void ClientInitializeGame(uint32_t mapId, C3Vector position) {
+    if (!BuckDataApplyContent()) {
+        ConsoleWrite("Delivered client content could not be applied; disconnecting.\n", DEFAULT_COLOR);
+        if (ClientServices::Connection()) ClientServices::Connection()->Disconnect();
+        return;
+    }
+
     if (SFile::IsTrial()) {
         SetClientInitialized(0);
     }
@@ -1320,6 +1327,7 @@ void ClientInitializeGame(uint32_t mapId, C3Vector position) {
     Trade_C_Initialize();
     MovementInit();
     EventRegister(EVENT_ID_IDLE, ClientIdle);
+    AutologinWorldInitialize();
     ClientInitializeGameTime();
 
     CommandManager* manager = StaticSingleton<CommandManager>::Instance();

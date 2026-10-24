@@ -46,6 +46,10 @@ void FrameScript_Execute(const char* source, const char* filename, const char* t
 void FrameScript_Execute(int32_t function, FrameScript_Object* object, int32_t argCount, const char* taint, FrameScript_EventObject* event);
 int32_t FrameScript_ExecuteBuffer(const char* buffer, size_t bytes, const char* bufferName, CStatus* status, const char* wrapper);
 int32_t FrameScript_ExecuteFile(const char* filename, const char* wrapper, MD5_CTX* md5, CStatus* status);
+// Optional client integration at the original ExecuteFile -> ExecuteBuffer call site. The
+// callback may edit the loaded buffer in place, but cannot change its size. Main thread only.
+using FrameScript_ExecuteFileHook = bool (*)(void* buffer, uint32_t bytes, const char* chunkname);
+void FrameScript_SetExecuteFileHook(FrameScript_ExecuteFileHook hook);
 void FrameScript_Flush();
 int32_t FrameScript_GetColor(lua_State* L, int32_t index, CImVector& color);
 int32_t FrameScript_GetColorNoAlpha(lua_State* L, int32_t index, CImVector& color);
