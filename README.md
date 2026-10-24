@@ -1,4 +1,4 @@
-# WoWReMac
+# WoWReMac — Warden
 
 Native macOS / Apple Silicon client for **World of Warcraft 3.3.5a (build 12340)**,
 with a direct Metal renderer and optional native mods. No Direct3D or OpenGL translation layer.
@@ -18,6 +18,16 @@ Game data is not included; use your own compatible 3.3.5a installation.
 
 Server-specific integrations stay on their own branches. The old `macos` branch is obsolete.
 
+## Warden branch status
+
+This branch executes the server-delivered 32-bit Warden/buck-data code through Unicorn;
+it does not fabricate successful checks. Install Unicorn (`brew install unicorn`) and keep
+your own matching build-12340 `Wow.exe` with the game data for the emulated client image.
+
+Warmane login and world entry work, but the latest stability run failed after about 20 minutes
+on an unimplemented client-function bridge. **The 30-minute stability target is not achieved.**
+See [WARDEN.md](WARDEN.md) for evidence and the next offline investigation.
+
 ## Requirements
 
 - macOS on Apple Silicon (tested on Apple M4)
@@ -33,11 +43,11 @@ cd WoWReMac
 
 # Build without copying anything into an existing game installation.
 cmake -S . -B build/mac -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-    -DWOWREMAC_GAME_DIR="" -DWOWREMAC_APP_NAME=WoWReMac
+    -DWOWREMAC_GAME_DIR="" -DWOWREMAC_APP_NAME=WoWReMac-Warden
 cmake --build build/mac --target Wow LuxShoulderCam AwesomeWotlk CoAVolFog
 ```
 
-The application is written to `bin/Mac/WoWReMac.app`.
+The application is written to `bin/Mac/WoWReMac-Warden.app`.
 To deploy after each build, configure `-DWOWREMAC_GAME_DIR="/path/to/World of Warcraft"`.
 Keep different branches in separate game directories so their mods and settings do not conflict.
 
@@ -47,14 +57,14 @@ Keep different branches in separate game directories so their mods and settings 
 | `WOWREMAC_MODS` | `ON` | Load native libraries from the game's `Mods/` folder |
 | `WOWREMAC_BUILD_MODS` | `ON` | Build the bundled mods |
 | `WOWREMAC_GAME_DIR` | empty | Optional deployment directory |
-| `WOWREMAC_APP_NAME` | `WoWReMac` | Deployed application name, without `.app` |
+| `WOWREMAC_APP_NAME` | `WoWReMac-Warden` | Deployed application name, without `.app` |
 
 Older build-cache variable names remain compatibility aliases. Private compile-time identifiers
 and diagnostic environment variables are retained to avoid breaking existing tools.
 
 ## Install and run
 
-Copy `WoWReMac.app`, the matching `Mods/` files and optional `Interface/AddOns/` files
+Copy `WoWReMac-Warden.app`, the matching `Mods/` files and optional `Interface/AddOns/` files
 into the game directory, alongside `Data/`. Set `Data/<locale>/realmlist.wtf` for your server,
 then open the application. A release package may include additional installation instructions.
 

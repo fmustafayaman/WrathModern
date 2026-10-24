@@ -116,7 +116,8 @@ endif ()
 # client runs them in a Unicorn machine instead. Without a Unicorn library around the build
 # falls back to the stub Warden client, which only matters for servers that run Warden.
 if (WOWDECOMP_PLATFORM_MAC)
-    option(WRATHMODERN_WARDEN_EMULATION "Run Warden modules in an emulated 32-bit machine" ON)
+    wowremac_cache_setting(WOWREMAC_WARDEN_EMULATION WRATHMODERN_WARDEN_EMULATION BOOL
+        "Run Warden modules in an emulated 32-bit machine" ON)
 
     if (WRATHMODERN_WARDEN_EMULATION)
         find_library(UNICORN_LIBRARY NAMES unicorn PATHS /opt/homebrew/lib /usr/local/lib)

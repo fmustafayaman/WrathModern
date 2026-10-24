@@ -1,4 +1,4 @@
-# AGENTS.md — WrathModern
+# AGENTS.md — WoWReMac / Warden
 
 Native macOS/arm64 client for World of Warcraft 3.3.5a (build 12340), reconstructed from the
 decompilation in this repository. The client speaks the real 3.3.5a protocol; it is not a
@@ -22,9 +22,11 @@ how the port stays comparable with the original binary.
 
 - `../WrathModern-WowRe` — `WowRe`, the **main development/base branch** (native Metal,
   client patches and mods). Do not move Warden/server-specific changes onto this branch.
-- `../WrathModern-warden` — `WowRe-warden`, **Warden and Warmane buck-data on top of `WowRe`**.
-  This branch was rebased onto `WowRe` at `33b67424` on 2026-10-24; it tracks the local
+- `../WrathModern-warden` — `WoWReMac-Warden`, **Warden and Warmane buck-data on top of `WowRe`**.
+  This branch was rebased onto `WowRe` at `3c7f82c0` on 2026-10-24; it tracks the local
   `WowRe` branch with rebase enabled. Keep it current with `git rebase WowRe`.
+- `../WrathModern-Epoch` — `epoch-native`, **separate Epoch integration**. Do not copy its
+  relay, authentication changes or uncommitted work into either `WowRe` or the Warden branch.
 - `../WrathModern` — `warmane-login`, older work and an uncommitted mods/Metal experiment.
 - Other feature worktrees may exist; use `git worktree list` for the complete list.
 
@@ -32,27 +34,30 @@ Check `git status` and `git log` in the relevant worktrees before changing anyth
 uncommitted changes separate. Continue Warden/Warmane work in `../WrathModern-warden` and commit
 there. `main` is not the development base. The external `upstream` remote remains the original
 `wowdecomp` repository; `WowRe` is the local base branch, not a replacement remote.
+The GitHub project is `fmustafayaman/WoWReMac`, with `WowRe` as its default branch.
+The obsolete `macos` branch was removed; existing worktree directory names were kept intact.
 
 ## Build
 
 ```sh
 cmake -S . -B build/mac -G Ninja \
   -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-  -DWRATHMODERN_GAME_DIR="" \
-  -DWRATHMODERN_APP_NAME=WrathModern-Warden
-ninja -C build/mac WrathModern LuxShoulderCam AwesomeWotlk CoAVolFog
+  -DWOWREMAC_GAME_DIR="" \
+  -DWOWREMAC_APP_NAME=WoWReMac-Warden
+cmake --build build/mac --target Wow LuxShoulderCam AwesomeWotlk CoAVolFog
 ```
 
-An empty `WRATHMODERN_GAME_DIR` builds without deploying. To deploy explicitly, set it to
-`/Volumes/Yaman SSD/Warmane`; the app is copied as `WrathModern-Warden.app`. Do not overwrite
-`WrathModern-WowRe.app` or its matching mods while testing this branch. Mods share the game's
+An empty `WOWREMAC_GAME_DIR` builds without deploying. To deploy explicitly, set it to
+`/Volumes/Yaman SSD/Warmane`; the app is copied as `WoWReMac-Warden.app`. Do not overwrite
+`WoWReMac.app`, an Epoch build or their matching mods while testing this branch. Mods share the game's
 `Mods/` folder, so use an isolated game directory for separate branch builds when needed.
 The app must run with the game directory as its working directory; `WoW/Source/Mac/Main.mm`
 `chdir`s there itself.
 
-Useful options: `WRATHMODERN_CLIENT_PATCHES` (macOS conveniences, default ON),
-`WRATHMODERN_WARDEN_EMULATION` (Unicorn-backed Warden, default ON when Unicorn is installed),
-`WRATHMODERN_MODS` (load `Mods/*.dylib`, default ON on macOS).
+Useful options: `WOWREMAC_CLIENT_PATCHES` (macOS conveniences, default ON),
+`WOWREMAC_WARDEN_EMULATION` (Unicorn-backed Warden, default ON when Unicorn is installed),
+`WOWREMAC_MODS` (load `Mods/*.dylib`, default ON on macOS). Legacy cache variables are
+compatibility aliases; runtime diagnostic environment variables retain their existing names.
 
 Diagnostic tools (built by the same configure):
 
@@ -65,6 +70,8 @@ ninja -C build/mac WardenSmoke BuckSmoke
   Tools/Wardendump/captures/client-40.bin Tools/Wardendump/captures/client-660.bin 04d30000 \
   "/Volumes/Yaman SSD/Warmane/Wow.exe"
 python3 Tools/Wardendump/test-buck-lua.py
+python3 Tools/Wardendump/test-buck-framework.py
+python3 Tools/Wardendump/test-client-image-runtime.py
 ```
 
 `BuckSmoke --seq` is the important regression: it runs two challenges through **one** emulator
@@ -89,9 +96,17 @@ cache bug that made the 660-byte challenge reply with the previous code.
 - 0x4B9 Lua: the first payload byte is the rolling-XOR seed (`CDataStore::GetByte`, 0x464560).
   Decode **all** NUL-terminated chunks and execute each in order; the key advances across each
   NUL and is never reset between chunks. The captured 1808-byte packet contains five chunks.
-- 0x41D/0x41C handler segments execute in the emulator, but the complete framework/install
-  flow and native database hooks are still incomplete. The 84-byte challenge reads their real
-  guest state at `0x00DD0FD8`; never replace it with a captured or hard-coded table.
+- 0x2E9 bootstrap and 0x4B8 installers now execute their actual x86 code in one persistent
+  machine. They allocate/register handlers and produce request packets themselves; do not
+  restore opcode scanning, fabricated tokens or captured module lists.
+- The 0x41D content hook edits real native DBC rows via the original 32-bit layouts; its
+  FrameXML hook runs at the original ExecuteFile call site. The captured version-200 stream's
+  eight databases are supported. Unknown schemas/version-reset operations fail explicitly.
+- `ClientImageRuntime.h` derives the original `.text` startup-cache values from the PE in both
+  emulators. Warden's own memory checks read these too: seeding only BuckCodeEmu was wrong.
+- Warden executes with a five-second wall-time bound and no instruction-count hook by default.
+  `WARDEN_STEP_LIMIT` and `WARDEN_TRACE_BLOCKS=1` are diagnostic options, not live defaults;
+  tracing every instruction/block made real ADT checks stall rendering. Never suppress checks.
 - When Unicorn writes code from inside a hook, invalidate translations
   (`uc_ctl_remove_cache`) or the previous challenge's code will keep running. This is already done
   in `StoreGetArray`, `RunHandlerChallenge`, `RunChallenge` and `RunDataHandler`.
@@ -111,6 +126,9 @@ The client writes under the game directory's `Logs/`:
 - `unhandled-packets.log` — complete packets without a registered handler.
 - `warden.log`, `warden-traffic.log` — Warden emulator and module I/O.
 - `connection.log`, `FrameXML.log`, `GlueXML.log` — glue/login/UI.
+- `session-health.log` — optional native world observer (`WRATHMODERN_SESSION_HEALTH=1`, also
+  armed by autologin): PID, connection, active-player GUID/position, actual presented frames,
+  event-loop gaps and uninterrupted ready time. Process uptime alone is not proof of play.
 
 The Warden test directory is `/Volumes/Yaman SSD/Warmane`, the user's clean 3.3.5a installation.
 Do not modify the separate `/Volumes/Yaman SSD/WoW_Wrath` development installation or its mods.
@@ -121,27 +139,36 @@ ground truth for protocol comparisons.
 
 ## Current state (2026-10-24)
 
-- Clean Warmane installation: account authentication, character list and **world entry** were
-  confirmed with `Maheta` in Camp Narache (packet 0x236 and the rendered game window). This
-  session disconnected after approximately four minutes in the world; stability is not solved.
-- The complete session replays offline with **14/14 Warden replies matching the live trace**,
-  including Storm ADT file checks. This proves replay fidelity, not server acceptance.
-- Buck challenges: 40→12, 660→112, 192→1984, 84→48, 92→32 and 80→16 bytes. The last two
-  memory readers return exactly the requested 22 and 8 bytes from the clean Wow.exe; the
-  92-byte challenge also has two zero padding bytes. Its verifier must not count padding as
-  a mismatch. Disconnect followed the 80-byte challenge, but causation is not established.
-- 0x4B9 now executes every Lua chunk (five at character selection, nine in the world), with
-  six offline regression tests. The hard-coded table-override path has been removed.
-- Remaining fidelity gaps: complete 0x2E9/0x4B8 installation, native content/database hooks and
-  the module inventory. The existing Wine module list is a historical model, not a verified
-  inventory of this native process. Do not adjust canned values to make checks pass. The
-  framework API declarations in the existing BuckCodeEmu WIP are not yet implemented.
+- Clean Warmane installation: account authentication, character list and native world entry
+  work with `Maheta` in Camp Narache. Older runs disconnected or received an unauthorized-
+  software warning. Those were failed tests, regardless of green offline replay results.
+- The warning run contained a Warden read of `0x00D415B8+8`; its response was eight zero
+  bytes because only BuckCodeEmu initialized `.text` bounds. The shared PE-derived startup
+  initialization now fixes both. A subsequent uninterrupted 12-minute run had no warning.
+- Full delivered framework/install/content execution and native DBC/FrameXML hooks are in
+  place. Toolhelp reports only the PE image actually mapped into the guest, not a captured
+  Wine DLL inventory. `GetDiskFreeSpaceExA` now queries the backing filesystem (the IAT slot
+  was previously misidentified as FILETIME).
+- Offline regressions: 6 Lua, 7 framework/content/API, 5 shared PE-runtime tests. Instrumented
+  and bounded-JIT Warden replays produce identical 14 responses; removing the diagnostic
+  instruction counter reduced a captured replay from 12.69 s to 1.92 s (6.62x).
+- The bounded-JIT 30-minute live run **failed at 1210.222 seconds**: 9 world buck
+  challenges arrived but only 8 were answered. The 288-byte challenge called client
+  `0x006B3856`, which has no bridge. Logs are preserved under the run's `failure-20m/`.
+  The run had minimum interval FPS 56 and a maximum event-loop gap of 401 ms before
+  this compatibility failure, but the 30-minute objective is **not achieved**. PID 18078
+  is no longer running. Reproduce the missing bridge offline before another live run.
+  `Tools/Wardendump/verify-session.py <private-run-directory> --live` must still enforce
+  >=1800 seconds, the same PID/GUID, continued traffic, movement and no warning/failure.
+- Remaining compatibility limits: the captured version-200 content's known schemas only;
+  unknown content operations fail honestly. No canned check results, token/table overrides
+  or module-list matching are allowed.
 - Preserve session keys with their traffic **before another login**: each login overwrites
   `Logs/warden-session-key.bin`. Private captures from this test are under
   `$HOME/Library/Logs/WrathModern-Warden/`; never commit keys or credentials.
-- The test application is `Warmane/WrathModern-Warden.app`; check the exact process path
-  before starting or stopping it. Do not kill another branch's running client.
-- Stable signing with `WrathModern Dev` keeps the external-volume TCC permission across builds.
+- New builds use `Warmane/WoWReMac-Warden.app`; archived runs used the old application name.
+  Check the exact process path before starting/stopping it. Never kill another branch's client.
+- The existing stable development certificate is retained, keeping its signing identity.
   See `WARDEN.md` for packet times, capture locations and the next offline investigation.
 
 ## Testing the live server
@@ -172,9 +199,9 @@ capture), add a fixture under `Tools/Wardendump/captures/`, and reproduce it off
 
 The game lives on an external volume; macOS asks for removable-volume access. An ad-hoc signature
 changes every build, so the permission would be forgotten each time. `Tools/sign-app.sh` signs both
-the built bundle and the copy in the game directory with the stable `WrathModern Dev` identity from
-the login keychain; the build runs it automatically. If the identity is missing the script does
-nothing. After a signature change, approve the volume prompt once; subsequent rebuilds keep the
+the built bundle and the copy in the game directory with the existing stable development
+certificate from the login keychain; the build runs it automatically. If the certificate is
+missing the entire bundle receives an ad-hoc signature. After a signature change, approve the volume prompt once; subsequent rebuilds keep the
 grant. The script also removes ExFAT AppleDouble `._*` files before signing, because they are
 unsealed content and make `codesign` refuse the bundle.
 

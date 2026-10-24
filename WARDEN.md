@@ -1,9 +1,104 @@
 # Warden — durum ve devam notları
 
-Amaç: native macOS/arm64 WrathModern istemcisinin Warden etkin sunucularda (Warmane dahil) tam değerli istemci gibi davranması.
+Amaç: native macOS/arm64 WoWReMac istemcisinin Warden etkin sunucularda (Warmane dahil) tam değerli istemci gibi davranması.
 Yol: istemci tarafı Warden'ı emülasyonla çalıştırmak. Hile/sahte cevap YOK — sunucunun modülü gerçek kod olarak çalışıyor; "honest-compat".
 
-## Temiz Warmane kurulumu — 2026-10-24 canlı test
+## 30 dakikalık kararlılık çalışması — 2026-10-24, hedef henüz sağlanmadı
+
+Kullanıcının hedefi: aynı native oturumda **en az 30 dakika kesintisiz dünya bağlantısı ve
+sorunsuz oyun**. Süre süreç açılışından değil aktif oyuncu + gerçek render doğrulamasından
+sayılıyor. Tek PID/GUID, ilerleyen kareler, canlı sunucu trafiği, normal hareket/UI ve
+uyarı/kopma olmaması birlikte doğrulanmadan hedef tamamlanmış sayılmaz.
+
+### Gerçek framework ve içerik yürütmesi
+
+- 264 baytlık 0x2E9 yalnız guest'te GUID/XY yazımlarına ayrılıyor; ortaya çıkan bootstrap ve
+  0x4B8 dispatcher **gerçek x86 olarak** çalışıyor. Dört install segmenti kendi VirtualAlloc,
+  SetMessageHandler ve Send2 çağrılarını yapıyor. Opcode taraması/uydurulan token kaldırıldı.
+- Tek emülatör, realm→world boyunca aynı handler/anahtar/global durumunu taşıyor. 0x41B
+  cevabı handler'ın kendisinden geliyor; tekrar kurulum içerik sürümlerini gerçek globalden
+  okuyup token'ı yeniden kullanıyor. Unicorn yazılan kodun cache'ini gerçekten temizliyor.
+- 0x41D hook'u native `ClientInitializeGame` noktasında çalışıyor: native DBC satırları asıl
+  32-bit layout'a çevrilip guest'e aktarılıyor, sunucunun parser'ı düzenliyor, değişmiş gerçek
+  satırlar native DB'ye geri çevriliyor. Map/MapDifficulty/LfgDungeons/Item/ItemExtendedCost/
+  CurrencyTypes/Spell/Achievement, toplam 8 tablo. Bilinmeyen schema/opcode başarısız olur.
+- FrameXML patch hook'u orijinal ExecuteFile→ExecuteBuffer çağrı yerinde çalışıyor;
+  WorldStateFrame.lua gerçek yüklü buffer üzerinde değişiyor. Geçici guest bellekleri serbest
+  bırakılıp tekrar kullanılıyor. SMemReAlloc eski tahsis sınırını aşan kopya yapmıyor.
+- Toolhelp yalnız guest'te gerçekten eşlenen Wow.exe'yi raporluyor; tarihsel sabit Wine
+  DLL listesi kaldırıldı. Import thunk'larının stdcall yığın temizliği de düzeltildi.
+- PE IAT `0x009DF388`, **GetDiskFreeSpaceExA** çıktı; FILETIME değil. Gerçek dosya sistemi
+  toplam/boş kapasitesi okunuyor. Önceki köprü ~134 PB ve sürekli değişen bir tarih değeri
+  gönderiyordu. Bu değişiklik donanım kimliği değiştirme/ban aşma denemesi değildir.
+
+### Unauthorized software uyarısının somut tutarsızlığı
+
+İlk yeni kurulum koşusu (`stability-30m-20261024-sY63GV`, PID 16670) dünyaya girdi ama
+**154.295 saniyede uyarı** aldı. Kullanıcının 19:15:50 ekranı ve `SMSG 0096` içindeki gerçek
+uyarı metni arşivlendi; bu oturum başarılı sayılmadı.
+
+- Warden plaintext `packet-043` (85 B) içinde `39 00 b8 15 d4 00 08`: istemcinin
+  `0x00D415B8+8` belleğini okuyor. Eski outbound plaintext:
+  `020b00124269e6000000000000000000e9e9` — durum baytından sonra **8 sıfır**.
+- BuckCodeEmu zaten bu globalleri dolduruyordu; bağımsız WardenEmu doldurmuyordu. Asıl
+  `OsFindTextSectionBounds` (0x86B510..0x86B591) `.text` bölümünün ImageBase/RVA/VirtualSize
+  hesabını yapıp iki globale yazar. `ClientImageRuntime.h` bu hesabı PE'den iki makinede de
+  yapıyor; ne sabit cevap ne yakalanmış hash kullanılıyor.
+- Düzeltmeden sonraki aynı replay cevabı:
+  `020b00402814f40000104000b3e39d00e9e9` — `0x00401000..0x009DE3B3` gerçek PE sınırları.
+  Bu kontrolün çıktısı değişti, diğer cevaplar aynı kaldı. Eski hatalı canlı kayda göre
+  **1 mismatch beklenir**; bunu gizlemek için replay'in beklenen cevabı değiştirilmedi.
+- Sonraki koşu (`stability-30m-runtime-20261024-YdmpWs`, PID 17441) **12 dakika** boyunca
+  uyarı/kopma olmadan kaldı; native ileri/geri girdi testi ve konum değişimi doğrulandı.
+  Akıcılık düzeltmesini denemek için bu oturum bilinçli kapatıldı, 30 dakika diye sunulmadı.
+
+### Render takılmasının kaynağı ve doğrulaması
+
+Warden'ın gerçek ADT hash'leri sırasında 2 saniyeyi aşan event-loop boşlukları görüldü.
+`uc_emu_start(..., count=500000000)` Unicorn'da **her komuta tanı callback'i** ekliyor;
+SHA1'ın kendisini hesaplamak yerine atlamak gibi bir optimizasyon yapılmadı.
+
+- Varsayılan artık instruction counter olmadan gerçek JIT + **5 saniyelik wall-time üst
+  sınırı**. Sentinel'e ulaşmayan çağrı başarısız, yarım cevap geçerli sayılmıyor.
+- Tam dal izi de yalnız `WARDEN_TRACE_BLOCKS=1` ile açık; hata snapshot'ları korunuyor ve
+  offline trace ile yeniden oynatılabiliyor. `WARDEN_STEP_LIMIT` tanı için hâlâ kullanılabilir.
+- Aynı 14 cevap, instruction counter açık: **12.6946 s**; bounded JIT: **1.9167 s**,
+  **6.62x hızlanma**. Her 14 payload birebir aynı. Eski canlı kayda karşı yalnız yukarıdaki
+  başlangıç-global düzeltmesinin 1 mismatch'i var.
+- Bounded-JIT native uygulamasıyla yeni 30 dakikalık test **19:40:27** civarında başlatıldı,
+  PID 18078. Aktif arşiv: `$HOME/Library/Logs/WrathModern-Warden/stability-30m-jit-20261024-85aOqJ/`.
+  Denetim sonucu aşağıda; bu koşu başarısızdır.
+
+### 20. dakikadaki gerçek hata
+
+- Audit **1210.222 saniyede** başarısız oldu: dünya buck challenge sayısı **9**, cevap sayısı
+  **8**. `world buck challenges were missing or not all replied to` ve
+  `emulator/bridge failure found in the live logs` kapıları tetiklendi.
+- `14697990`: teslim edilen kod `0x006B3856` istemci fonksiyonunu çağırdı; bu köprü yok.
+  `14697991`: `delivered function 03d10000 failed at 006b3856`; ardından
+  `SMSG 041b (288 bytes): delivered handler failed`. Bu başarısızlık gizlenmedi/başarılı
+  cevapla doldurulmadı. Fonksiyon henüz tanımlanmadı; sonraki iş offline çoğaltıp gerçek
+  köprüsünü eklemek.
+- Öncesindeki minimum aralık FPS **56**, ortalama yaklaşık **59.4**, en büyük event-loop
+  boşluğu **401 ms** idi. Normal hareket ve karakter paneli görüntüyle doğrulandı; bu
+  ölçümler cevaplanamayan challenge'ı veya eksik 30 dakikayı başarılı hale getirmez.
+- Oyun logları, trafik ve anahtarlar yukarıdaki özel arşivin `failure-20m/` altına kopyalandı.
+  Anahtarlar/kimlik bilgileri Git dışında kalır. PID **18078 artık çalışmıyor**.
+- Yeni canlı oturum yerine önce aynı 288 baytlık challenge offline çalıştırılmalı.
+
+### Doğrulama araçları
+
+- `test-buck-lua.py`: 6 test.
+- `test-buck-framework.py`: 7 test (gerçek bootstrap/install, DB/FrameXML, tekrar kurulum,
+  zincirli challenge, gerçek disk, gerçek guest module listesi, bozuk paket reddi).
+- `test-client-image-runtime.py`: 5 test (gerçek PE, kesik/bozuk başlık, exact bölüm adı,
+  taşma/boş bölüm).
+- `verify-session.py <private-run> --live`: tek PID/GUID, >=1800 s kesintisiz native ready,
+  kare ilerlemesi ve >=15 FPS aralıklar, <=2 s event-loop takılması, taze sunucu trafiği,
+  Warden/buck cevapları, uyarı/kopma/yeniden giriş olmaması ve gerçek konum değişimi.
+  Bu denetim 30 dakikalık test penceresini kapsar, oyunun bütün içeriğine garanti değildir.
+
+## Temiz Warmane kurulumu — 2026-10-24 canlı test (önceki kayıt)
 
 **Giriş ve dünya render'ı çalışıyor; uzun süreli bağlantı henüz çözülmedi.** Kullanıcının
 `/Volumes/Yaman SSD/Warmane` dizinindeki temiz 3.3.5a kurulumuna ayrı
@@ -76,8 +171,12 @@ translation cache'ini de gerçekten temizlemeli. Bu çözümleme henüz canlı y
 
 ## Güncel dal düzeni — 2026-10-24
 
-- Ana geliştirme/taban dalı **`WowRe`**; bu çalışma dalı **`WowRe-warden`**.
-- `WowRe` @ `33b67424` üzerine 52 Warden/buck-data commit'i rebase edildi. Native Metal,
+- GitHub projesi **[WoWReMac](https://github.com/fmustafayaman/WoWReMac)**; varsayılan
+  geliştirme/taban dalı **`WowRe`**, bu dal **`WoWReMac-Warden`**.
+- **`epoch-native` ayrı kalır**; Epoch relay/auth çalışması ne ana dala ne Warden
+  dalına taşınır. Mevcut worktree klasörleri ve kaydedilmemiş çalışmalar korunur.
+- Eski `macos` dalı ana tabanda tamamen bulunduğu doğrulandıktan sonra silindi.
+- `WowRe` @ `3c7f82c0` üzerine 55 Warden/buck-data commit'i rebase edildi. Native Metal,
   mod altyapısı, istemci yamaları ve autotest korunurken Warden/autologin akışı üstüne eklendi.
 - Sonraki taban güncellemeleri `git rebase WowRe` ile alınır. Sunucuya özel kod `WowRe`'ye
   geri taşınmaz; `WowRe` worktree'sindeki kaydedilmemiş değişikliklere dokunulmaz.

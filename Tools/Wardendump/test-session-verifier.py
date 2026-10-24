@@ -95,7 +95,9 @@ class SessionVerifierTests(unittest.TestCase):
     def test_reconnect_dropped_send_and_emulator_fault_cannot_pass(self):
         for name, line in (("net-events.log", "140000 DISCONNECTED this=0x1234 state=5\n"),
                            ("net-events.log", "140000 SEND_DROPPED state=2 opcode=01dc\n"),
-                           ("buck-data.log", "140000 SMSG 041b: delivered handler failed\n")):
+                           ("buck-data.log", "140000 SMSG 041b: delivered handler failed\n"),
+                           ("warden.log", "WardenModule::Process: execution budget exhausted\n"),
+                           ("warden.log", "import kernel32!Unknown was called but has no behavior\n")):
             path = self.logs / name
             path.write_text(line)
             with self.subTest(line=line):

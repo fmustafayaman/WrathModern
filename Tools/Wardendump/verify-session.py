@@ -25,7 +25,9 @@ PACKET = re.compile(r"^(\d+) (SMSG ([0-9a-f]+)|CMSG) size=(\d+): (.*)$")
 ERROR = re.compile(
     r"no (?:native )?bridge|(?:read|write|fetch) fault|emu error|"
     r"delivered (?:function|handler).*failed|handler failed|native content hook: failed|"
-    r"FrameXML hook:.*failed|unknown allocation|could not prepare native|rejected \d+ changed rows",
+    r"FrameXML hook:.*failed|unknown allocation|could not prepare native|rejected \d+ changed rows|"
+    r"(?:instruction|execution) budget exhausted|module took a path the emulator cannot follow|"
+    r"import .* was called but has no behavior|(?:read|write) failed at [0-9a-f]+",
     re.IGNORECASE,
 )
 
@@ -174,6 +176,7 @@ def audit(run, live=False, minimum_seconds=1800):
         "player_guid": guid, "world_start_ms": start, "world_end_ms": end,
         "continuous_world_seconds": elapsed / 1000, "health_samples": len(samples),
         "max_health_sample_gap_ms": max_gap, "presented_frames_between_samples": frames,
+        "max_event_loop_gap_ms": max(int(value["maxIdleGapMs"]) for _, value in samples),
         "minimum_interval_fps": round(min(rates), 2) if rates else 0,
         "mean_interval_fps": round(sum(rates) / len(rates), 2) if rates else 0,
         "distinct_native_positions": len(coordinates), "server_packets": len(incoming),

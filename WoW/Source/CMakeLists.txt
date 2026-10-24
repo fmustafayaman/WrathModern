@@ -15,7 +15,7 @@ else ()
 endif ()
 
 if (WOWDECOMP_PLATFORM_MAC)
-    set(WOW_OUTPUT_NAME WoWReMac)
+    set(WOW_OUTPUT_NAME WoWReMac-Warden)
 elseif (WOWDECOMP_ARCH_64)
     set(WOW_OUTPUT_NAME Wow64)
 else ()
@@ -30,8 +30,8 @@ set_target_properties(Wow PROPERTIES
 if (WOWDECOMP_PLATFORM_MAC)
     set_target_properties(Wow PROPERTIES
         MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/Mac/Info.plist.in
-        MACOSX_BUNDLE_BUNDLE_NAME WoWReMac
-        MACOSX_BUNDLE_GUI_IDENTIFIER org.wowremac.client
+        MACOSX_BUNDLE_BUNDLE_NAME WoWReMac-Warden
+        MACOSX_BUNDLE_GUI_IDENTIFIER org.wowremac.warden
         MACOSX_BUNDLE_SHORT_VERSION_STRING 3.3.5
         MACOSX_BUNDLE_BUNDLE_VERSION 12340
     )
@@ -42,7 +42,7 @@ if (WOWDECOMP_PLATFORM_MAC)
         "Game directory to copy the application into after each build" "")
     # Name of the copy in the game directory, so builds of different branches can sit side by side
     wowremac_cache_setting(WOWREMAC_APP_NAME WRATHMODERN_APP_NAME STRING
-        "Name of the application copied into the game directory, without .app" "WoWReMac")
+        "Name of the application copied into the game directory, without .app" "WoWReMac-Warden")
 
     # A stable signature keeps macOS's grants (access to the game volume) across rebuilds
     add_custom_command(TARGET Wow POST_BUILD
